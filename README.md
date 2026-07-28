@@ -130,6 +130,15 @@ expnote moc remove lu8qk41s \
 ## Agent-friendly output
 
 Most mutating and query commands accept `--json` and return stable JSON.
+Agents that cannot read repository files can learn the workflow from the CLI:
+
+```bash
+expnote guide agent
+expnote guide agent --json
+```
+
+Agents that can read files should also read
+[docs/agent-quickstart.md](docs/agent-quickstart.md).
 
 ```bash
 expnote run query \

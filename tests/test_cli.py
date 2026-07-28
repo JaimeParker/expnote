@@ -86,6 +86,37 @@ def _moc_table_ids(path: Path) -> list[str]:
     ]
 
 
+def test_guide_agent_json_is_machine_readable():
+    result = runner.invoke(app, ["guide", "agent", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["topic"] == "agent"
+    assert "SQLite is the source of truth" in data["principles"]
+    assert "--state-dir" in data["required_flags"]
+    assert "create_run" in data["workflows"]
+    assert "run.show" in data["commands"]
+    assert "sync markdown --pull-analysis" in json.dumps(data)
+    assert "moc diff" in json.dumps(data)
+
+
+def test_guide_agent_human_output_mentions_core_workflow():
+    result = runner.invoke(app, ["guide", "agent"])
+
+    assert result.exit_code == 0, result.output
+    assert "SQLite is the source of truth" in result.output
+    assert "Markdown is a projection" in result.output
+    assert "init -> topic add -> run add -> moc add -> sync markdown" in result.output
+    assert "expnote validate --json" in result.output
+
+
+def test_guide_rejects_unknown_topic():
+    result = runner.invoke(app, ["guide", "unknown", "--json"])
+
+    assert result.exit_code != 0
+    assert "supported guide topic" in result.output
+
+
 def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state" / "mani-skill-training"

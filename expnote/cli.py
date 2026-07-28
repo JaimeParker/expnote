@@ -51,6 +51,77 @@ StateDirOption = Annotated[
 ]
 
 
+_AGENT_GUIDE = {
+    "topic": "agent",
+    "principles": [
+        "SQLite is the source of truth",
+        "Markdown is a projection",
+        "Use --json for automation",
+        "Pass the same --root and --state-dir on follow-up commands",
+        "Edit structured fields through the CLI",
+    ],
+    "required_flags": ["--root", "--state-dir"],
+    "workflows": {
+        "create_run": [
+            "init",
+            "topic add",
+            "run add",
+            "moc add",
+            "sync markdown",
+        ],
+        "query_run": [
+            "run show <run_id> --json",
+            "run query --where \"status = 'running'\" --json",
+        ],
+        "analysis_import": [
+            "sync markdown",
+            "sync markdown --pull-analysis",
+        ],
+        "handoff": [
+            "validate --json",
+            "moc diff --moc-path <path> --section <heading> --json",
+        ],
+    },
+    "commands": {
+        "init": "Create the workspace and configure Markdown projection paths",
+        "topic.add": "Create a training or experiment topic",
+        "run.add": "Create a SQL-backed run record",
+        "run.show": "Read SQL-backed Purpose, Relation, Result, Metadata, Analysis",
+        "run.update": "Update structured run fields and metadata",
+        "run.query": "Query runs with restricted SQL-like filters",
+        "moc.add": "Add a run to a managed MOC section table",
+        "moc.diff": "Compare a managed MOC section table with SQLite",
+        "sync.markdown": "Render SQLite records into Markdown",
+        "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
+        "validate": "Check active record counts before handoff",
+    },
+    "conflict_policy": {
+        "structured_fields": (
+            "Edit Purpose, Relation, Result, Metadata through CLI only"
+        ),
+        "analysis": "Obsidian edits require sync markdown --pull-analysis",
+        "moc_tables": "Managed MOC tables should be repaired with moc sync",
+    },
+    "examples": {
+        "init": (
+            "expnote init --root <vault> --state-dir <state> "
+            "--moc-path <moc.md> --notes-dir <runs-dir>"
+        ),
+        "create_run": (
+            "expnote run add --root <vault> --state-dir <state> "
+            "--topic <topic> --run-id <id> --purpose <text> --json"
+        ),
+        "show_run": (
+            "expnote run show <id> --root <vault> --state-dir <state> --json"
+        ),
+        "moc_diff": (
+            "expnote moc diff --root <vault> --state-dir <state> "
+            "--moc-path <moc.md> --section <heading> --json"
+        ),
+    },
+}
+
+
 def _emit(data: object, as_json: bool) -> None:
     if as_json:
         typer.echo(json.dumps(data, ensure_ascii=False, sort_keys=True))
@@ -60,6 +131,36 @@ def _emit(data: object, as_json: bool) -> None:
         )
 
 
+def _render_agent_guide() -> str:
+    return "\n".join(
+        [
+            "# expnote agent guide",
+            "",
+            "Core rules:",
+            "- SQLite is the source of truth",
+            "- Markdown is a projection",
+            "- Use --json for automation",
+            "- Reuse the same --root and --state-dir on follow-up commands",
+            "",
+            "Minimal workflow:",
+            "init -> topic add -> run add -> moc add -> sync markdown",
+            "",
+            "Read records from SQLite:",
+            "expnote run show <run_id> --json",
+            "expnote run query --where \"status = 'running'\" --json",
+            "",
+            "Obsidian conflict policy:",
+            "- Edit Purpose, Relation, Result, Metadata through CLI only",
+            "- Import Obsidian Analysis with sync markdown --pull-analysis",
+            "- Check managed MOC tables with expnote moc diff --json",
+            "",
+            "Handoff checks:",
+            "expnote validate --json",
+            "expnote moc diff --moc-path <path> --section <heading> --json",
+        ]
+    )
+
+
 def _topic_id(conn: sqlite3.Connection, title: str) -> str:
     row = conn.execute(
         "SELECT id FROM topics WHERE title = ? AND deleted_at IS NULL", (title,)
@@ -67,6 +168,17 @@ def _topic_id(conn: sqlite3.Connection, title: str) -> str:
     if row is None:
         raise typer.BadParameter(f"topic not found: {title}")
     return str(row["id"])
+
+
+@app.command("guide")
+def guide(
+    topic: Annotated[str, typer.Argument(help="Guide topic.")] = "agent",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Show a built-in guide."""
+    if topic != "agent":
+        raise typer.BadParameter("supported guide topic: agent")
+    _emit(_AGENT_GUIDE if json_output else _render_agent_guide(), json_output)
 
 
 @app.command()
