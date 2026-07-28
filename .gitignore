@@ -1,0 +1,12 @@
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local handoff/reference material.
+tmp.md
+reference/
