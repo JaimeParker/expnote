@@ -25,26 +25,27 @@ def _add_run(
     topic: str = "topic",
     status: str = "running",
     purpose: str | None = None,
+    analysis: str | None = None,
 ) -> None:
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "add",
-            "--root",
-            str(tmp_path),
-            "--topic",
-            topic,
-            "--run-id",
-            run_id,
-            "--purpose",
-            purpose if purpose is not None else f"purpose {run_id}",
-            "--status",
-            status,
-            "--meta",
-            "algo=sac",
-        ],
-    )
+    args = [
+        "run",
+        "add",
+        "--root",
+        str(tmp_path),
+        "--topic",
+        topic,
+        "--run-id",
+        run_id,
+        "--purpose",
+        purpose if purpose is not None else f"purpose {run_id}",
+        "--status",
+        status,
+        "--meta",
+        "algo=sac",
+    ]
+    if analysis is not None:
+        args.extend(["--analysis", analysis])
+    result = runner.invoke(app, args)
     assert result.exit_code == 0, result.output
 
 
@@ -56,6 +57,161 @@ def _events(tmp_path: Path) -> list[dict[str, object]]:
         ).splitlines()
         if line
     ]
+
+
+def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state" / "mani-skill-training"
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--root",
+            str(root),
+            "--state-dir",
+            str(state_dir),
+            "--notes-dir",
+            "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs",
+            "--moc-path",
+            "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+
+    assert data["root"] == str(root.resolve())
+    assert data["state_dir"] == str(state_dir.resolve())
+    assert (state_dir / "expnote.sqlite").exists()
+    assert (state_dir / "events.jsonl").exists()
+    assert (state_dir / "config.toml").exists()
+    assert not (root / ".expnote").exists()
+    assert (
+        root / "10 Projects" / "AI Lab RFT 项目" / "ManiSkill Training" / "runs"
+    ).exists()
+
+    config = (state_dir / "config.toml").read_text(encoding="utf-8")
+    assert f'root = "{root.resolve()}"' in config
+    assert f'state_dir = "{state_dir.resolve()}"' in config
+
+
+def test_existing_schema_migrates_on_cli_use(tmp_path):
+    state_dir = tmp_path / ".expnote"
+    state_dir.mkdir()
+    (state_dir / "events.jsonl").write_text("", encoding="utf-8")
+    (state_dir / "config.toml").write_text(
+        'project = "old"\nnotes_dir = "notes/runs"\nmoc_path = "notes/moc.md"\n',
+        encoding="utf-8",
+    )
+    conn = sqlite3.connect(state_dir / "expnote.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE topics (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL UNIQUE,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL REFERENCES topics(id),
+            purpose TEXT NOT NULL DEFAULT '',
+            relation TEXT NOT NULL DEFAULT '',
+            result TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        INSERT INTO topics(id, title, summary, created_at, updated_at)
+        VALUES('topic_old', 'Old Topic', '', '2026-01-01', '2026-01-01');
+        INSERT INTO runs(
+            id, topic_id, purpose, relation, result, status,
+            started_at, updated_at, metadata_json
+        )
+        VALUES(
+            'old1', 'topic_old', 'old purpose', '', '', 'running',
+            '2026-01-01', '2026-01-01', '{}'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(
+        app, ["run", "show", "old1", "--root", str(tmp_path), "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["analysis"] == ""
+
+
+def test_external_state_dir_supports_cli_workflow(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state"
+    common = ["--root", str(root), "--state-dir", str(state_dir)]
+
+    result = runner.invoke(app, ["init", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["topic", "add", "topic", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            *common,
+            "--topic",
+            "topic",
+            "--run-id",
+            "external1",
+            "--status",
+            "running",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["run", "list", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["external1"]
+
+    result = runner.invoke(app, ["validate", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["counts"] == {
+        "artifacts": 0,
+        "runs": 1,
+        "topics": 1,
+    }
+
+    events = [
+        json.loads(line)
+        for line in (state_dir / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    assert [event["type"] for event in events] == ["init", "topic.add", "run.add"]
+
+
+def test_external_state_dir_must_be_reused_for_follow_up_commands(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state"
+
+    result = runner.invoke(
+        app, ["init", "--root", str(root), "--state-dir", str(state_dir)]
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["topic", "list", "--root", str(root), "--json"])
+    assert result.exit_code != 0
+    assert not (root / ".expnote").exists()
 
 
 def test_init_add_query_and_soft_delete(tmp_path):
@@ -204,6 +360,8 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
             "baseline",
             "--result",
             "better",
+            "--analysis",
+            "updated analysis",
             "--status",
             "finished",
             "--meta",
@@ -216,6 +374,7 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert updated["purpose"] == "new purpose"
     assert updated["relation"] == "baseline"
     assert updated["result"] == "better"
+    assert updated["analysis"] == "updated analysis"
     assert updated["status"] == "finished"
     assert updated["metadata"] == {"algo": "sac", "seed": "1"}
 
@@ -225,6 +384,7 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert result.exit_code == 0, result.output
     shown = json.loads(result.output)
     assert shown["topic_title"] == "topic"
+    assert shown["analysis"] == "updated analysis"
     assert shown["metadata"] == {"algo": "sac", "seed": "1"}
 
     result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
@@ -428,6 +588,155 @@ def test_run_query_supports_restricted_where_and_order_by(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["abc123"]
+
+
+def test_run_query_supports_analysis_field(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "abc123", analysis="useful analysis")
+    _add_run(tmp_path, "other", analysis="different")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "query",
+            "--root",
+            str(tmp_path),
+            "--where",
+            "analysis = 'useful analysis'",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["abc123"]
+
+
+def test_moc_add_list_remove_and_diff(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "moc1", purpose="p1")
+    moc_path = "Inbox/Test MOC.md"
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    moc = (tmp_path / moc_path).read_text(encoding="utf-8")
+    assert "## StackCube" in moc
+    assert "<!-- expnote:moc-table:start -->" in moc
+    assert "[[moc1]]" in moc
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "list",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["run_id"] for row in json.loads(result.output)] == ["moc1"]
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "diff",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["changed"] is False
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "remove",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "[[moc1]]" not in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+
+def test_moc_diff_reports_manual_table_changes(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "moc1", purpose="p1")
+    moc_path = "Inbox/Test MOC.md"
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    path = tmp_path / moc_path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("[[moc1]]", "[[manual]]"),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "diff",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["changed"] is True
+    assert data["missing"] == ["moc1"]
+    assert data["stale"] == ["manual"]
 
 
 def test_run_query_supports_topic_alias_and_limit(tmp_path):

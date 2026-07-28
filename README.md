@@ -4,7 +4,7 @@
 records in SQLite and renders Markdown for Obsidian, Git, WebDAV, and plain-text
 search.
 
-The core tool is generic. RL frameworks, Weights & Biases, MLflow, or lab-specific
+The core tool is generic. Training frameworks, metric trackers, and lab-specific
 layouts should integrate through adapters instead of changing the core schema.
 
 ## Install for development
@@ -32,6 +32,7 @@ expnote run add \
   --topic "260703-StackCube SAC reproduction" \
   --run-id lu8qk41s \
   --purpose "Reproduce seed=1 trajectory on current main" \
+  --analysis "Initial observation notes" \
   --status running \
   --meta algo=sac \
   --meta env_id=StackCube-v1 \
@@ -48,30 +49,83 @@ PYTHONPATH=. python -m expnote.cli init --notes-dir notes --moc-path notes/exper
 
 ## Obsidian layout
 
-For an Obsidian vault, initialize inside the vault or pass `--root`:
+For an Obsidian vault that is synced by WebDAV, keep expnote state outside the
+vault and write only Markdown into the vault:
 
 ```bash
 expnote init \
-  --root "10 Projects/AI Lab RFT 项目" \
-  --notes-dir "ManiSkill Training" \
-  --moc-path "ManiSkill Training MOC.md"
+  --state-dir ~/.local/share/expnote/workspaces/mani-skill-training \
+  --root "/home/hazyparker/Documents/Cyber Brain" \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs"
 ```
 
 This creates:
 
 ```text
-.expnote/
+~/.local/share/expnote/workspaces/mani-skill-training/
   expnote.sqlite
   events.jsonl
   config.toml
-ManiSkill Training MOC.md
-ManiSkill Training/
-  <run_id>.md
+Cyber Brain/
+  10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md
+  10 Projects/AI Lab RFT 项目/ManiSkill Training/runs/
+    <run_id>.md
 ```
 
+If `--state-dir` is omitted, expnote uses `<root>/.expnote`, which is convenient
+for a simple local workspace but not recommended for a synced Obsidian vault.
+
 SQLite is the source of truth. Markdown is a projection for reading, linking, and
-searching. Generated Markdown is wrapped in managed markers; write manual
-analysis outside those blocks or in the generated run note analysis section.
+searching. `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` are stored
+in SQLite and returned by `expnote run show <run_id> --json`.
+
+Generated Markdown is wrapped in managed markers. Edit structured fields through
+the CLI. The only Obsidian-editable field is the run note `Analysis` section
+inside `expnote:analysis` markers. To import those edits back into SQLite, run:
+
+```bash
+expnote sync markdown --pull-analysis
+```
+
+If Analysis was changed in Obsidian, plain `expnote sync markdown` refuses to
+overwrite it. Use `--pull-analysis` to keep the Obsidian text, or `--force` to
+restore the SQLite version.
+
+## MOC section tables
+
+Add a run to a managed table under a specific level-two heading:
+
+```bash
+expnote moc add lu8qk41s \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --section "StackCube SAC"
+```
+
+MOC table membership is stored in SQLite. The table itself is rendered inside
+`expnote:moc-table` markers under the requested `##` heading. A run can appear in
+multiple MOCs or sections.
+
+See [docs/templates/training-record-example.md](docs/templates/training-record-example.md)
+for an example MOC and generated `runs/<id>.md` note.
+
+Useful operations:
+
+```bash
+expnote moc list \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --section "StackCube SAC" \
+  --json
+
+expnote moc diff \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --section "StackCube SAC" \
+  --json
+
+expnote moc remove lu8qk41s \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --section "StackCube SAC"
+```
 
 ## Agent-friendly output
 
@@ -92,25 +146,15 @@ subqueries are not supported yet.
 Agent contract:
 
 - Prefer `--json` for automation.
+- If a workspace was initialized with `--state-dir`, pass the same `--state-dir`
+  on follow-up commands.
 - Treat non-zero exit status as command failure.
-- Do not edit generated Markdown directly unless editing outside managed blocks.
+- Do not edit generated Markdown directly except Analysis inside
+  `expnote:analysis` markers.
+- Use `expnote moc diff --json` before trusting a manually edited MOC table.
 - Run `expnote sync markdown` after structured updates if Markdown was not synced
   by the caller workflow.
 - Use `expnote validate --json` before handing off long-lived notes.
-
-## rl-garden adapter
-
-Import a resolved training config:
-
-```bash
-expnote import rlgarden runs/<run_name>/config.json \
-  --topic "StackCube ablations" \
-  --status running \
-  --json
-```
-
-The adapter reads local resolved `config.json` files. W&B and MLflow network
-integrations are not part of the current core CLI.
 
 ## Validate locally
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -8,16 +9,26 @@ from expnote.db import read_config, row_to_dict, transaction
 
 MANAGED_START = "<!-- expnote:managed:start -->"
 MANAGED_END = "<!-- expnote:managed:end -->"
+ANALYSIS_START = "<!-- expnote:analysis:start -->"
+ANALYSIS_END = "<!-- expnote:analysis:end -->"
+MOC_TABLE_START = "<!-- expnote:moc-table:start -->"
+MOC_TABLE_END = "<!-- expnote:moc-table:end -->"
 
 
-def sync_markdown(root: Path) -> dict[str, Any]:
-    config = read_config(root)
+def sync_markdown(
+    root: Path,
+    state_dir: Path | None = None,
+    *,
+    pull_analysis: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    config = read_config(root, state_dir=state_dir)
     notes_dir = root / config["notes_dir"]
     moc_path = root / config["moc_path"]
     notes_dir.mkdir(parents=True, exist_ok=True)
     moc_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         topics = [
             row_to_dict(row)
             for row in conn.execute(
@@ -31,7 +42,7 @@ def sync_markdown(root: Path) -> dict[str, Any]:
         runs_by_topic: dict[str, list[dict[str, Any]]] = {}
         for topic in topics:
             runs_by_topic[topic["id"]] = [
-                row_to_dict(row)
+                row_to_dict(row, include_internal=True)
                 for row in conn.execute(
                     """
                     SELECT * FROM runs
@@ -46,13 +57,29 @@ def sync_markdown(root: Path) -> dict[str, Any]:
     _write_managed_file(moc_path, moc_content)
 
     written_runs = 0
+    pulled_analysis = 0
     for runs in runs_by_topic.values():
         for run in runs:
             run_path = notes_dir / f"{_safe_filename(run['id'])}.md"
+            run = _resolve_analysis(
+                root,
+                state_dir,
+                run,
+                run_path,
+                pull_analysis=pull_analysis,
+                force=force,
+            )
             _write_managed_file(run_path, _render_run_note(run))
+            _set_analysis_hash(root, state_dir, str(run["id"]), str(run["analysis"]))
+            if run.get("_analysis_pulled"):
+                pulled_analysis += 1
             written_runs += 1
 
-    return {"moc": str(moc_path), "run_notes": written_runs}
+    return {
+        "moc": str(moc_path),
+        "run_notes": written_runs,
+        "pulled_analysis": pulled_analysis,
+    }
 
 
 def _render_moc(
@@ -96,6 +123,7 @@ def _render_moc(
 
 def _render_run_note(run: dict[str, Any]) -> str:
     metadata = run.get("metadata", {})
+    analysis = run.get("analysis") or ""
     lines = [
         f"# {run['id']}",
         "",
@@ -121,8 +149,247 @@ def _render_run_note(run: dict[str, Any]) -> str:
         lines.extend(f"- `{key}`: {value}" for key, value in sorted(metadata.items()))
     else:
         lines.append("_No metadata recorded._")
-    lines.extend(["", "## Analysis", "", "Write analysis here."])
+    lines.extend(
+        [
+            "",
+            "## Analysis",
+            "",
+            ANALYSIS_START,
+            analysis or "Write analysis here.",
+            ANALYSIS_END,
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def sync_moc_section(
+    root: Path,
+    state_dir: Path | None,
+    moc_path: str,
+    section: str,
+) -> dict[str, Any]:
+    path = root / moc_path
+    rows = _moc_section_rows(root, state_dir, moc_path, section)
+    table = _render_moc_table(rows)
+    _write_moc_section_table(path, section, table)
+    return {"moc_path": str(path), "section": section, "rows": len(rows)}
+
+
+def diff_moc_section(
+    root: Path,
+    state_dir: Path | None,
+    moc_path: str,
+    section: str,
+) -> dict[str, Any]:
+    path = root / moc_path
+    rows = _moc_section_rows(root, state_dir, moc_path, section)
+    expected = _render_moc_table(rows).strip()
+    observed = _extract_moc_table(path, section).strip()
+    expected_ids = [str(row["run_id"]) for row in rows]
+    observed_ids = _run_ids_from_table(observed)
+    return {
+        "moc_path": str(path),
+        "section": section,
+        "changed": expected != observed,
+        "expected": expected_ids,
+        "observed": observed_ids,
+        "missing": [run_id for run_id in expected_ids if run_id not in observed_ids],
+        "stale": [run_id for run_id in observed_ids if run_id not in expected_ids],
+    }
+
+
+def _resolve_analysis(
+    root: Path,
+    state_dir: Path | None,
+    run: dict[str, Any],
+    run_path: Path,
+    *,
+    pull_analysis: bool,
+    force: bool,
+) -> dict[str, Any]:
+    existing_analysis = _extract_analysis(run_path)
+    if existing_analysis is None:
+        return run
+
+    current_hash = _hash_text(existing_analysis)
+    rendered_hash = str(run.get("analysis_rendered_hash") or "")
+    if rendered_hash and current_hash != rendered_hash:
+        if pull_analysis:
+            run = dict(run)
+            run["analysis"] = existing_analysis
+            run["_analysis_pulled"] = True
+            with transaction(root, state_dir=state_dir) as conn:
+                conn.execute(
+                    "UPDATE runs SET analysis = ?, updated_at = ? WHERE id = ?",
+                    (existing_analysis, _now_for_update(), run["id"]),
+                )
+            return run
+        if not force:
+            raise RuntimeError(
+                f"{run_path} has changed Analysis. Use --pull-analysis or --force."
+            )
+    return run
+
+
+def _set_analysis_hash(
+    root: Path,
+    state_dir: Path | None,
+    run_id: str,
+    analysis: str,
+) -> None:
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            "UPDATE runs SET analysis_rendered_hash = ? WHERE id = ?",
+            (_hash_text(analysis or "Write analysis here."), run_id),
+        )
+
+
+def _extract_analysis(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    match = re.search(
+        re.escape(ANALYSIS_START) + r"\n?(.*?)\n?" + re.escape(ANALYSIS_END),
+        path.read_text(encoding="utf-8"),
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _now_for_update() -> str:
+    from expnote.db import now_iso
+
+    return now_iso()
+
+
+def _moc_section_rows(
+    root: Path,
+    state_dir: Path | None,
+    moc_path: str,
+    section: str,
+) -> list[dict[str, Any]]:
+    with transaction(root, state_dir=state_dir) as conn:
+        return [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT
+                    moc_entries.id,
+                    moc_entries.moc_path,
+                    moc_entries.section,
+                    moc_entries.run_id,
+                    moc_entries.position,
+                    runs.purpose,
+                    runs.relation,
+                    runs.result,
+                    runs.status
+                FROM moc_entries
+                JOIN runs ON runs.id = moc_entries.run_id
+                WHERE
+                    moc_entries.moc_path = ?
+                    AND moc_entries.section = ?
+                    AND moc_entries.deleted_at IS NULL
+                    AND runs.deleted_at IS NULL
+                ORDER BY moc_entries.position ASC, moc_entries.created_at ASC
+                """,
+                (moc_path, section),
+            )
+        ]
+
+
+def _render_moc_table(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "| # | run | purpose | relation | result | status |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for index, row in enumerate(rows, start=1):
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(index),
+                    f"[[{row['run_id']}]]",
+                    _cell(row["purpose"]),
+                    _cell(row["relation"]),
+                    _cell(row["result"]),
+                    _cell(row["status"]),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _write_moc_section_table(path: Path, section: str, table: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    block = f"{MOC_TABLE_START}\n{table}{MOC_TABLE_END}"
+    if not content:
+        path.write_text(
+            f"# Experiment MOC\n\n## {section}\n\n{block}\n",
+            encoding="utf-8",
+        )
+        return
+
+    section_match = _find_h2_section(content, section)
+    if section_match is None:
+        updated = content.rstrip() + f"\n\n## {section}\n\n{block}\n"
+        path.write_text(updated, encoding="utf-8")
+        return
+
+    start, end = section_match
+    section_text = content[start:end]
+    marker_re = re.compile(
+        re.escape(MOC_TABLE_START) + r".*?" + re.escape(MOC_TABLE_END),
+        re.DOTALL,
+    )
+    if marker_re.search(section_text):
+        new_section = marker_re.sub(block, section_text, count=1)
+    else:
+        heading_end = section_text.find("\n") + 1
+        new_section = (
+            section_text[:heading_end]
+            + "\n"
+            + block
+            + "\n"
+            + section_text[heading_end:]
+        )
+    path.write_text(content[:start] + new_section + content[end:], encoding="utf-8")
+
+
+def _extract_moc_table(path: Path, section: str) -> str:
+    if not path.exists():
+        return ""
+    content = path.read_text(encoding="utf-8")
+    section_match = _find_h2_section(content, section)
+    if section_match is None:
+        return ""
+    section_text = content[section_match[0] : section_match[1]]
+    match = re.search(
+        re.escape(MOC_TABLE_START) + r"\n?(.*?)\n?" + re.escape(MOC_TABLE_END),
+        section_text,
+        re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
+def _find_h2_section(content: str, section: str) -> tuple[int, int] | None:
+    pattern = re.compile(rf"^##\s+{re.escape(section)}\s*$", re.MULTILINE)
+    match = pattern.search(content)
+    if match is None:
+        return None
+    next_match = re.search(r"^##\s+", content[match.end() :], re.MULTILINE)
+    end = len(content) if next_match is None else match.end() + next_match.start()
+    return match.start(), end
+
+
+def _run_ids_from_table(table: str) -> list[str]:
+    return re.findall(r"\[\[([^\]]+)\]\]", table)
 
 
 def _write_managed_file(path: Path, managed_content: str) -> None:

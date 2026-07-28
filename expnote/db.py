@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,8 @@ def now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def paths_for(root: Path) -> ExpnotePaths:
-    state_dir = root / ".expnote"
+def paths_for(root: Path, state_dir: Path | None = None) -> ExpnotePaths:
+    state_dir = state_dir or root / ".expnote"
     return ExpnotePaths(
         root=root,
         state_dir=state_dir,
@@ -37,17 +37,18 @@ def paths_for(root: Path) -> ExpnotePaths:
     )
 
 
-def connect(root: Path) -> sqlite3.Connection:
-    paths = paths_for(root)
+def connect(root: Path, state_dir: Path | None = None) -> sqlite3.Connection:
+    paths = paths_for(root, state_dir)
     conn = sqlite3.connect(paths.db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
     return conn
 
 
 @contextmanager
-def transaction(root: Path):
-    conn = connect(root)
+def transaction(root: Path, state_dir: Path | None = None):
+    conn = connect(root, state_dir)
     try:
         yield conn
         conn.commit()
@@ -61,11 +62,12 @@ def transaction(root: Path):
 def init_store(
     root: Path,
     *,
+    state_dir: Path | None = None,
     notes_dir: str,
     moc_path: str,
     project: str | None = None,
 ) -> None:
-    paths = paths_for(root)
+    paths = paths_for(root, state_dir)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     (root / notes_dir).mkdir(parents=True, exist_ok=True)
     if not paths.events_path.exists():
@@ -76,6 +78,8 @@ def init_store(
             "\n".join(
                 [
                     f'project = "{_toml_string(project_name)}"',
+                    f'root = "{_toml_string(str(root))}"',
+                    f'state_dir = "{_toml_string(str(paths.state_dir))}"',
                     f'notes_dir = "{_toml_string(notes_dir)}"',
                     f'moc_path = "{_toml_string(moc_path)}"',
                     "",
@@ -83,7 +87,7 @@ def init_store(
             ),
             encoding="utf-8",
         )
-    with transaction(root) as conn:
+    with transaction(root, state_dir=paths.state_dir) as conn:
         migrate(conn)
 
 
@@ -114,7 +118,21 @@ def migrate(conn: sqlite3.Connection) -> None:
             started_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             deleted_at TEXT,
+            analysis TEXT NOT NULL DEFAULT '',
+            analysis_rendered_hash TEXT NOT NULL DEFAULT '',
             metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS moc_entries (
+            id TEXT PRIMARY KEY,
+            moc_path TEXT NOT NULL,
+            section TEXT NOT NULL,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            position INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(moc_path, section, run_id)
         );
 
         CREATE TABLE IF NOT EXISTS relations (
@@ -138,14 +156,32 @@ def migrate(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _add_column_if_missing(conn, "runs", "analysis", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(
+        conn,
+        "runs",
+        "analysis_rendered_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
 
 
-def read_config(root: Path) -> dict[str, str]:
-    path = paths_for(root).config_path
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def read_config(root: Path, state_dir: Path | None = None) -> dict[str, str]:
+    path = paths_for(root, state_dir).config_path
     if not path.exists():
         raise FileNotFoundError(
             f"{path} does not exist. Run `expnote init` first."
@@ -160,8 +196,13 @@ def read_config(root: Path) -> dict[str, str]:
     return config
 
 
-def append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
-    paths = paths_for(root)
+def append_event(
+    root: Path,
+    event_type: str,
+    payload: dict[str, Any],
+    state_dir: Path | None = None,
+) -> None:
+    paths = paths_for(root, state_dir)
     record = {
         "id": uuid.uuid4().hex,
         "type": event_type,
@@ -172,10 +213,16 @@ def append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
         f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_dict(
+    row: sqlite3.Row,
+    *,
+    include_internal: bool = False,
+) -> dict[str, Any]:
     data = dict(row)
     if "metadata_json" in data:
         data["metadata"] = json.loads(data.pop("metadata_json") or "{}")
+    if not include_internal:
+        data.pop("analysis_rendered_hash", None)
     return data
 
 

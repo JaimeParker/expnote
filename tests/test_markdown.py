@@ -42,25 +42,23 @@ def _add_run(
     tmp_path: Path,
     run_id: str = "wandb123",
     purpose: str = "purpose",
+    analysis: str | None = None,
 ) -> None:
-    assert (
-        runner.invoke(
-            app,
-            [
-                "run",
-                "add",
-                "--root",
-                str(tmp_path),
-                "--topic",
-                "topic",
-                "--run-id",
-                run_id,
-                "--purpose",
-                purpose,
-            ],
-        ).exit_code
-        == 0
-    )
+    args = [
+        "run",
+        "add",
+        "--root",
+        str(tmp_path),
+        "--topic",
+        "topic",
+        "--run-id",
+        run_id,
+        "--purpose",
+        purpose,
+    ]
+    if analysis is not None:
+        args.extend(["--analysis", analysis])
+    assert runner.invoke(app, args).exit_code == 0
 
 
 def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_path):
@@ -87,6 +85,71 @@ def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_pat
     assert first == second
     assert "[[wandb123]]" in second
     assert "manual analysis" in note.read_text(encoding="utf-8")
+
+
+def test_markdown_sync_rejects_changed_analysis_without_policy(tmp_path):
+    _setup_workspace(tmp_path)
+    _add_run(tmp_path, analysis="initial analysis")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    note = tmp_path / "ManiSkill Training" / "wandb123.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "initial analysis", "human analysis"
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "--pull-analysis" in result.output
+    assert "--force" in result.output
+
+
+def test_markdown_sync_pull_analysis_updates_sql(tmp_path):
+    _setup_workspace(tmp_path)
+    _add_run(tmp_path, analysis="initial analysis")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    note = tmp_path / "ManiSkill Training" / "wandb123.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "initial analysis", "human analysis"
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["sync", "markdown", "--root", str(tmp_path), "--pull-analysis"]
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app, ["run", "show", "wandb123", "--root", str(tmp_path), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == "human analysis"
+
+
+def test_markdown_sync_force_overwrites_changed_analysis(tmp_path):
+    _setup_workspace(tmp_path)
+    _add_run(tmp_path, analysis="sql analysis")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    note = tmp_path / "ManiSkill Training" / "wandb123.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("sql analysis", "human analysis"),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["sync", "markdown", "--root", str(tmp_path), "--force"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert "sql analysis" in note.read_text(encoding="utf-8")
+    assert "human analysis" not in note.read_text(encoding="utf-8")
 
 
 def test_markdown_sync_preserves_moc_user_content_outside_managed_block(tmp_path):
@@ -140,6 +203,61 @@ def test_markdown_sync_supports_custom_chinese_paths(tmp_path):
     assert data["run_notes"] == 1
     assert (tmp_path / "10 Projects" / "实验 MOC.md").exists()
     assert (tmp_path / "10 Projects" / "实验 记录" / "cn123.md").exists()
+
+
+def test_markdown_sync_uses_external_state_dir_and_writes_to_root(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state"
+    common = ["--root", str(root), "--state-dir", str(state_dir)]
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            *common,
+            "--notes-dir",
+            "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs",
+            "--moc-path",
+            "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["topic", "add", "topic", *common])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            *common,
+            "--topic",
+            "topic",
+            "--run-id",
+            "nzn5efly",
+            "--purpose",
+            "StackCube repro",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["sync", "markdown", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+
+    assert data["run_notes"] == 1
+    assert (state_dir / "expnote.sqlite").exists()
+    assert not (root / ".expnote").exists()
+    assert (
+        root / "10 Projects" / "AI Lab RFT 项目" / "ManiSkill Training MOC.md"
+    ).exists()
+    assert (
+        root
+        / "10 Projects"
+        / "AI Lab RFT 项目"
+        / "ManiSkill Training"
+        / "runs"
+        / "nzn5efly.md"
+    ).exists()
 
 
 def test_markdown_sync_omits_soft_deleted_runs_from_moc(tmp_path):

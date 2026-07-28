@@ -18,13 +18,14 @@ from expnote.db import (
     row_to_dict,
     transaction,
 )
-from expnote.markdown import sync_markdown
+from expnote.markdown import diff_moc_section, sync_markdown, sync_moc_section
 
 app = typer.Typer(help="Local-first experiment notes.")
 topic_app = typer.Typer(help="Manage experiment topics.")
 run_app = typer.Typer(help="Manage experiment runs.")
 relation_app = typer.Typer(help="Manage run relations.")
 artifact_app = typer.Typer(help="Manage run artifacts.")
+moc_app = typer.Typer(help="Manage MOC section tables.")
 sync_app = typer.Typer(help="Sync projections.")
 import_app = typer.Typer(help="Import external metadata.")
 
@@ -32,13 +33,21 @@ app.add_typer(topic_app, name="topic")
 app.add_typer(run_app, name="run")
 app.add_typer(relation_app, name="relation")
 app.add_typer(artifact_app, name="artifact")
+app.add_typer(moc_app, name="moc")
 app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
 
 
 RootOption = Annotated[
     Path,
-    typer.Option("--root", "-r", help="Experiment workspace root."),
+    typer.Option("--root", "-r", help="Markdown workspace root."),
+]
+StateDirOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--state-dir",
+        help="Directory for expnote.sqlite, events.jsonl, and config.toml.",
+    ),
 ]
 
 
@@ -63,6 +72,7 @@ def _topic_id(conn: sqlite3.Connection, title: str) -> str:
 @app.command()
 def init(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     notes_dir: Annotated[
         str, typer.Option(help="Directory for run notes.")
     ] = "notes/runs",
@@ -74,14 +84,32 @@ def init(
 ) -> None:
     """Initialize an expnote workspace."""
     root = root.resolve()
-    init_store(root, notes_dir=notes_dir, moc_path=moc_path, project=project)
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    init_store(
+        root,
+        state_dir=state_dir,
+        notes_dir=notes_dir,
+        moc_path=moc_path,
+        project=project,
+    )
     append_event(
         root,
         "init",
-        {"root": str(root), "notes_dir": notes_dir, "moc_path": moc_path},
+        {
+            "root": str(root),
+            "state_dir": str(state_dir or root / ".expnote"),
+            "notes_dir": notes_dir,
+            "moc_path": moc_path,
+        },
+        state_dir=state_dir,
     )
     _emit(
-        {"root": str(root), "notes_dir": notes_dir, "moc_path": moc_path},
+        {
+            "root": str(root),
+            "state_dir": str(state_dir or root / ".expnote"),
+            "notes_dir": notes_dir,
+            "moc_path": moc_path,
+        },
         json_output,
     )
 
@@ -90,12 +118,15 @@ def init(
 def topic_add(
     title: Annotated[str, typer.Argument(help="Topic title.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     summary: Annotated[str, typer.Option(help="Short topic summary.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     topic_id = new_id("topic")
-    with transaction(root.resolve()) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             """
             INSERT INTO topics(id, title, summary, created_at, updated_at)
@@ -104,20 +135,23 @@ def topic_add(
             (topic_id, title, summary, ts, ts),
         )
     payload = {"id": topic_id, "title": title, "summary": summary}
-    append_event(root.resolve(), "topic.add", payload)
+    append_event(root, "topic.add", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
 @topic_app.command("list")
 def topic_list(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     include_deleted: Annotated[
         bool, typer.Option(help="Include soft-deleted rows.")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     where = "" if include_deleted else "WHERE deleted_at IS NULL"
-    with transaction(root.resolve()) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -131,13 +165,15 @@ def topic_list(
 def topic_update(
     title: Annotated[str, typer.Argument(help="Existing topic title.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     new_title: Annotated[str | None, typer.Option(help="New title.")] = None,
     summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, title)
         if new_title is not None:
             conn.execute(
@@ -151,7 +187,7 @@ def topic_update(
             )
         row = conn.execute("SELECT * FROM topics WHERE id = ?", (tid,)).fetchone()
     data = row_to_dict(row)
-    append_event(root, "topic.update", data)
+    append_event(root, "topic.update", data, state_dir=state_dir)
     _emit(data, json_output)
 
 
@@ -159,18 +195,20 @@ def topic_update(
 def topic_delete(
     title: Annotated[str, typer.Argument(help="Topic title.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, title)
         conn.execute(
             "UPDATE topics SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (ts, ts, tid),
         )
     payload = {"title": title, "deleted_at": ts}
-    append_event(root, "topic.delete", payload)
+    append_event(root, "topic.delete", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
@@ -179,9 +217,11 @@ def run_add(
     run_id: Annotated[str, typer.Option("--run-id", help="Stable run id.")],
     topic: Annotated[str, typer.Option(help="Topic title.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     purpose: Annotated[str, typer.Option(help="Short run purpose.")] = "",
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
+    analysis: Annotated[str, typer.Option(help="Run analysis.")] = "",
     status: Annotated[str, typer.Option(help="Run status.")] = "running",
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value.")
@@ -189,14 +229,17 @@ def run_add(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     metadata = parse_meta(meta or [])
     data = _insert_run(
         root,
+        state_dir=state_dir,
         run_id=run_id,
         topic=topic,
         purpose=purpose,
         relation=relation,
         result=result,
+        analysis=analysis,
         status=status,
         metadata=metadata,
     )
@@ -206,24 +249,26 @@ def run_add(
 def _insert_run(
     root: Path,
     *,
+    state_dir: Path | None = None,
     run_id: str,
     topic: str,
     purpose: str,
     relation: str,
     result: str,
+    analysis: str,
     status: str,
     metadata: dict[str, str],
 ) -> dict[str, object]:
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, topic)
         conn.execute(
             """
             INSERT INTO runs(
                 id, topic_id, purpose, relation, result, status,
-                started_at, updated_at, metadata_json
+                started_at, updated_at, analysis, metadata_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -234,18 +279,20 @@ def _insert_run(
                 status,
                 ts,
                 ts,
+                analysis,
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True),
             ),
         )
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     data = row_to_dict(row)
-    append_event(root, "run.add", data)
+    append_event(root, "run.add", data, state_dir=state_dir)
     return data
 
 
 @run_app.command("list")
 def run_list(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     topic: Annotated[
         str | None, typer.Option(help="Filter by topic title.")
     ] = None,
@@ -255,6 +302,7 @@ def run_list(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     params: list[object] = []
     clauses = []
     if not include_deleted:
@@ -263,7 +311,7 @@ def run_list(
         clauses.append("topics.title = ?")
         params.append(topic)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -283,9 +331,12 @@ def run_list(
 def run_show(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    with transaction(root.resolve()) as conn:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute(
             """
             SELECT runs.*, topics.title AS topic_title
@@ -303,9 +354,11 @@ def run_show(
 def run_update(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     purpose: Annotated[str | None, typer.Option(help="New purpose.")] = None,
     relation: Annotated[str | None, typer.Option(help="New relation.")] = None,
     result: Annotated[str | None, typer.Option(help="New result.")] = None,
+    analysis: Annotated[str | None, typer.Option(help="New analysis.")] = None,
     status: Annotated[str | None, typer.Option(help="New status.")] = None,
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value to merge.")
@@ -313,14 +366,16 @@ def run_update(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     updates = {
         "purpose": purpose,
         "relation": relation,
         "result": result,
+        "analysis": analysis,
         "status": status,
     }
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             raise typer.BadParameter(f"run not found: {run_id}")
@@ -339,7 +394,7 @@ def run_update(
             )
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     data = row_to_dict(row)
-    append_event(root, "run.update", data)
+    append_event(root, "run.update", data, state_dir=state_dir)
     _emit(data, json_output)
 
 
@@ -347,23 +402,26 @@ def run_update(
 def run_delete(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             "UPDATE runs SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (ts, ts, run_id),
         )
     payload = {"id": run_id, "deleted_at": ts}
-    append_event(root, "run.delete", payload)
+    append_event(root, "run.delete", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
 @run_app.command("query")
 def run_query(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     where: Annotated[
         str, typer.Option(help="Restricted SQL-like WHERE expression.")
     ] = "1 = 1",
@@ -373,9 +431,11 @@ def run_query(
     limit: Annotated[int, typer.Option(help="Max rows.")] = 50,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     where_sql, where_params = _compile_run_where(where)
     order_sql = _compile_run_order_by(order_by)
-    with transaction(root.resolve()) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -398,13 +458,15 @@ def relation_add(
     dst_run_id: Annotated[str, typer.Argument(help="Destination run id.")],
     kind: Annotated[str, typer.Option(help="Relation kind.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     note: Annotated[str, typer.Option(help="Relation note.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     rid = new_id("rel")
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             """
             INSERT INTO relations(id, src_run_id, dst_run_id, kind, note, created_at)
@@ -418,7 +480,7 @@ def relation_add(
         "dst_run_id": dst_run_id,
         "kind": kind,
     }
-    append_event(root, "relation.add", payload)
+    append_event(root, "relation.add", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
@@ -426,17 +488,19 @@ def relation_add(
 def relation_delete(
     relation_id: Annotated[str, typer.Argument(help="Relation id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             "UPDATE relations SET deleted_at = ? WHERE id = ?",
             (ts, relation_id),
         )
     payload = {"id": relation_id, "deleted_at": ts}
-    append_event(root, "relation.delete", payload)
+    append_event(root, "relation.delete", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
@@ -446,13 +510,15 @@ def artifact_add(
     uri: Annotated[str, typer.Argument(help="Artifact URI or path.")],
     kind: Annotated[str, typer.Option(help="Artifact kind.")] = "file",
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     note: Annotated[str, typer.Option(help="Artifact note.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     aid = new_id("art")
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             """
             INSERT INTO artifacts(id, run_id, kind, uri, note, created_at)
@@ -461,7 +527,7 @@ def artifact_add(
             (aid, run_id, kind, uri, note, ts),
         )
     payload = {"id": aid, "run_id": run_id, "kind": kind, "uri": uri}
-    append_event(root, "artifact.add", payload)
+    append_event(root, "artifact.add", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
 
@@ -469,9 +535,12 @@ def artifact_add(
 def artifact_list(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    with transaction(root.resolve()) as conn:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -490,36 +559,251 @@ def artifact_list(
 def artifact_delete(
     artifact_id: Annotated[str, typer.Argument(help="Artifact id.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
-    with transaction(root) as conn:
+    with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
             "UPDATE artifacts SET deleted_at = ? WHERE id = ?",
             (ts, artifact_id),
         )
     payload = {"id": artifact_id, "deleted_at": ts}
-    append_event(root, "artifact.delete", payload)
+    append_event(root, "artifact.delete", payload, state_dir=state_dir)
     _emit(payload, json_output)
+
+
+@moc_app.command("add")
+def moc_add(
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_run(conn, run_id)
+        position = _next_moc_position(conn, moc_path, section)
+        entry_id = new_id("moc")
+        conn.execute(
+            """
+            INSERT INTO moc_entries(
+                id, moc_path, section, run_id, position,
+                created_at, updated_at, deleted_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(moc_path, section, run_id) DO UPDATE SET
+                position = excluded.position,
+                updated_at = excluded.updated_at,
+                deleted_at = NULL
+            """,
+            (entry_id, moc_path, section, run_id, position, ts, ts),
+        )
+    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    payload = {
+        "moc_path": moc_path,
+        "section": section,
+        "run_id": run_id,
+        "position": position,
+    }
+    append_event(root, "moc.add", payload, state_dir=state_dir)
+    _emit({**payload, "sync": sync_result}, json_output)
+
+
+@moc_app.command("remove")
+def moc_remove(
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            """
+            UPDATE moc_entries
+            SET deleted_at = ?, updated_at = ?
+            WHERE moc_path = ? AND section = ? AND run_id = ?
+            """,
+            (ts, ts, moc_path, section, run_id),
+        )
+    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    payload = {"moc_path": moc_path, "section": section, "run_id": run_id}
+    append_event(root, "moc.remove", payload, state_dir=state_dir)
+    _emit({**payload, "sync": sync_result}, json_output)
+
+
+@moc_app.command("update")
+def moc_update(
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    position: Annotated[int, typer.Option(help="New table position.")] = 1,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            """
+            UPDATE moc_entries
+            SET position = ?, updated_at = ?
+            WHERE
+                moc_path = ?
+                AND section = ?
+                AND run_id = ?
+                AND deleted_at IS NULL
+            """,
+            (position, ts, moc_path, section, run_id),
+        )
+    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    payload = {
+        "moc_path": moc_path,
+        "section": section,
+        "run_id": run_id,
+        "position": position,
+    }
+    append_event(root, "moc.update", payload, state_dir=state_dir)
+    _emit({**payload, "sync": sync_result}, json_output)
+
+
+@moc_app.command("list")
+def moc_list(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[
+        str | None, typer.Option(help="MOC level-two heading.")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path:
+        raise typer.BadParameter("--moc-path is required")
+    params: list[object] = [moc_path]
+    section_clause = ""
+    if section is not None:
+        section_clause = "AND moc_entries.section = ?"
+        params.append(section)
+    with transaction(root, state_dir=state_dir) as conn:
+        rows = [
+            row_to_dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT
+                    moc_entries.*,
+                    runs.purpose,
+                    runs.relation,
+                    runs.result,
+                    runs.status
+                FROM moc_entries
+                JOIN runs ON runs.id = moc_entries.run_id
+                WHERE
+                    moc_entries.moc_path = ?
+                    {section_clause}
+                    AND moc_entries.deleted_at IS NULL
+                    AND runs.deleted_at IS NULL
+                ORDER BY
+                    moc_entries.section ASC,
+                    moc_entries.position ASC,
+                    moc_entries.created_at ASC
+                """,
+                params,
+            )
+        ]
+    _emit(rows, json_output)
+
+
+@moc_app.command("diff")
+def moc_diff(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    result = diff_moc_section(root, state_dir, moc_path, section)
+    if json_output:
+        _emit(result, True)
+    else:
+        _emit(_format_moc_diff(result), False)
+
+
+@moc_app.command("sync")
+def moc_sync(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    result = sync_moc_section(root, state_dir, moc_path, section)
+    _emit(result, json_output)
 
 
 @sync_app.command("markdown")
 def sync_markdown_command(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    pull_analysis: Annotated[
+        bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite changed run note Analysis.")
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    result = sync_markdown(root.resolve())
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    try:
+        result = sync_markdown(
+            root,
+            state_dir=state_dir,
+            pull_analysis=pull_analysis,
+            force=force,
+        )
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     _emit(result, json_output)
 
 
 @app.command()
 def validate(
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
-    with transaction(root) as conn:
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    with transaction(root, state_dir=state_dir) as conn:
         counts = {
             "topics": _count_active(conn, "topics"),
             "runs": _count_active(conn, "runs"),
@@ -536,21 +820,26 @@ def import_rlgarden(
     ],
     topic: Annotated[str, typer.Option(help="Topic title.")],
     root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
     status: Annotated[str, typer.Option(help="Initial status.")] = "running",
     purpose: Annotated[str | None, typer.Option(help="Override purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
+    analysis: Annotated[str, typer.Option(help="Initial analysis.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
     fields = run_fields_from_config(load_config(config_path))
     data = _insert_run(
         root,
+        state_dir=state_dir,
         run_id=fields["run_id"],
         topic=topic,
         purpose=purpose if purpose is not None else fields["purpose"],
         relation=relation,
         result=result,
+        analysis=analysis,
         status=status,
         metadata=fields["metadata"],
     )
@@ -558,6 +847,7 @@ def import_rlgarden(
         root,
         "import.rlgarden",
         {"config_path": str(config_path), "run": data},
+        state_dir=state_dir,
     )
     _emit(data, json_output)
 
@@ -567,6 +857,7 @@ _RUN_QUERY_FIELDS = {
     "purpose": "runs.purpose",
     "relation": "runs.relation",
     "result": "runs.result",
+    "analysis": "runs.analysis",
     "status": "runs.status",
     "started_at": "runs.started_at",
     "updated_at": "runs.updated_at",
@@ -630,6 +921,38 @@ def _parse_query_literal(value: str) -> object:
     if value.startswith("'") and value.endswith("'"):
         return value[1:-1].replace("''", "'")
     return int(value)
+
+
+def _require_run(conn: sqlite3.Connection, run_id: str) -> None:
+    row = conn.execute(
+        "SELECT id FROM runs WHERE id = ? AND deleted_at IS NULL", (run_id,)
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"run not found: {run_id}")
+
+
+def _next_moc_position(conn: sqlite3.Connection, moc_path: str, section: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(position), 0) + 1
+        FROM moc_entries
+        WHERE moc_path = ? AND section = ? AND deleted_at IS NULL
+        """,
+        (moc_path, section),
+    ).fetchone()
+    return int(row[0])
+
+
+def _format_moc_diff(result: dict[str, object]) -> str:
+    lines = [
+        f"MOC: {result['moc_path']}",
+        f"Section: {result['section']}",
+        f"Changed: {result['changed']}",
+    ]
+    for key in ["missing", "stale", "expected", "observed"]:
+        values = result[key]
+        lines.append(f"{key}: {', '.join(values) if values else '-'}")
+    return "\n".join(lines)
 
 
 def _count_active(conn: sqlite3.Connection, table: str) -> int:
