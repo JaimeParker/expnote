@@ -607,6 +607,7 @@ def moc_add(
             """,
             (entry_id, moc_path, section, run_id, position, ts, ts),
         )
+        _normalize_moc_positions(conn, moc_path, section, ts)
     sync_result = sync_moc_section(root, state_dir, moc_path, section)
     payload = {
         "moc_path": moc_path,
@@ -641,6 +642,7 @@ def moc_remove(
             """,
             (ts, ts, moc_path, section, run_id),
         )
+        _normalize_moc_positions(conn, moc_path, section, ts)
     sync_result = sync_moc_section(root, state_dir, moc_path, section)
     payload = {"moc_path": moc_path, "section": section, "run_id": run_id}
     append_event(root, "moc.remove", payload, state_dir=state_dir)
@@ -663,18 +665,7 @@ def moc_update(
         raise typer.BadParameter("--moc-path and --section are required")
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        conn.execute(
-            """
-            UPDATE moc_entries
-            SET position = ?, updated_at = ?
-            WHERE
-                moc_path = ?
-                AND section = ?
-                AND run_id = ?
-                AND deleted_at IS NULL
-            """,
-            (position, ts, moc_path, section, run_id),
-        )
+        _move_moc_entry(conn, moc_path, section, run_id, position, ts)
     sync_result = sync_moc_section(root, state_dir, moc_path, section)
     payload = {
         "moc_path": moc_path,
@@ -941,6 +932,65 @@ def _next_moc_position(conn: sqlite3.Connection, moc_path: str, section: str) ->
         (moc_path, section),
     ).fetchone()
     return int(row[0])
+
+
+def _move_moc_entry(
+    conn: sqlite3.Connection,
+    moc_path: str,
+    section: str,
+    run_id: str,
+    position: int,
+    ts: str,
+) -> None:
+    entries = _active_moc_entries(conn, moc_path, section)
+    target = next((entry for entry in entries if entry["run_id"] == run_id), None)
+    if target is None:
+        raise typer.BadParameter(f"MOC entry not found: {run_id}")
+
+    entries = [entry for entry in entries if entry["run_id"] != run_id]
+    insert_at = min(max(position, 1), len(entries) + 1) - 1
+    entries.insert(insert_at, target)
+    _write_moc_positions(conn, entries, ts)
+
+
+def _normalize_moc_positions(
+    conn: sqlite3.Connection,
+    moc_path: str,
+    section: str,
+    ts: str,
+) -> None:
+    _write_moc_positions(conn, _active_moc_entries(conn, moc_path, section), ts)
+
+
+def _active_moc_entries(
+    conn: sqlite3.Connection,
+    moc_path: str,
+    section: str,
+) -> list[sqlite3.Row]:
+    return [
+        row
+        for row in conn.execute(
+            """
+            SELECT id, run_id
+            FROM moc_entries
+            WHERE moc_path = ? AND section = ? AND deleted_at IS NULL
+            ORDER BY position ASC, created_at ASC
+            """,
+            (moc_path, section),
+        )
+    ]
+
+
+def _write_moc_positions(
+    conn: sqlite3.Connection,
+    entries: list[sqlite3.Row],
+    ts: str,
+) -> None:
+    for index, entry in enumerate(entries, start=1):
+        conn.execute(
+            "UPDATE moc_entries SET position = ?, updated_at = ? WHERE id = ?",
+            (index, ts, entry["id"]),
+        )
 
 
 def _format_moc_diff(result: dict[str, object]) -> str:

@@ -59,6 +59,33 @@ def _events(tmp_path: Path) -> list[dict[str, object]]:
     ]
 
 
+def _moc_rows(tmp_path: Path, moc_path: str, section: str) -> list[dict[str, object]]:
+    conn = sqlite3.connect(tmp_path / ".expnote" / "expnote.sqlite")
+    conn.row_factory = sqlite3.Row
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT run_id, position
+                FROM moc_entries
+                WHERE moc_path = ? AND section = ? AND deleted_at IS NULL
+                ORDER BY position ASC, created_at ASC
+                """,
+                (moc_path, section),
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _moc_table_ids(path: Path) -> list[str]:
+    return [
+        part.split("]]", 1)[0]
+        for part in path.read_text(encoding="utf-8").split("[[")[1:]
+    ]
+
+
 def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state" / "mani-skill-training"
@@ -690,6 +717,71 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "[[moc1]]" not in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+
+def test_moc_update_normalizes_positions(tmp_path):
+    _init_with_topic(tmp_path)
+    for run_id in ["a", "b", "c"]:
+        _add_run(tmp_path, run_id, purpose=f"purpose {run_id}")
+    moc_path = "Inbox/Test MOC.md"
+    common = [
+        "--root",
+        str(tmp_path),
+        "--moc-path",
+        moc_path,
+        "--section",
+        "StackCube",
+    ]
+
+    for run_id in ["a", "b", "c"]:
+        result = runner.invoke(app, ["moc", "add", run_id, *common, "--json"])
+        assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["moc", "list", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert [row["run_id"] for row in rows] == ["a", "b", "c"]
+    assert [row["position"] for row in rows] == [1, 2, 3]
+
+    result = runner.invoke(
+        app,
+        ["moc", "update", "c", *common, "--position", "1", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    rows = _moc_rows(tmp_path, moc_path, "StackCube")
+    assert [row["run_id"] for row in rows] == ["c", "a", "b"]
+    assert [row["position"] for row in rows] == [1, 2, 3]
+    assert _moc_table_ids(tmp_path / moc_path) == ["c", "a", "b"]
+
+    result = runner.invoke(
+        app,
+        ["moc", "update", "a", *common, "--position", "99", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    rows = _moc_rows(tmp_path, moc_path, "StackCube")
+    assert [row["run_id"] for row in rows] == ["c", "b", "a"]
+    assert [row["position"] for row in rows] == [1, 2, 3]
+
+    result = runner.invoke(
+        app,
+        ["moc", "update", "a", *common, "--position", "0", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    rows = _moc_rows(tmp_path, moc_path, "StackCube")
+    assert [row["run_id"] for row in rows] == ["a", "c", "b"]
+    assert [row["position"] for row in rows] == [1, 2, 3]
+
+    result = runner.invoke(app, ["moc", "remove", "c", *common, "--json"])
+    assert result.exit_code == 0, result.output
+    rows = _moc_rows(tmp_path, moc_path, "StackCube")
+    assert [row["run_id"] for row in rows] == ["a", "b"]
+    assert [row["position"] for row in rows] == [1, 2]
+
+    result = runner.invoke(
+        app,
+        ["moc", "update", "missing", *common, "--position", "1", "--json"],
+    )
+    assert result.exit_code != 0
 
 
 def test_moc_diff_reports_manual_table_changes(tmp_path):
