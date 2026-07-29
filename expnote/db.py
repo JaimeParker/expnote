@@ -64,7 +64,8 @@ def init_store(
     *,
     state_dir: Path | None = None,
     notes_dir: str,
-    moc_path: str,
+    index_path: str,
+    moc_path: str | None = None,
     project: str | None = None,
 ) -> None:
     paths = paths_for(root, state_dir)
@@ -81,7 +82,11 @@ def init_store(
                     f'root = "{_toml_string(str(root))}"',
                     f'state_dir = "{_toml_string(str(paths.state_dir))}"',
                     f'notes_dir = "{_toml_string(notes_dir)}"',
-                    f'moc_path = "{_toml_string(moc_path)}"',
+                    (
+                        f'moc_path = "{_toml_string(moc_path)}"'
+                        if moc_path is not None
+                        else f'index_path = "{_toml_string(index_path)}"'
+                    ),
                     "",
                 ]
             ),

@@ -23,7 +23,6 @@ Cyber Brain/
 expnote init \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
   --root "/home/user/Documents/Cyber Brain" \
-  --index-path "10 Projects/Robot Learning/runs/_expnote-index.md" \
   --notes-dir "10 Projects/Robot Learning/runs"
 
 expnote topic add "StackCube SAC" \

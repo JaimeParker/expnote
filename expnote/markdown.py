@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from expnote.db import read_config, row_to_dict, transaction
+from expnote.db import paths_for, read_config, row_to_dict, transaction
 
 MANAGED_START = "<!-- expnote:managed:start -->"
 MANAGED_END = "<!-- expnote:managed:end -->"
@@ -25,10 +25,10 @@ def sync_markdown(
 ) -> dict[str, Any]:
     config = read_config(root, state_dir=state_dir)
     notes_dir = root / config["notes_dir"]
-    moc_path = root / config["moc_path"]
+    index_path = _auto_index_path(root, state_dir, config)
     notes_dir.mkdir(parents=True, exist_ok=True)
-    moc_path.parent.mkdir(parents=True, exist_ok=True)
-    _ensure_auto_index_target(moc_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auto_index_target(index_path)
 
     with transaction(root, state_dir=state_dir) as conn:
         topics = [
@@ -56,7 +56,7 @@ def sync_markdown(
             ]
 
     moc_content = _render_moc(topics, runs_by_topic)
-    _write_managed_file(moc_path, moc_content)
+    _write_managed_file(index_path, moc_content)
 
     written_runs = 0
     pulled_analysis = 0
@@ -78,7 +78,8 @@ def sync_markdown(
             written_runs += 1
 
     return {
-        "moc": str(moc_path),
+        "index": str(index_path),
+        "moc": str(index_path),
         "run_notes": written_runs,
         "pulled_analysis": pulled_analysis,
     }
@@ -214,7 +215,7 @@ def projection_conflicts(
 ) -> list[dict[str, str]]:
     conflicts = []
     config = read_config(root, state_dir=state_dir)
-    auto_index = root / config["moc_path"]
+    auto_index = _auto_index_path(root, state_dir, config)
     conflicts.extend(_auto_index_conflicts(auto_index))
     with transaction(root, state_dir=state_dir) as conn:
         moc_paths = [
@@ -234,6 +235,16 @@ def projection_conflicts(
 
 def ensure_curated_moc_target(path: Path) -> None:
     _ensure_curated_moc_target(path)
+
+
+def _auto_index_path(
+    root: Path,
+    state_dir: Path | None,
+    config: dict[str, str],
+) -> Path:
+    if "index_path" in config:
+        return paths_for(root, state_dir).state_dir / config["index_path"]
+    return root / config["moc_path"]
 
 
 def _resolve_analysis(

@@ -111,13 +111,13 @@ _AGENT_GUIDE = {
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
         "moc_tables": "Managed MOC tables should be repaired with moc sync",
         "projection_paths": (
-            "init --index-path and moc --moc-path must not target the same file"
+            "auto index defaults to state-dir/index.md; curated MOCs use moc --moc-path"
         ),
     },
     "examples": {
         "init": (
             "expnote init --root <vault> --state-dir <state> "
-            "--index-path <runs-dir>/_expnote-index.md --notes-dir <runs-dir>"
+            "--notes-dir <runs-dir>"
         ),
         "create_run": (
             "expnote run add --root <vault> --state-dir <state> "
@@ -176,7 +176,7 @@ def _render_agent_guide() -> str:
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
             "- Check managed MOC tables with expnote moc diff --json",
-            "- Keep init --index-path separate from moc --moc-path",
+            "- Auto index defaults to state-dir/index.md, outside Obsidian",
             "",
             "Handoff checks:",
             "expnote validate --json",
@@ -212,14 +212,20 @@ def init(
     notes_dir: Annotated[
         str, typer.Option(help="Directory for run notes.")
     ] = "notes/runs",
-    moc_path: Annotated[
+    index_path: Annotated[
         str,
         typer.Option(
-            "--moc-path",
             "--index-path",
-            help="Generated auto-index path for sync markdown.",
+            help="Generated auto-index path relative to state-dir.",
         ),
-    ] = "notes/experiments.md",
+    ] = "index.md",
+    moc_path: Annotated[
+        str | None,
+        typer.Option(
+            "--moc-path",
+            help="Legacy generated auto-index path relative to root.",
+        ),
+    ] = None,
     project: Annotated[str | None, typer.Option(help="Project name.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -230,9 +236,11 @@ def init(
         root,
         state_dir=state_dir,
         notes_dir=notes_dir,
+        index_path=index_path,
         moc_path=moc_path,
         project=project,
     )
+    output_index_path = moc_path or index_path
     append_event(
         root,
         "init",
@@ -240,8 +248,8 @@ def init(
             "root": str(root),
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
-            "moc_path": moc_path,
-            "index_path": moc_path,
+            "index_path": output_index_path,
+            "index_scope": "root" if moc_path is not None else "state_dir",
         },
         state_dir=state_dir,
     )
@@ -250,8 +258,8 @@ def init(
             "root": str(root),
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
-            "moc_path": moc_path,
-            "index_path": moc_path,
+            "index_path": output_index_path,
+            "index_scope": "root" if moc_path is not None else "state_dir",
         },
         json_output,
     )

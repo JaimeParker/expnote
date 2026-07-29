@@ -379,6 +379,62 @@ def test_markdown_sync_uses_external_state_dir_and_writes_to_root(tmp_path):
     ).exists()
 
 
+def test_markdown_sync_writes_default_auto_index_to_state_dir(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state"
+    common = ["--root", str(root), "--state-dir", str(state_dir)]
+
+    result = runner.invoke(app, ["init", *common, "--notes-dir", "runs", "--json"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["topic", "add", "topic", *common])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            *common,
+            "--topic",
+            "topic",
+            "--run-id",
+            "run1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["sync", "markdown", *common, "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["index"] == str(state_dir / "index.md")
+    assert (state_dir / "index.md").exists()
+    assert (root / "runs" / "run1.md").exists()
+    assert not (root / "runs" / "_expnote-index.md").exists()
+
+
+def test_markdown_sync_writes_custom_auto_index_to_state_dir(tmp_path):
+    root = tmp_path / "vault"
+    state_dir = tmp_path / "state"
+    common = ["--root", str(root), "--state-dir", str(state_dir)]
+
+    result = runner.invoke(
+        app, ["init", *common, "--index-path", "debug/index.md", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["topic", "add", "topic", *common])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app, ["run", "add", *common, "--topic", "topic", "--run-id", "run1"]
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["sync", "markdown", *common, "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["index"] == str(state_dir / "debug" / "index.md")
+    assert (state_dir / "debug" / "index.md").exists()
+
+
 def test_markdown_sync_omits_soft_deleted_runs_from_moc(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, run_id="deleted")

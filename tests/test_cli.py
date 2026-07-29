@@ -152,27 +152,34 @@ def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     config = (state_dir / "config.toml").read_text(encoding="utf-8")
     assert f'root = "{root.resolve()}"' in config
     assert f'state_dir = "{state_dir.resolve()}"' in config
+    assert (
+        'moc_path = "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md"'
+        in config
+    )
 
 
 def test_init_supports_index_path_alias(tmp_path):
+    state_dir = tmp_path / "state"
     result = runner.invoke(
         app,
         [
             "init",
             "--root",
             str(tmp_path),
+            "--state-dir",
+            str(state_dir),
             "--index-path",
-            "runs/_expnote-index.md",
+            "custom-index.md",
             "--json",
         ],
     )
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data["moc_path"] == "runs/_expnote-index.md"
-    assert data["index_path"] == "runs/_expnote-index.md"
-    config = (tmp_path / ".expnote" / "config.toml").read_text(encoding="utf-8")
-    assert 'moc_path = "runs/_expnote-index.md"' in config
+    assert data["index_path"] == "custom-index.md"
+    assert data["index_scope"] == "state_dir"
+    config = (state_dir / "config.toml").read_text(encoding="utf-8")
+    assert 'index_path = "custom-index.md"' in config
 
 
 def test_existing_schema_migrates_on_cli_use(tmp_path):
@@ -283,7 +290,19 @@ def test_external_state_dir_supports_cli_workflow(tmp_path):
 
 
 def test_validate_reports_projection_conflicts(tmp_path):
-    _init_with_topic(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            "notes/experiments.md",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["topic", "add", "topic", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
     _add_run(tmp_path, "run1")
     result = runner.invoke(
         app,
