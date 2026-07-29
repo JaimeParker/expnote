@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -19,7 +19,13 @@ from expnote.db import (
     row_to_dict,
     transaction,
 )
-from expnote.markdown import diff_moc_section, sync_markdown, sync_moc_section
+from expnote.markdown import (
+    diff_moc_section,
+    ensure_curated_moc_target,
+    projection_conflicts,
+    sync_markdown,
+    sync_moc_section,
+)
 
 app = typer.Typer(help="Local-first experiment notes.")
 topic_app = typer.Typer(help="Manage experiment topics.")
@@ -104,11 +110,14 @@ _AGENT_GUIDE = {
         ),
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
         "moc_tables": "Managed MOC tables should be repaired with moc sync",
+        "projection_paths": (
+            "init --index-path and moc --moc-path must not target the same file"
+        ),
     },
     "examples": {
         "init": (
             "expnote init --root <vault> --state-dir <state> "
-            "--moc-path <moc.md> --notes-dir <runs-dir>"
+            "--index-path <runs-dir>/_expnote-index.md --notes-dir <runs-dir>"
         ),
         "create_run": (
             "expnote run add --root <vault> --state-dir <state> "
@@ -167,6 +176,7 @@ def _render_agent_guide() -> str:
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
             "- Check managed MOC tables with expnote moc diff --json",
+            "- Keep init --index-path separate from moc --moc-path",
             "",
             "Handoff checks:",
             "expnote validate --json",
@@ -203,7 +213,12 @@ def init(
         str, typer.Option(help="Directory for run notes.")
     ] = "notes/runs",
     moc_path: Annotated[
-        str, typer.Option(help="Markdown MOC path.")
+        str,
+        typer.Option(
+            "--moc-path",
+            "--index-path",
+            help="Generated auto-index path for sync markdown.",
+        ),
     ] = "notes/experiments.md",
     project: Annotated[str | None, typer.Option(help="Project name.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
@@ -226,6 +241,7 @@ def init(
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
             "moc_path": moc_path,
+            "index_path": moc_path,
         },
         state_dir=state_dir,
     )
@@ -235,6 +251,7 @@ def init(
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
             "moc_path": moc_path,
+            "index_path": moc_path,
         },
         json_output,
     )
@@ -735,7 +752,9 @@ def moc_add(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -743,6 +762,7 @@ def moc_add(
     state_dir = state_dir.resolve() if state_dir is not None else None
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
+    _preflight_moc_section_target(root, moc_path)
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _require_run(conn, run_id)
@@ -763,7 +783,7 @@ def moc_add(
             (entry_id, moc_path, section, run_id, position, ts, ts),
         )
         _normalize_moc_positions(conn, moc_path, section, ts)
-    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    sync_result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     payload = {
         "moc_path": moc_path,
         "section": section,
@@ -779,7 +799,9 @@ def moc_remove(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -787,6 +809,7 @@ def moc_remove(
     state_dir = state_dir.resolve() if state_dir is not None else None
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
+    _preflight_moc_section_target(root, moc_path)
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
@@ -798,7 +821,7 @@ def moc_remove(
             (ts, ts, moc_path, section, run_id),
         )
         _normalize_moc_positions(conn, moc_path, section, ts)
-    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    sync_result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     payload = {"moc_path": moc_path, "section": section, "run_id": run_id}
     append_event(root, "moc.remove", payload, state_dir=state_dir)
     _emit({**payload, "sync": sync_result}, json_output)
@@ -809,7 +832,9 @@ def moc_update(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     position: Annotated[int, typer.Option(help="New table position.")] = 1,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
@@ -818,10 +843,11 @@ def moc_update(
     state_dir = state_dir.resolve() if state_dir is not None else None
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
+    _preflight_moc_section_target(root, moc_path)
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _move_moc_entry(conn, moc_path, section, run_id, position, ts)
-    sync_result = sync_moc_section(root, state_dir, moc_path, section)
+    sync_result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     payload = {
         "moc_path": moc_path,
         "section": section,
@@ -836,7 +862,9 @@ def moc_update(
 def moc_list(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[
         str | None, typer.Option(help="MOC level-two heading.")
     ] = None,
@@ -884,7 +912,9 @@ def moc_list(
 def moc_diff(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -903,7 +933,9 @@ def moc_diff(
 def moc_sync(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    moc_path: Annotated[str, typer.Option(help="MOC path relative to root.")] = "",
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -911,7 +943,8 @@ def moc_sync(
     state_dir = state_dir.resolve() if state_dir is not None else None
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
-    result = sync_moc_section(root, state_dir, moc_path, section)
+    _preflight_moc_section_target(root, moc_path)
+    result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     _emit(result, json_output)
 
 
@@ -941,6 +974,25 @@ def sync_markdown_command(
     _emit(result, json_output)
 
 
+def _sync_moc_section_or_error(
+    root: Path,
+    state_dir: Path | None,
+    moc_path: str,
+    section: str,
+) -> dict[str, Any]:
+    try:
+        return sync_moc_section(root, state_dir, moc_path, section)
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _preflight_moc_section_target(root: Path, moc_path: str) -> None:
+    try:
+        ensure_curated_moc_target(root / moc_path)
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 @app.command()
 def validate(
     root: RootOption = Path("."),
@@ -955,7 +1007,8 @@ def validate(
             "runs": _count_active(conn, "runs"),
             "artifacts": _count_active(conn, "artifacts"),
         }
-    result = {"ok": True, "counts": counts}
+    conflicts = projection_conflicts(root, state_dir=state_dir)
+    result = {"ok": not conflicts, "counts": counts, "projection_conflicts": conflicts}
     _emit(result, json_output)
 
 

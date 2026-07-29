@@ -24,7 +24,7 @@ PYTHONPATH=. python -m expnote.cli --help
 ## Quick start
 
 ```bash
-expnote init --notes-dir notes --moc-path notes/experiments.md
+expnote init --notes-dir notes --index-path notes/runs/_expnote-index.md
 
 expnote topic add "260703-StackCube SAC reproduction" --json
 
@@ -44,7 +44,7 @@ expnote sync markdown
 The same workflow without installing:
 
 ```bash
-PYTHONPATH=. python -m expnote.cli init --notes-dir notes --moc-path notes/experiments.md
+PYTHONPATH=. python -m expnote.cli init --notes-dir notes --index-path notes/runs/_expnote-index.md
 ```
 
 ## Obsidian layout
@@ -56,7 +56,7 @@ vault and write only Markdown into the vault:
 expnote init \
   --state-dir ~/.local/share/expnote/workspaces/mani-skill-training \
   --root "/home/hazyparker/Documents/Cyber Brain" \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --index-path "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs/_expnote-index.md" \
   --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs"
 ```
 
@@ -105,6 +105,10 @@ expnote moc add lu8qk41s \
 MOC table membership is stored in SQLite. The table itself is rendered inside
 `expnote:moc-table` markers under the requested `##` heading. A run can appear in
 multiple MOCs or sections.
+
+Do not point `init --index-path` and `moc --moc-path` at the same file.
+`sync markdown` owns the generated auto index, while `moc` commands own curated
+MOC section tables.
 
 See [docs/templates/training-record-example.md](docs/templates/training-record-example.md)
 for an example MOC and generated `runs/<id>.md` note.

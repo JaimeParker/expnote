@@ -227,6 +227,85 @@ def test_markdown_markers_have_blank_lines_around_content(tmp_path):
     assert "\n\n<!-- expnote:moc-table:end -->" in moc
 
 
+def test_sync_markdown_rejects_auto_index_with_curated_moc_table(tmp_path):
+    _setup_workspace(tmp_path, moc_path="Baseline MOC.md")
+    for run_id in ["run1", "run2", "run3"]:
+        _add_run(tmp_path, run_id=run_id)
+        result = runner.invoke(
+            app,
+            [
+                "moc",
+                "add",
+                run_id,
+                "--root",
+                str(tmp_path),
+                "--moc-path",
+                "Baseline MOC.md",
+                "--section",
+                "topic",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "projection conflict" in result.output
+    assert "auto index path contains expnote:moc-table" in result.output
+
+
+def test_moc_writes_reject_curated_target_with_managed_block(tmp_path):
+    commands = [
+        ["moc", "add", "run1"],
+        ["moc", "remove", "run1"],
+        ["moc", "update", "run1", "--position", "1"],
+        ["moc", "sync"],
+    ]
+    for index, command in enumerate(commands):
+        root = tmp_path / f"case{index}"
+        root.mkdir()
+        _setup_workspace(root, moc_path="runs/_expnote-index.md")
+        _add_run(root, run_id="run1")
+        if command[1] != "add":
+            result = runner.invoke(
+                app,
+                [
+                    "moc",
+                    "add",
+                    "run1",
+                    "--root",
+                    str(root),
+                    "--moc-path",
+                    "Curated MOC.md",
+                    "--section",
+                    "topic",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+        (root / "Curated MOC.md").write_text(
+            "<!-- expnote:managed:start -->\n\n# Experiment MOC\n\n"
+            "<!-- expnote:managed:end -->\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                *command,
+                "--root",
+                str(root),
+                "--moc-path",
+                "Curated MOC.md",
+                "--section",
+                "topic",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "projection conflict" in result.output
+        assert "curated MOC path contains expnote:managed" in result.output
+
+
 def test_markdown_sync_supports_custom_chinese_paths(tmp_path):
     _setup_workspace(
         tmp_path,

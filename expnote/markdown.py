@@ -28,6 +28,7 @@ def sync_markdown(
     moc_path = root / config["moc_path"]
     notes_dir.mkdir(parents=True, exist_ok=True)
     moc_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auto_index_target(moc_path)
 
     with transaction(root, state_dir=state_dir) as conn:
         topics = [
@@ -175,6 +176,7 @@ def sync_moc_section(
     section: str,
 ) -> dict[str, Any]:
     path = root / moc_path
+    _ensure_curated_moc_target(path)
     rows = _moc_section_rows(root, state_dir, moc_path, section)
     table = _render_moc_table(rows)
     _write_moc_section_table(path, section, table)
@@ -193,15 +195,45 @@ def diff_moc_section(
     observed = _extract_moc_table(path, section).strip()
     expected_ids = [str(row["run_id"]) for row in rows]
     observed_ids = _run_ids_from_table(observed)
+    conflicts = _curated_moc_conflicts(path)
     return {
         "moc_path": str(path),
         "section": section,
+        "conflicts": conflicts,
         "changed": expected != observed,
         "expected": expected_ids,
         "observed": observed_ids,
         "missing": [run_id for run_id in expected_ids if run_id not in observed_ids],
         "stale": [run_id for run_id in observed_ids if run_id not in expected_ids],
     }
+
+
+def projection_conflicts(
+    root: Path,
+    state_dir: Path | None = None,
+) -> list[dict[str, str]]:
+    conflicts = []
+    config = read_config(root, state_dir=state_dir)
+    auto_index = root / config["moc_path"]
+    conflicts.extend(_auto_index_conflicts(auto_index))
+    with transaction(root, state_dir=state_dir) as conn:
+        moc_paths = [
+            str(row["moc_path"])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT moc_path FROM moc_entries
+                WHERE deleted_at IS NULL
+                ORDER BY moc_path ASC
+                """
+            )
+        ]
+    for moc_path in moc_paths:
+        conflicts.extend(_curated_moc_conflicts(root / moc_path))
+    return conflicts
+
+
+def ensure_curated_moc_target(path: Path) -> None:
+    _ensure_curated_moc_target(path)
 
 
 def _resolve_analysis(
@@ -396,6 +428,56 @@ def _find_h2_section(content: str, section: str) -> tuple[int, int] | None:
 
 def _run_ids_from_table(table: str) -> list[str]:
     return re.findall(r"\[\[([^\]]+)\]\]", table)
+
+
+def _ensure_auto_index_target(path: Path) -> None:
+    conflicts = _auto_index_conflicts(path)
+    if conflicts:
+        raise RuntimeError(_projection_conflict_message(conflicts[0]))
+
+
+def _ensure_curated_moc_target(path: Path) -> None:
+    conflicts = _curated_moc_conflicts(path)
+    if conflicts:
+        raise RuntimeError(_projection_conflict_message(conflicts[0]))
+
+
+def _auto_index_conflicts(path: Path) -> list[dict[str, str]]:
+    if not _contains_marker(path, MOC_TABLE_START):
+        return []
+    return [
+        {
+            "path": str(path),
+            "kind": "auto_index_contains_curated_moc_table",
+            "message": (
+                "auto index path contains expnote:moc-table; use a different "
+                "init --index-path or curated moc --moc-path"
+            ),
+        }
+    ]
+
+
+def _curated_moc_conflicts(path: Path) -> list[dict[str, str]]:
+    if not _contains_marker(path, MANAGED_START):
+        return []
+    return [
+        {
+            "path": str(path),
+            "kind": "curated_moc_contains_auto_index",
+            "message": (
+                "curated MOC path contains expnote:managed; use a different "
+                "moc --moc-path or init --index-path"
+            ),
+        }
+    ]
+
+
+def _contains_marker(path: Path, marker: str) -> bool:
+    return path.exists() and marker in path.read_text(encoding="utf-8")
+
+
+def _projection_conflict_message(conflict: dict[str, str]) -> str:
+    return f"projection conflict at {conflict['path']}: {conflict['message']}"
 
 
 def _write_managed_file(path: Path, managed_content: str) -> None:

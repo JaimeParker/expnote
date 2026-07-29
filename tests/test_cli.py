@@ -154,6 +154,27 @@ def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     assert f'state_dir = "{state_dir.resolve()}"' in config
 
 
+def test_init_supports_index_path_alias(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--root",
+            str(tmp_path),
+            "--index-path",
+            "runs/_expnote-index.md",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["moc_path"] == "runs/_expnote-index.md"
+    assert data["index_path"] == "runs/_expnote-index.md"
+    config = (tmp_path / ".expnote" / "config.toml").read_text(encoding="utf-8")
+    assert 'moc_path = "runs/_expnote-index.md"' in config
+
+
 def test_existing_schema_migrates_on_cli_use(tmp_path):
     state_dir = tmp_path / ".expnote"
     state_dir.mkdir()
@@ -242,7 +263,10 @@ def test_external_state_dir_supports_cli_workflow(tmp_path):
 
     result = runner.invoke(app, ["validate", *common, "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["counts"] == {
+    data = json.loads(result.output)
+    assert data["ok"] is True
+    assert data["projection_conflicts"] == []
+    assert data["counts"] == {
         "artifacts": 0,
         "runs": 1,
         "topics": 1,
@@ -256,6 +280,36 @@ def test_external_state_dir_supports_cli_workflow(tmp_path):
         if line
     ]
     assert [event["type"] for event in events] == ["init", "topic.add", "run.add"]
+
+
+def test_validate_reports_projection_conflicts(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            "notes/experiments.md",
+            "--section",
+            "topic",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["validate", "--root", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["ok"] is False
+    assert data["projection_conflicts"]
+    assert data["projection_conflicts"][0]["kind"] == (
+        "auto_index_contains_curated_moc_table"
+    )
 
 
 def test_external_state_dir_must_be_reused_for_follow_up_commands(tmp_path):
@@ -1117,6 +1171,36 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
     assert data["changed"] is True
     assert data["missing"] == ["moc1"]
     assert data["stale"] == ["manual"]
+
+
+def test_moc_diff_reports_projection_conflict(tmp_path):
+    _init_with_topic(tmp_path)
+    path = tmp_path / "Inbox" / "Managed MOC.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "<!-- expnote:managed:start -->\n\n# Experiment MOC\n\n"
+        "<!-- expnote:managed:end -->\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "diff",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            "Inbox/Managed MOC.md",
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["conflicts"][0]["kind"] == "curated_moc_contains_auto_index"
 
 
 def test_run_query_supports_topic_alias_and_limit(tmp_path):

@@ -30,7 +30,7 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 expnote init \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
-  --moc-path "00 Inbox/Training MOC.md" \
+  --index-path "00 Inbox/runs/_expnote-index.md" \
   --notes-dir "00 Inbox/runs" \
   --json
 
@@ -116,6 +116,10 @@ Use `--force` only when SQLite should overwrite Obsidian Analysis.
 
 MOC section tables are managed inside `expnote:moc-table` markers under `##`
 headings.
+
+Keep `init --index-path` separate from `moc --moc-path`. The index path is a
+generated full projection owned by `sync markdown`; the curated MOC path is owned
+by `moc add/remove/update/sync`.
 
 ```bash
 expnote moc diff \
