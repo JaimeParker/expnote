@@ -452,6 +452,77 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert rows[0]["status"] == "finished"
 
 
+def test_run_show_field_outputs_single_public_field(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "purpose"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "purpose run1\n"
+
+
+def test_run_show_field_outputs_json_scalar(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", status="finished")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "show",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--field",
+            "status",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == "finished"
+
+
+def test_run_show_field_outputs_metadata_object(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        ["run", "show", "run1", "--root", str(tmp_path), "--field", "metadata"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"algo": "sac"}
+
+
+def test_run_show_field_supports_topic_alias(tmp_path):
+    _init_with_topic(tmp_path, "StackCube SAC")
+    _add_run(tmp_path, "run1", topic="StackCube SAC")
+
+    result = runner.invoke(
+        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "topic"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "StackCube SAC\n"
+
+
+def test_run_show_field_rejects_unknown_field(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "unknown"]
+    )
+
+    assert result.exit_code != 0
+    assert "supported fields:" in result.output
+
+
 def test_run_delete_hides_run_from_list_and_query(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "deleted")

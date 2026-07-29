@@ -74,6 +74,11 @@ Do not grep generated Markdown for facts. Query SQLite through expnote:
 expnote run show stackcube-sac-seed1 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
+  --field purpose
+
+expnote run show stackcube-sac-seed1 \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
   --json
 
 expnote run query \

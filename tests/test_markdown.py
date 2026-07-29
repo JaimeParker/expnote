@@ -187,6 +187,46 @@ def test_markdown_table_cells_escape_pipes_and_newlines(tmp_path):
     assert "compare a\\|b<br>second line" in moc
 
 
+def test_markdown_markers_have_blank_lines_around_content(tmp_path):
+    _setup_workspace(tmp_path)
+    _add_run(tmp_path, analysis="analysis")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "wandb123",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            "Section MOC.md",
+            "--section",
+            "StackCube",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    moc = (tmp_path / "Section MOC.md").read_text(encoding="utf-8")
+    note = (tmp_path / "ManiSkill Training" / "wandb123.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "<!-- expnote:managed:start -->\n\n# wandb123" in note
+    assert (
+        "<!-- expnote:analysis:start -->\n\nanalysis\n\n"
+        "<!-- expnote:analysis:end -->"
+    ) in note
+    assert "<!-- expnote:analysis:end -->\n\n<!-- expnote:managed:end -->" in note
+    assert (
+        "<!-- expnote:moc-table:start -->\n\n"
+        "| # | run | purpose | relation | result | status |"
+    ) in moc
+    assert "| 1 | [[wandb123]]" in moc
+    assert "\n\n<!-- expnote:moc-table:end -->" in moc
+
+
 def test_markdown_sync_supports_custom_chinese_paths(tmp_path):
     _setup_workspace(
         tmp_path,

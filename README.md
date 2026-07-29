@@ -147,6 +147,14 @@ expnote run query \
   --json
 ```
 
+To fetch one field when the run id is known:
+
+```bash
+expnote run show lu8qk41s --field purpose
+expnote run show lu8qk41s --field status --json
+expnote run show lu8qk41s --field metadata --json
+```
+
 `run query` uses a restricted SQL-like syntax. `--where` supports simple
 comparisons joined by `AND`; `--order-by` supports one whitelisted field plus
 optional `ASC` or `DESC`. Metadata queries, `OR`, `LIKE`, functions, and

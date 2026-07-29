@@ -155,7 +155,9 @@ def _render_run_note(run: dict[str, Any]) -> str:
             "## Analysis",
             "",
             ANALYSIS_START,
+            "",
             analysis or "Write analysis here.",
+            "",
             ANALYSIS_END,
         ]
     )
@@ -254,7 +256,7 @@ def _extract_analysis(path: Path) -> str | None:
     )
     if match is None:
         return None
-    return match.group(1)
+    return _strip_marker_padding(match.group(1))
 
 
 def _hash_text(value: str) -> str:
@@ -328,7 +330,7 @@ def _render_moc_table(rows: list[dict[str, Any]]) -> str:
 def _write_moc_section_table(path: Path, section: str, table: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = path.read_text(encoding="utf-8") if path.exists() else ""
-    block = f"{MOC_TABLE_START}\n{table}{MOC_TABLE_END}"
+    block = f"{MOC_TABLE_START}\n\n{table.rstrip()}\n\n{MOC_TABLE_END}"
     if not content:
         path.write_text(
             f"# Experiment MOC\n\n## {section}\n\n{block}\n",
@@ -375,7 +377,7 @@ def _extract_moc_table(path: Path, section: str) -> str:
         section_text,
         re.DOTALL,
     )
-    return match.group(1) if match else ""
+    return _strip_marker_padding(match.group(1)) if match else ""
 
 
 def _find_h2_section(content: str, section: str) -> tuple[int, int] | None:
@@ -393,7 +395,7 @@ def _run_ids_from_table(table: str) -> list[str]:
 
 
 def _write_managed_file(path: Path, managed_content: str) -> None:
-    managed_block = f"{MANAGED_START}\n{managed_content}{MANAGED_END}\n"
+    managed_block = f"{MANAGED_START}\n\n{managed_content.rstrip()}\n\n{MANAGED_END}\n"
     if not path.exists():
         path.write_text(managed_block, encoding="utf-8")
         return
@@ -411,6 +413,14 @@ def _write_managed_file(path: Path, managed_content: str) -> None:
 
 def _cell(value: str) -> str:
     return (value or "").replace("\n", "<br>").replace("|", "\\|")
+
+
+def _strip_marker_padding(value: str) -> str:
+    if value.startswith("\n"):
+        value = value[1:]
+    if value.endswith("\n"):
+        value = value[:-1]
+    return value
 
 
 def _safe_filename(value: str) -> str:

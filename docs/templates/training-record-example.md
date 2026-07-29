@@ -59,9 +59,11 @@ expnote moc add stackcube-sac-seed1 \
 ## StackCube SAC
 
 <!-- expnote:moc-table:start -->
+
 | # | run | purpose | relation | result | status |
 | --- | --- | --- | --- | --- | --- |
 | 1 | [[stackcube-sac-seed1]] | Train SAC on StackCube with seed=1 | Baseline run for later ablations | Training in progress | running |
+
 <!-- expnote:moc-table:end -->
 ```
 
@@ -69,6 +71,7 @@ expnote moc add stackcube-sac-seed1 \
 
 ```markdown
 <!-- expnote:managed:start -->
+
 # stackcube-sac-seed1
 
 - status: `running`
@@ -95,8 +98,11 @@ Training in progress
 ## Analysis
 
 <!-- expnote:analysis:start -->
+
 Watch success rate and critic loss stability.
+
 <!-- expnote:analysis:end -->
+
 <!-- expnote:managed:end -->
 ```
 

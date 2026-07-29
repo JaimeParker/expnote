@@ -71,6 +71,7 @@ _AGENT_GUIDE = {
         ],
         "query_run": [
             "run show <run_id> --json",
+            "run show <run_id> --field purpose",
             "run query --where \"status = 'running'\" --json",
         ],
         "analysis_import": [
@@ -114,6 +115,10 @@ _AGENT_GUIDE = {
         "show_run": (
             "expnote run show <id> --root <vault> --state-dir <state> --json"
         ),
+        "show_field": (
+            "expnote run show <id> --root <vault> --state-dir <state> "
+            "--field status"
+        ),
         "moc_diff": (
             "expnote moc diff --root <vault> --state-dir <state> "
             "--moc-path <moc.md> --section <heading> --json"
@@ -147,6 +152,7 @@ def _render_agent_guide() -> str:
             "",
             "Read records from SQLite:",
             "expnote run show <run_id> --json",
+            "expnote run show <run_id> --field purpose",
             "expnote run query --where \"status = 'running'\" --json",
             "",
             "Obsidian conflict policy:",
@@ -444,6 +450,9 @@ def run_show(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    field: Annotated[
+        str | None, typer.Option("--field", help="Return one public run field.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
@@ -459,7 +468,11 @@ def run_show(
         ).fetchone()
     if row is None:
         raise typer.BadParameter(f"run not found: {run_id}")
-    _emit(row_to_dict(row), json_output)
+    data = row_to_dict(row)
+    if field is not None:
+        _emit(_run_show_field(data, field), json_output)
+    else:
+        _emit(data, json_output)
 
 
 @run_app.command("update")
@@ -980,6 +993,30 @@ _RUN_WHERE_RE = re.compile(
     """,
     re.VERBOSE,
 )
+_RUN_SHOW_FIELDS = {
+    "id",
+    "topic_id",
+    "topic_title",
+    "topic",
+    "purpose",
+    "relation",
+    "result",
+    "analysis",
+    "status",
+    "metadata",
+    "started_at",
+    "updated_at",
+    "deleted_at",
+}
+
+
+def _run_show_field(data: dict[str, object], field: str) -> object:
+    if field == "topic":
+        return data["topic_title"]
+    if field not in _RUN_SHOW_FIELDS:
+        fields = ", ".join(sorted(_RUN_SHOW_FIELDS))
+        raise typer.BadParameter(f"supported fields: {fields}")
+    return data[field]
 
 
 def _compile_run_where(where: str) -> tuple[str, list[object]]:
