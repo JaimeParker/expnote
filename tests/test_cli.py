@@ -452,6 +452,129 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert rows[0]["status"] == "finished"
 
 
+def test_run_add_and_update_support_typed_metadata(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "typed",
+            "--meta",
+            "seed=1",
+            "--meta-json",
+            "typed_seed=1",
+            "--meta-json",
+            "lr=0.0003",
+            "--meta-json",
+            "use_wandb=true",
+            "--meta-json",
+            'tags=["a","b"]',
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    metadata = json.loads(result.output)["metadata"]
+    assert metadata["seed"] == "1"
+    assert metadata["typed_seed"] == 1
+    assert metadata["lr"] == 0.0003
+    assert metadata["use_wandb"] is True
+    assert metadata["tags"] == ["a", "b"]
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "typed",
+            "--root",
+            str(tmp_path),
+            "--meta-json",
+            'hparams={"batch":256}',
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["metadata"]["hparams"] == {"batch": 256}
+
+
+def test_run_update_unsets_metadata_keys(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--meta",
+            "seed=1",
+            "--unset-meta",
+            "algo",
+            "--unset-meta",
+            "missing",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["metadata"] == {"seed": "1"}
+
+
+def test_run_update_rejects_set_and_unset_same_metadata_key(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--meta",
+            "seed=1",
+            "--unset-meta",
+            "seed",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be set and unset" in result.output
+
+
+def test_run_add_rejects_invalid_meta_json(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "bad",
+            "--meta-json",
+            "seed={bad",
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
 def test_run_show_field_outputs_single_public_field(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "run1")
@@ -741,6 +864,69 @@ def test_run_query_supports_analysis_field(tmp_path):
     assert [row["id"] for row in json.loads(result.output)] == ["abc123"]
 
 
+def test_run_query_supports_metadata_fields(tmp_path):
+    _init_with_topic(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "typed",
+            "--meta",
+            "algo=sac",
+            "--meta-json",
+            "seed=1",
+            "--meta-json",
+            "use_wandb=true",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "other",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    cases = [
+        ("metadata.algo = 'sac'", ["typed"]),
+        ("metadata.seed = 1", ["typed"]),
+        ("metadata.use_wandb = true", ["typed"]),
+        ("metadata.missing = null", ["other", "typed"]),
+    ]
+    for where, expected_ids in cases:
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "query",
+                "--root",
+                str(tmp_path),
+                "--where",
+                where,
+                "--order-by",
+                "id ASC",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert [row["id"] for row in json.loads(result.output)] == expected_ids
+
+
 def test_moc_add_list_remove_and_diff(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "moc1", purpose="p1")
@@ -994,7 +1180,7 @@ def test_run_query_rejects_unsupported_restricted_syntax(tmp_path):
         ["--where", "status = 'running' OR id = 'run1'"],
         ["--where", "(status = 'running')"],
         ["--where", "lower(status) = 'running'"],
-        ["--where", "metadata.algo = 'sac'"],
+        ["--where", "metadata.hparams.lr = 0.0003"],
         ["--where", "unknown = 'x'"],
         ["--order-by", "unknown ASC"],
         ["--order-by", "id SIDEWAYS"],

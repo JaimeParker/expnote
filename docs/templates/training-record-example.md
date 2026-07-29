@@ -42,7 +42,7 @@ expnote run add \
   --status running \
   --meta algo=sac \
   --meta env_id=StackCube-v1 \
-  --meta seed=1
+  --meta-json seed=1
 
 expnote moc add stackcube-sac-seed1 \
   --root "/home/user/Documents/Cyber Brain" \

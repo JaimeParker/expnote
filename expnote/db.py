@@ -236,6 +236,16 @@ def parse_meta(items: Iterable[str]) -> dict[str, str]:
     return meta
 
 
+def parse_meta_json(items: Iterable[str]) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"metadata must use key=json syntax: {item!r}")
+        meta[key] = json.loads(value)
+    return meta
+
+
 def _toml_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 

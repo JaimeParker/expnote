@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -146,7 +147,10 @@ def _render_run_note(run: dict[str, Any]) -> str:
         "",
     ]
     if metadata:
-        lines.extend(f"- `{key}`: {value}" for key, value in sorted(metadata.items()))
+        lines.extend(
+            f"- `{key}`: {_metadata_value(value)}"
+            for key, value in sorted(metadata.items())
+        )
     else:
         lines.append("_No metadata recorded._")
     lines.extend(
@@ -413,6 +417,12 @@ def _write_managed_file(path: Path, managed_content: str) -> None:
 
 def _cell(value: str) -> str:
     return (value or "").replace("\n", "<br>").replace("|", "\\|")
+
+
+def _metadata_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _strip_marker_padding(value: str) -> str:

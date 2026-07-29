@@ -15,6 +15,7 @@ from expnote.db import (
     new_id,
     now_iso,
     parse_meta,
+    parse_meta_json,
     row_to_dict,
     transaction,
 )
@@ -72,6 +73,7 @@ _AGENT_GUIDE = {
         "query_run": [
             "run show <run_id> --json",
             "run show <run_id> --field purpose",
+            "run query --where \"metadata.seed = 1\" --json",
             "run query --where \"status = 'running'\" --json",
         ],
         "analysis_import": [
@@ -89,7 +91,7 @@ _AGENT_GUIDE = {
         "run.add": "Create a SQL-backed run record",
         "run.show": "Read SQL-backed Purpose, Relation, Result, Metadata, Analysis",
         "run.update": "Update structured run fields and metadata",
-        "run.query": "Query runs with restricted SQL-like filters",
+        "run.query": "Query runs with restricted SQL-like filters and metadata keys",
         "moc.add": "Add a run to a managed MOC section table",
         "moc.diff": "Compare a managed MOC section table with SQLite",
         "sync.markdown": "Render SQLite records into Markdown",
@@ -110,7 +112,12 @@ _AGENT_GUIDE = {
         ),
         "create_run": (
             "expnote run add --root <vault> --state-dir <state> "
-            "--topic <topic> --run-id <id> --purpose <text> --json"
+            "--topic <topic> --run-id <id> --purpose <text> "
+            "--meta-json seed=1 --json"
+        ),
+        "unset_metadata": (
+            "expnote run update <id> --root <vault> --state-dir <state> "
+            "--unset-meta seed"
         ),
         "show_run": (
             "expnote run show <id> --root <vault> --state-dir <state> --json"
@@ -153,6 +160,7 @@ def _render_agent_guide() -> str:
             "Read records from SQLite:",
             "expnote run show <run_id> --json",
             "expnote run show <run_id> --field purpose",
+            "expnote run query --where \"metadata.seed = 1\" --json",
             "expnote run query --where \"status = 'running'\" --json",
             "",
             "Obsidian conflict policy:",
@@ -344,11 +352,18 @@ def run_add(
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value.")
     ] = None,
+    meta_json: Annotated[
+        list[str] | None,
+        typer.Option("--meta-json", help="Typed metadata key=json."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
-    metadata = parse_meta(meta or [])
+    try:
+        metadata = _merge_metadata_options(meta, meta_json)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     data = _insert_run(
         root,
         state_dir=state_dir,
@@ -375,7 +390,7 @@ def _insert_run(
     result: str,
     analysis: str,
     status: str,
-    metadata: dict[str, str],
+    metadata: dict[str, object],
 ) -> dict[str, object]:
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
@@ -488,6 +503,14 @@ def run_update(
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value to merge.")
     ] = None,
+    meta_json: Annotated[
+        list[str] | None,
+        typer.Option("--meta-json", help="Typed metadata key=json to merge."),
+    ] = None,
+    unset_meta: Annotated[
+        list[str] | None,
+        typer.Option("--unset-meta", help="Metadata key to delete."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
@@ -510,9 +533,16 @@ def run_update(
                     f"UPDATE runs SET {key} = ?, updated_at = ? WHERE id = ?",
                     (value, ts, run_id),
                 )
-        if meta:
+        if meta or meta_json or unset_meta:
             metadata = json.loads(row["metadata_json"] or "{}")
-            metadata.update(parse_meta(meta))
+            try:
+                updates = _merge_metadata_options(meta, meta_json)
+                _check_metadata_unset_conflicts(updates, unset_meta or [])
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            for key in unset_meta or []:
+                metadata.pop(key, None)
+            metadata.update(updates)
             conn.execute(
                 "UPDATE runs SET metadata_json = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(metadata, ensure_ascii=False, sort_keys=True), ts, run_id),
@@ -984,11 +1014,11 @@ _RUN_QUERY_OPERATORS = {"=", "!=", "<", "<=", ">", ">="}
 _RUN_WHERE_RE = re.compile(
     r"""
     \s*
-    (?P<field>[A-Za-z_][A-Za-z0-9_]*)
+    (?P<field>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)?)
     \s*
     (?P<op>!=|<=|>=|=|<|>)
     \s*
-    (?P<value>'(?:''|[^'])*'|[0-9]+)
+    (?P<value>'(?:''|[^'])*'|-?[0-9]+(?:\.[0-9]+)?|true|false|null)
     \s*
     """,
     re.VERBOSE,
@@ -1019,6 +1049,26 @@ def _run_show_field(data: dict[str, object], field: str) -> object:
     return data[field]
 
 
+def _merge_metadata_options(
+    meta: list[str] | None,
+    meta_json: list[str] | None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    metadata.update(parse_meta(meta or []))
+    metadata.update(parse_meta_json(meta_json or []))
+    return metadata
+
+
+def _check_metadata_unset_conflicts(
+    updates: dict[str, object],
+    unset_keys: list[str],
+) -> None:
+    conflicts = sorted(set(updates).intersection(unset_keys))
+    if conflicts:
+        joined = ", ".join(conflicts)
+        raise ValueError(f"metadata key cannot be set and unset: {joined}")
+
+
 def _compile_run_where(where: str) -> tuple[str, list[object]]:
     expression = where.strip()
     if expression == "1 = 1":
@@ -1033,12 +1083,28 @@ def _compile_run_where(where: str) -> tuple[str, list[object]]:
             raise typer.BadParameter("unsupported query expression")
         field = match.group("field")
         op = match.group("op")
-        if field not in _RUN_QUERY_FIELDS or op not in _RUN_QUERY_OPERATORS:
+        if op not in _RUN_QUERY_OPERATORS:
             raise typer.BadParameter("unsupported query expression")
-        clauses.append(f"{_RUN_QUERY_FIELDS[field]} {op} ?")
-        params.append(_parse_query_literal(match.group("value")))
+        sql_field = _compile_run_query_field(field)
+        value = _parse_query_literal(match.group("value"))
+        if value is None and op in {"=", "!="}:
+            clauses.append(f"{sql_field} {'IS' if op == '=' else 'IS NOT'} NULL")
+        else:
+            clauses.append(f"{sql_field} {op} ?")
+            params.append(value)
 
     return " AND ".join(clauses), params
+
+
+def _compile_run_query_field(field: str) -> str:
+    if field in _RUN_QUERY_FIELDS:
+        return _RUN_QUERY_FIELDS[field]
+    metadata_prefix = "metadata."
+    if field.startswith(metadata_prefix):
+        key = field.removeprefix(metadata_prefix)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            return f"json_extract(runs.metadata_json, '$.\"{key}\"')"
+    raise typer.BadParameter("unsupported query expression")
 
 
 def _compile_run_order_by(order_by: str) -> str:
@@ -1060,6 +1126,14 @@ def _compile_run_order_by(order_by: str) -> str:
 def _parse_query_literal(value: str) -> object:
     if value.startswith("'") and value.endswith("'"):
         return value[1:-1].replace("''", "'")
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if value == "null":
+        return None
+    if "." in value:
+        return float(value)
     return int(value)
 
 

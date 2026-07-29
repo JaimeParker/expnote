@@ -50,7 +50,7 @@ expnote run add \
   --analysis "Watch success rate and critic loss stability." \
   --status running \
   --meta algo=sac \
-  --meta seed=1 \
+  --meta-json seed=1 \
   --json
 
 expnote moc add stackcube-sac-seed1 \
@@ -84,8 +84,14 @@ expnote run show stackcube-sac-seed1 \
 expnote run query \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
-  --where "status = 'running' AND topic = 'StackCube SAC'" \
+  --where "status = 'running' AND metadata.seed = 1" \
   --order-by updated_at DESC \
+  --json
+
+expnote run update stackcube-sac-seed1 \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --unset-meta seed \
   --json
 ```
 

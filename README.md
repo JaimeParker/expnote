@@ -151,14 +151,30 @@ To fetch one field when the run id is known:
 
 ```bash
 expnote run show lu8qk41s --field purpose
-expnote run show lu8qk41s --field status --json
+expnote run show lu8qk41s --field status
 expnote run show lu8qk41s --field metadata --json
+```
+
+Metadata values written with `--meta` are strings. Use `--meta-json` for typed
+values, and `--unset-meta` to delete a key:
+
+```bash
+expnote run update lu8qk41s --meta-json seed=1 --meta-json use_wandb=true
+expnote run update lu8qk41s --unset-meta seed
 ```
 
 `run query` uses a restricted SQL-like syntax. `--where` supports simple
 comparisons joined by `AND`; `--order-by` supports one whitelisted field plus
-optional `ASC` or `DESC`. Metadata queries, `OR`, `LIKE`, functions, and
-subqueries are not supported yet.
+optional `ASC` or `DESC`. One-level metadata keys can be queried with
+`metadata.<key>`:
+
+```bash
+expnote run query --where "metadata.seed = 1" --json
+expnote run query --where "metadata.algo = 'sac'" --json
+```
+
+`OR`, `LIKE`, functions, nested metadata fields, and subqueries are not
+supported yet.
 
 Agent contract:
 
