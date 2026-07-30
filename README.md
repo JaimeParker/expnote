@@ -165,6 +165,13 @@ expnote run update lu8qk41s --meta-json seed=1 --meta-json use_wandb=true
 expnote run update lu8qk41s --unset-meta seed
 ```
 
+Use `--append-analysis` to add an observation without replacing existing
+Analysis. expnote inserts one blank line between the old and new text:
+
+```bash
+expnote run update lu8qk41s --append-analysis "Reward plateaued after 300k steps."
+```
+
 `run query` uses a restricted SQL-like syntax. `--where` supports simple
 comparisons joined by `AND`; `--order-by` supports one whitelisted field plus
 optional `ASC` or `DESC`. One-level metadata keys can be queried with

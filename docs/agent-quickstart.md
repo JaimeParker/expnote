@@ -92,7 +92,17 @@ expnote run update stackcube-sac-seed1 \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --unset-meta seed \
   --json
+
+expnote run update stackcube-sac-seed1 \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --append-analysis "Reward plateaued after 300k steps." \
+  --json
 ```
+
+Use `--append-analysis` when adding observations to existing Analysis. It inserts
+one blank line between old and new text. Use `--analysis` only when replacing the
+whole Analysis field.
 
 ## Obsidian Analysis Imports
 

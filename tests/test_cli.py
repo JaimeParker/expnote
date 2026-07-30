@@ -525,6 +525,75 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert rows[0]["status"] == "finished"
 
 
+def test_run_update_appends_analysis_with_blank_line(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="first observation")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--append-analysis",
+            "second observation",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == (
+        "first observation\n\nsecond observation"
+    )
+
+
+def test_run_update_appends_analysis_without_leading_blank_line(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--append-analysis",
+            "first observation",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == "first observation"
+
+
+def test_run_update_rejects_analysis_replace_and_append(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="first observation")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--analysis",
+            "replacement",
+            "--append-analysis",
+            "extra",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--analysis and --append-analysis cannot be used together" in result.output
+
+
 def test_run_add_and_update_support_typed_metadata(tmp_path):
     _init_with_topic(tmp_path)
 

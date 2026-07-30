@@ -128,6 +128,10 @@ _AGENT_GUIDE = {
             "expnote run update <id> --root <vault> --state-dir <state> "
             "--unset-meta seed"
         ),
+        "append_analysis": (
+            "expnote run update <id> --root <vault> --state-dir <state> "
+            "--append-analysis <text>"
+        ),
         "show_run": (
             "expnote run show <id> --root <vault> --state-dir <state> --json"
         ),
@@ -171,6 +175,7 @@ def _render_agent_guide() -> str:
             "expnote run show <run_id> --field purpose",
             "expnote run query --where \"metadata.seed = 1\" --json",
             "expnote run query --where \"status = 'running'\" --json",
+            "expnote run update <run_id> --append-analysis <text>",
             "",
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
@@ -524,6 +529,13 @@ def run_update(
     relation: Annotated[str | None, typer.Option(help="New relation.")] = None,
     result: Annotated[str | None, typer.Option(help="New result.")] = None,
     analysis: Annotated[str | None, typer.Option(help="New analysis.")] = None,
+    append_analysis: Annotated[
+        str | None,
+        typer.Option(
+            "--append-analysis",
+            help="Append to Analysis, separated from existing text by one blank line.",
+        ),
+    ] = None,
     status: Annotated[str | None, typer.Option(help="New status.")] = None,
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value to merge.")
@@ -540,18 +552,29 @@ def run_update(
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
+    if analysis is not None and append_analysis is not None:
+        raise typer.BadParameter(
+            "--analysis and --append-analysis cannot be used together"
+        )
     ts = now_iso()
-    updates = {
-        "purpose": purpose,
-        "relation": relation,
-        "result": result,
-        "analysis": analysis,
-        "status": status,
-    }
     with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             raise typer.BadParameter(f"run not found: {run_id}")
+        if append_analysis is not None:
+            current_analysis = row["analysis"] or ""
+            analysis = (
+                append_analysis
+                if current_analysis == ""
+                else f"{current_analysis}\n\n{append_analysis}"
+            )
+        updates = {
+            "purpose": purpose,
+            "relation": relation,
+            "result": result,
+            "analysis": analysis,
+            "status": status,
+        }
         for key, value in updates.items():
             if value is not None:
                 conn.execute(
