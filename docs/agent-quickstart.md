@@ -59,11 +59,15 @@ expnote moc add stackcube-sac-seed1 \
   --section "StackCube SAC" \
   --json
 
-expnote sync markdown \
+expnote sync all \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --json
 ```
+
+Prefer `expnote sync all` when handing off a workspace with curated MOCs. It
+updates run notes, the auto index, and all registered curated MOC sections.
+`sync markdown` updates run notes and the auto index only.
 
 ## Query Records
 
@@ -98,11 +102,20 @@ expnote run update stackcube-sac-seed1 \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --append-analysis "Reward plateaued after 300k steps." \
   --json
+
+expnote run update stackcube-sac-seed1 \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --metadata-json '{"algo":"sac","seed":1}' \
+  --json
 ```
 
 Use `--append-analysis` when adding observations to existing Analysis. It inserts
 one blank line between old and new text. Use `--analysis` only when replacing the
 whole Analysis field.
+
+Use `--metadata-json '{...}'` to merge a whole metadata object. Use
+`--meta-json key=json` only for one typed key at a time.
 
 ## Obsidian Analysis Imports
 
@@ -137,6 +150,20 @@ expnote moc diff \
   --section "StackCube SAC" \
   --json
 
+expnote moc sections \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --moc-path "00 Inbox/Training MOC.md" \
+  --json
+
+expnote moc add-topic \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --topic "StackCube SAC" \
+  --moc-path "00 Inbox/Training MOC.md" \
+  --section "StackCube SAC" \
+  --json
+
 expnote moc sync \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
@@ -144,6 +171,10 @@ expnote moc sync \
   --section "StackCube SAC" \
   --json
 ```
+
+Section names are exact strings. If unsure, run `moc sections` before `moc sync`.
+`moc sync` only re-renders already registered rows; use `moc add` or
+`moc add-topic` to register new runs.
 
 ## Handoff Checklist
 

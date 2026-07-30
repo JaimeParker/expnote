@@ -74,7 +74,7 @@ _AGENT_GUIDE = {
             "topic add",
             "run add",
             "moc add",
-            "sync markdown",
+            "sync all",
         ],
         "query_run": [
             "run show <run_id> --json",
@@ -99,8 +99,11 @@ _AGENT_GUIDE = {
         "run.update": "Update structured run fields and metadata",
         "run.query": "Query runs with restricted SQL-like filters and metadata keys",
         "moc.add": "Add a run to a managed MOC section table",
+        "moc.add_topic": "Add all active topic runs to a managed MOC section",
+        "moc.sections": "List registered sections for a curated MOC",
         "moc.diff": "Compare a managed MOC section table with SQLite",
         "sync.markdown": "Render SQLite records into Markdown",
+        "sync.all": "Render run notes, auto index, and registered curated MOCs",
         "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
         "validate": "Check active record counts before handoff",
     },
@@ -124,6 +127,14 @@ _AGENT_GUIDE = {
             "--topic <topic> --run-id <id> --purpose <text> "
             "--meta-json seed=1 --json"
         ),
+        "create_run_by_topic_id": (
+            "expnote run create --root <vault> --state-dir <state> "
+            "--topic-id <topic_id> --id <id> --purpose <text> --json"
+        ),
+        "metadata_json": (
+            "expnote run update <id> --root <vault> --state-dir <state> "
+            "--metadata-json '{\"seed\":1,\"algo\":\"calql\"}'"
+        ),
         "unset_metadata": (
             "expnote run update <id> --root <vault> --state-dir <state> "
             "--unset-meta seed"
@@ -142,6 +153,28 @@ _AGENT_GUIDE = {
         "moc_diff": (
             "expnote moc diff --root <vault> --state-dir <state> "
             "--moc-path <moc.md> --section <heading> --json"
+        ),
+        "moc_sections": (
+            "expnote moc sections --root <vault> --state-dir <state> "
+            "--moc-path <moc.md> --json"
+        ),
+        "moc_add_topic": (
+            "expnote moc add-topic --root <vault> --state-dir <state> "
+            "--topic <topic> --moc-path <moc.md> --section <heading> --json"
+        ),
+        "sync_all": "expnote sync all --root <vault> --state-dir <state> --json",
+    },
+    "common_pitfalls": {
+        "run_create": "run create is supported as an alias for run add",
+        "run_id": "use --run-id or --id, not a positional id flag",
+        "topic_id": "use --topic-id when you have a topic id; use --topic for title",
+        "metadata_json": (
+            "use --metadata-json '{...}' for a whole object; "
+            "--meta-json is key=json"
+        ),
+        "curated_mocs": (
+            "sync markdown does not update curated MOC tables; use sync all "
+            "or moc sync/add/add-topic"
         ),
     },
 }
@@ -168,7 +201,7 @@ def _render_agent_guide() -> str:
             "- Reuse the same --root and --state-dir on follow-up commands",
             "",
             "Minimal workflow:",
-            "init -> topic add -> run add -> moc add -> sync markdown",
+            "init -> topic add -> run add -> moc add -> sync all",
             "",
             "Read records from SQLite:",
             "expnote run show <run_id> --json",
@@ -176,6 +209,13 @@ def _render_agent_guide() -> str:
             "expnote run query --where \"metadata.seed = 1\" --json",
             "expnote run query --where \"status = 'running'\" --json",
             "expnote run update <run_id> --append-analysis <text>",
+            "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
+            "",
+            "MOC workflow:",
+            "expnote moc sections --moc-path <path> --json",
+            "expnote moc add-topic --topic <topic> "
+            "--moc-path <path> --section <heading> --json",
+            "expnote sync all --json",
             "",
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
@@ -197,6 +237,30 @@ def _topic_id(conn: sqlite3.Connection, title: str) -> str:
     if row is None:
         raise typer.BadParameter(f"topic not found: {title}")
     return str(row["id"])
+
+
+def _topic_id_exists(conn: sqlite3.Connection, topic_id: str) -> str:
+    row = conn.execute(
+        "SELECT id FROM topics WHERE id = ? AND deleted_at IS NULL", (topic_id,)
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"topic not found: {topic_id}")
+    return str(row["id"])
+
+
+def _resolve_topic_id(
+    conn: sqlite3.Connection,
+    topic: str | None,
+    topic_id: str | None,
+) -> str:
+    if topic is not None and topic_id is not None:
+        raise typer.BadParameter("--topic and --topic-id cannot be used together")
+    if topic is None and topic_id is None:
+        raise typer.BadParameter("--topic or --topic-id is required")
+    if topic_id is not None:
+        return _topic_id_exists(conn, topic_id)
+    assert topic is not None
+    return _topic_id(conn, topic)
 
 
 @app.command("guide")
@@ -369,9 +433,22 @@ def topic_delete(
 
 
 @run_app.command("add")
+@run_app.command("create")
 def run_add(
-    run_id: Annotated[str, typer.Option("--run-id", help="Stable run id.")],
-    topic: Annotated[str, typer.Option(help="Topic title.")],
+    run_id: Annotated[
+        str, typer.Option("--run-id", "--id", help="Stable run id.")
+    ],
+    topic: Annotated[
+        str | None,
+        typer.Option(
+            "--topic",
+            help="Topic title. Mutually exclusive with --topic-id.",
+        ),
+    ] = None,
+    topic_id: Annotated[
+        str | None,
+        typer.Option("--topic-id", help="Topic id. Mutually exclusive with --topic."),
+    ] = None,
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
     purpose: Annotated[str, typer.Option(help="Short run purpose.")] = "",
@@ -386,12 +463,16 @@ def run_add(
         list[str] | None,
         typer.Option("--meta-json", help="Typed metadata key=json."),
     ] = None,
+    metadata_json: Annotated[
+        str | None,
+        typer.Option("--metadata-json", help="Metadata JSON object to merge."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
     try:
-        metadata = _merge_metadata_options(meta, meta_json)
+        metadata = _merge_metadata_options(meta, meta_json, metadata_json)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     data = _insert_run(
@@ -399,6 +480,7 @@ def run_add(
         state_dir=state_dir,
         run_id=run_id,
         topic=topic,
+        topic_id=topic_id,
         purpose=purpose,
         relation=relation,
         result=result,
@@ -414,7 +496,8 @@ def _insert_run(
     *,
     state_dir: Path | None = None,
     run_id: str,
-    topic: str,
+    topic: str | None = None,
+    topic_id: str | None = None,
     purpose: str,
     relation: str,
     result: str,
@@ -424,7 +507,7 @@ def _insert_run(
 ) -> dict[str, object]:
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        tid = _topic_id(conn, topic)
+        tid = _resolve_topic_id(conn, topic, topic_id)
         conn.execute(
             """
             INSERT INTO runs(
@@ -544,6 +627,10 @@ def run_update(
         list[str] | None,
         typer.Option("--meta-json", help="Typed metadata key=json to merge."),
     ] = None,
+    metadata_json: Annotated[
+        str | None,
+        typer.Option("--metadata-json", help="Metadata JSON object to merge."),
+    ] = None,
     unset_meta: Annotated[
         list[str] | None,
         typer.Option("--unset-meta", help="Metadata key to delete."),
@@ -581,10 +668,10 @@ def run_update(
                     f"UPDATE runs SET {key} = ?, updated_at = ? WHERE id = ?",
                     (value, ts, run_id),
                 )
-        if meta or meta_json or unset_meta:
+        if meta or meta_json or metadata_json or unset_meta:
             metadata = json.loads(row["metadata_json"] or "{}")
             try:
-                updates = _merge_metadata_options(meta, meta_json)
+                updates = _merge_metadata_options(meta, meta_json, metadata_json)
                 _check_metadata_unset_conflicts(updates, unset_meta or [])
             except ValueError as exc:
                 raise typer.BadParameter(str(exc)) from exc
@@ -939,6 +1026,100 @@ def moc_list(
     _emit(rows, json_output)
 
 
+@moc_app.command("sections")
+def moc_sections(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path:
+        raise typer.BadParameter("--moc-path is required")
+    _emit(_registered_moc_sections(root, state_dir, moc_path=moc_path), json_output)
+
+
+@moc_app.command("add-topic")
+def moc_add_topic(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    topic: Annotated[
+        str | None,
+        typer.Option(
+            "--topic",
+            help="Topic title. Mutually exclusive with --topic-id.",
+        ),
+    ] = None,
+    topic_id: Annotated[
+        str | None,
+        typer.Option("--topic-id", help="Topic id. Mutually exclusive with --topic."),
+    ] = None,
+    moc_path: Annotated[
+        str, typer.Option(help="Curated MOC path relative to root.")
+    ] = "",
+    section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if not moc_path or not section:
+        raise typer.BadParameter("--moc-path and --section are required")
+    _preflight_moc_section_target(root, moc_path)
+    ts = now_iso()
+    added: list[str] = []
+    skipped: list[str] = []
+    with transaction(root, state_dir=state_dir) as conn:
+        resolved_topic_id = _resolve_topic_id(conn, topic, topic_id)
+        active_entries = {
+            str(row["run_id"]) for row in _active_moc_entries(conn, moc_path, section)
+        }
+        position = _next_moc_position(conn, moc_path, section)
+        rows = conn.execute(
+            """
+            SELECT id FROM runs
+            WHERE topic_id = ? AND deleted_at IS NULL
+            ORDER BY started_at ASC, id ASC
+            """,
+            (resolved_topic_id,),
+        ).fetchall()
+        for row in rows:
+            run_id = str(row["id"])
+            if run_id in active_entries:
+                skipped.append(run_id)
+                continue
+            conn.execute(
+                """
+                INSERT INTO moc_entries(
+                    id, moc_path, section, run_id, position,
+                    created_at, updated_at, deleted_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(moc_path, section, run_id) DO UPDATE SET
+                    position = excluded.position,
+                    updated_at = excluded.updated_at,
+                    deleted_at = NULL
+                """,
+                (new_id("moc"), moc_path, section, run_id, position, ts, ts),
+            )
+            added.append(run_id)
+            position += 1
+        _normalize_moc_positions(conn, moc_path, section, ts)
+    sync_result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
+    payload = {
+        "moc_path": moc_path,
+        "section": section,
+        "topic": topic,
+        "topic_id": topic_id,
+        "added": added,
+        "skipped": skipped,
+    }
+    append_event(root, "moc.add_topic", payload, state_dir=state_dir)
+    _emit({**payload, "sync": sync_result}, json_output)
+
+
 @moc_app.command("diff")
 def moc_diff(
     root: RootOption = Path("."),
@@ -968,6 +1149,13 @@ def moc_sync(
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
+    allow_empty: Annotated[
+        bool,
+        typer.Option(
+            "--allow-empty",
+            help="Allow creating or syncing a section with no registered rows.",
+        ),
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
@@ -975,6 +1163,12 @@ def moc_sync(
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
+    if not allow_empty and not _moc_section_seen(root, state_dir, moc_path, section):
+        raise typer.BadParameter(
+            "no registered MOC entries for section. "
+            "Use `expnote moc sections`, `expnote moc add`, or "
+            "`expnote moc add-topic`; pass --allow-empty to create an empty section."
+        )
     result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     _emit(result, json_output)
 
@@ -1002,6 +1196,54 @@ def sync_markdown_command(
         )
     except RuntimeError as exc:
         raise typer.BadParameter(str(exc)) from exc
+    registered = _registered_moc_sections(root, state_dir)
+    result["curated_moc_sections"] = {
+        "registered": len(registered),
+        "synced": 0,
+        "hint": (
+            "sync markdown does not update curated MOCs; use expnote sync all"
+            if registered
+            else ""
+        ),
+    }
+    _emit(result, json_output)
+
+
+@sync_app.command("all")
+def sync_all_command(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    pull_analysis: Annotated[
+        bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite changed run note Analysis.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    try:
+        result = sync_markdown(
+            root,
+            state_dir=state_dir,
+            pull_analysis=pull_analysis,
+            force=force,
+        )
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    sections = _registered_moc_sections(root, state_dir)
+    synced = [
+        _sync_moc_section_or_error(
+            root, state_dir, str(item["moc_path"]), str(item["section"])
+        )
+        for item in sections
+    ]
+    result["curated_moc_sections"] = {
+        "registered": len(sections),
+        "synced": len(synced),
+        "sections": synced,
+    }
     _emit(result, json_output)
 
 
@@ -1136,10 +1378,16 @@ def _run_show_field(data: dict[str, object], field: str) -> object:
 def _merge_metadata_options(
     meta: list[str] | None,
     meta_json: list[str] | None,
+    metadata_json: str | None = None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {}
     metadata.update(parse_meta(meta or []))
     metadata.update(parse_meta_json(meta_json or []))
+    if metadata_json is not None:
+        parsed = json.loads(metadata_json)
+        if not isinstance(parsed, dict):
+            raise ValueError("--metadata-json must be a JSON object")
+        metadata.update(parsed)
     return metadata
 
 
@@ -1298,6 +1546,55 @@ def _write_moc_positions(
             "UPDATE moc_entries SET position = ?, updated_at = ? WHERE id = ?",
             (index, ts, entry["id"]),
         )
+
+
+def _registered_moc_sections(
+    root: Path,
+    state_dir: Path | None,
+    *,
+    moc_path: str | None = None,
+) -> list[dict[str, object]]:
+    params: list[object] = []
+    moc_clause = ""
+    if moc_path is not None:
+        moc_clause = "AND moc_path = ?"
+        params.append(moc_path)
+    with transaction(root, state_dir=state_dir) as conn:
+        return [
+            {
+                "moc_path": str(row["moc_path"]),
+                "section": str(row["section"]),
+                "rows": int(row["rows"]),
+            }
+            for row in conn.execute(
+                f"""
+                SELECT moc_path, section, COUNT(*) AS rows
+                FROM moc_entries
+                WHERE deleted_at IS NULL {moc_clause}
+                GROUP BY moc_path, section
+                ORDER BY moc_path ASC, section ASC
+                """,
+                params,
+            )
+        ]
+
+
+def _moc_section_seen(
+    root: Path,
+    state_dir: Path | None,
+    moc_path: str,
+    section: str,
+) -> bool:
+    with transaction(root, state_dir=state_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM moc_entries
+            WHERE moc_path = ? AND section = ?
+            LIMIT 1
+            """,
+            (moc_path, section),
+        ).fetchone()
+    return row is not None
 
 
 def _format_moc_diff(result: dict[str, object]) -> str:

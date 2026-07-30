@@ -97,6 +97,8 @@ def test_guide_agent_json_is_machine_readable():
     assert "create_run" in data["workflows"]
     assert "run.show" in data["commands"]
     assert "sync markdown --pull-analysis" in json.dumps(data)
+    assert "sync all" in json.dumps(data)
+    assert "moc.add_topic" in data["commands"]
     assert "moc diff" in json.dumps(data)
 
 
@@ -106,7 +108,8 @@ def test_guide_agent_human_output_mentions_core_workflow():
     assert result.exit_code == 0, result.output
     assert "SQLite is the source of truth" in result.output
     assert "Markdown is a projection" in result.output
-    assert "init -> topic add -> run add -> moc add -> sync markdown" in result.output
+    assert "init -> topic add -> run add -> moc add -> sync all" in result.output
+    assert "expnote moc sections" in result.output
     assert "expnote validate --json" in result.output
 
 
@@ -525,6 +528,76 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert rows[0]["status"] == "finished"
 
 
+def test_run_create_accepts_id_alias(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "create",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--id",
+            "alias1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["id"] == "alias1"
+
+
+def test_run_add_accepts_topic_id(tmp_path):
+    _init_with_topic(tmp_path)
+    result = runner.invoke(app, ["topic", "list", "--root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    topic_id = json.loads(result.output)[0]["id"]
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic-id",
+            topic_id,
+            "--run-id",
+            "by-topic-id",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["topic_id"] == topic_id
+
+
+def test_run_add_rejects_topic_and_topic_id_together(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--topic-id",
+            "topic_x",
+            "--run-id",
+            "bad-topic",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--topic and --topic-id cannot be used together" in result.output
+
+
 def test_run_update_appends_analysis_with_blank_line(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "run1", analysis="first observation")
@@ -646,6 +719,49 @@ def test_run_add_and_update_support_typed_metadata(tmp_path):
     assert json.loads(result.output)["metadata"]["hparams"] == {"batch": 256}
 
 
+def test_run_add_and_update_support_metadata_json_object(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "metadata-object",
+            "--metadata-json",
+            '{"algo":"calql","seed":1}',
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["metadata"] == {"algo": "calql", "seed": 1}
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "metadata-object",
+            "--root",
+            str(tmp_path),
+            "--metadata-json",
+            '{"clip":true}',
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["metadata"] == {
+        "algo": "calql",
+        "clip": True,
+        "seed": 1,
+    }
+
+
 def test_run_update_unsets_metadata_keys(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "run1")
@@ -715,6 +831,29 @@ def test_run_add_rejects_invalid_meta_json(tmp_path):
     )
 
     assert result.exit_code != 0
+
+
+def test_run_add_rejects_nested_metadata_key_object(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--run-id",
+            "bad",
+            "--meta-json",
+            'metadata={"algo":"calql"}',
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--metadata-json" in result.output
 
 
 def test_run_show_field_outputs_single_public_field(tmp_path):
@@ -1147,6 +1286,198 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "[[moc1]]" not in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+
+def test_moc_sections_lists_registered_sections(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "moc1", purpose="p1")
+    moc_path = "Inbox/Test MOC.md"
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "260728-StackCube",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "sections",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [
+        {"moc_path": moc_path, "section": "260728-StackCube", "rows": 1}
+    ]
+
+
+def test_moc_add_topic_registers_active_topic_runs(tmp_path):
+    _init_with_topic(tmp_path)
+    for run_id in ["a", "b", "c"]:
+        _add_run(tmp_path, run_id, purpose=f"purpose {run_id}")
+    moc_path = "Inbox/Test MOC.md"
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add-topic",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--moc-path",
+            moc_path,
+            "--section",
+            "260728-Topic",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["added"] == ["a", "b", "c"]
+    assert data["skipped"] == []
+    assert data["sync"]["rows"] == 3
+    assert _moc_table_ids(tmp_path / moc_path) == ["a", "b", "c"]
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add-topic",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "topic",
+            "--moc-path",
+            moc_path,
+            "--section",
+            "260728-Topic",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["added"] == []
+    assert data["skipped"] == ["a", "b", "c"]
+    assert _moc_rows(tmp_path, moc_path, "260728-Topic") == [
+        {"run_id": "a", "position": 1},
+        {"run_id": "b", "position": 2},
+        {"run_id": "c", "position": 3},
+    ]
+
+
+def test_moc_sync_rejects_unregistered_empty_section(tmp_path):
+    _init_with_topic(tmp_path)
+    moc_path = "Inbox/Test MOC.md"
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "sync",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "Wrong Section",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "no registered MOC entries" in result.output
+    assert not (tmp_path / moc_path).exists()
+
+
+def test_moc_sync_allow_empty_creates_empty_section(tmp_path):
+    _init_with_topic(tmp_path)
+    moc_path = "Inbox/Test MOC.md"
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "sync",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "Empty",
+            "--allow-empty",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["rows"] == 0
+    assert "## Empty" in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+
+def test_sync_all_updates_registered_curated_mocs(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "moc1", purpose="old")
+    moc_path = "Inbox/Test MOC.md"
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "moc1",
+            "--root",
+            str(tmp_path),
+            "--purpose",
+            "new",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    markdown_data = json.loads(result.output)
+    assert markdown_data["curated_moc_sections"]["synced"] == 0
+    assert markdown_data["curated_moc_sections"]["registered"] == 1
+    assert "old" in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+    result = runner.invoke(app, ["sync", "all", "--root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["curated_moc_sections"]["synced"] == 1
+    assert "new" in (tmp_path / moc_path).read_text(encoding="utf-8")
 
 
 def test_moc_update_normalizes_positions(tmp_path):

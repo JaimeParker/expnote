@@ -41,6 +41,9 @@ expnote run add \
 expnote sync markdown
 ```
 
+`expnote run create --id ...` is also accepted as an alias for
+`expnote run add --run-id ...`.
+
 The same workflow without installing:
 
 ```bash
@@ -114,6 +117,16 @@ for an example MOC and generated `runs/<id>.md` note.
 Useful operations:
 
 ```bash
+expnote moc sections \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --json
+
+expnote moc add-topic \
+  --topic "260703-StackCube SAC reproduction" \
+  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
+  --section "StackCube SAC" \
+  --json
+
 expnote moc list \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC" \
@@ -128,6 +141,10 @@ expnote moc remove lu8qk41s \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC"
 ```
+
+`moc sync` re-renders registered rows for an exact section name. It does not
+discover runs by topic. Use `moc sections` to inspect existing section names and
+`moc add-topic` to register all active runs from a topic.
 
 ## Agent-friendly output
 
@@ -158,10 +175,12 @@ expnote run show lu8qk41s --field metadata --json
 ```
 
 Metadata values written with `--meta` are strings. Use `--meta-json` for typed
-values, and `--unset-meta` to delete a key:
+`key=json` values, `--metadata-json` for a whole JSON object, and `--unset-meta`
+to delete a key:
 
 ```bash
 expnote run update lu8qk41s --meta-json seed=1 --meta-json use_wandb=true
+expnote run update lu8qk41s --metadata-json '{"algo":"calql","seed":1}'
 expnote run update lu8qk41s --unset-meta seed
 ```
 
@@ -194,8 +213,9 @@ Agent contract:
 - Do not edit generated Markdown directly except Analysis inside
   `expnote:analysis` markers.
 - Use `expnote moc diff --json` before trusting a manually edited MOC table.
-- Run `expnote sync markdown` after structured updates if Markdown was not synced
-  by the caller workflow.
+- Run `expnote sync all` after structured updates if Markdown and curated MOCs
+  were not synced by the caller workflow. `sync markdown` updates run notes and
+  the auto index only.
 - Use `expnote validate --json` before handing off long-lived notes.
 
 ## Validate locally

@@ -247,7 +247,13 @@ def parse_meta_json(items: Iterable[str]) -> dict[str, Any]:
         key, sep, value = item.partition("=")
         if not sep or not key:
             raise ValueError(f"metadata must use key=json syntax: {item!r}")
-        meta[key] = json.loads(value)
+        parsed = json.loads(value)
+        if key == "metadata" and isinstance(parsed, dict):
+            raise ValueError(
+                "metadata={...} creates a nested metadata key. "
+                "Use --metadata-json '{...}' to merge an object."
+            )
+        meta[key] = parsed
     return meta
 
 
