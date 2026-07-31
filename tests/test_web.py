@@ -13,6 +13,7 @@ from expnote.web import (
     _docs,
     _runs,
     _topics,
+    create_app,
     render_markdown,
 )
 
@@ -170,6 +171,15 @@ def test_web_queries_include_linked_text_html(tmp_path):
     assert 'href="#/run/wandb123"' in runs[0]["purpose_html"]
     assert "missing" in runs[0]["relation_html"]
     assert "[[missing]]" not in runs[0]["relation_html"]
+
+
+def test_web_index_disables_browser_cache(tmp_path):
+    app = create_app(tmp_path)
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/")
+
+    response = route.endpoint()
+
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_web_index_has_routes_and_topic_table_without_metadata():

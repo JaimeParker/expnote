@@ -21,8 +21,8 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     state_dir = state_dir.resolve() if state_dir is not None else None
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return _INDEX_HTML
+    def index() -> HTMLResponse:
+        return HTMLResponse(_INDEX_HTML, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/mocs")
     def api_mocs() -> list[dict[str, Any]]:
