@@ -12,6 +12,8 @@ MANAGED_START = "<!-- expnote:managed:start -->"
 MANAGED_END = "<!-- expnote:managed:end -->"
 ANALYSIS_START = "<!-- expnote:analysis:start -->"
 ANALYSIS_END = "<!-- expnote:analysis:end -->"
+DOC_BODY_START = "<!-- expnote:doc-body:start -->"
+DOC_BODY_END = "<!-- expnote:doc-body:end -->"
 MOC_TABLE_START = "<!-- expnote:moc-table:start -->"
 MOC_TABLE_END = "<!-- expnote:moc-table:end -->"
 
@@ -21,12 +23,15 @@ def sync_markdown(
     state_dir: Path | None = None,
     *,
     pull_analysis: bool = False,
+    pull_docs: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
     config = read_config(root, state_dir=state_dir)
     notes_dir = root / config["notes_dir"]
+    docs_dir = root / config["docs_dir"]
     index_path = _auto_index_path(root, state_dir, config)
     notes_dir.mkdir(parents=True, exist_ok=True)
+    docs_dir.mkdir(parents=True, exist_ok=True)
     index_path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_auto_index_target(index_path)
 
@@ -54,6 +59,23 @@ def sync_markdown(
                     (topic["id"],),
                 )
             ]
+        docs = [
+            row_to_dict(row, include_internal=True)
+            for row in conn.execute(
+                """
+                SELECT docs.*, topics.title AS topic_title
+                FROM docs JOIN topics ON docs.topic_id = topics.id
+                WHERE docs.deleted_at IS NULL
+                ORDER BY docs.updated_at DESC, docs.id DESC
+                """
+            )
+        ]
+        related_docs_by_run = _related_docs_by_run(conn)
+        for doc in docs:
+            doc["runs"] = _doc_related_runs(conn, str(doc["id"]))
+        for runs in runs_by_topic.values():
+            for run in runs:
+                run["related_docs"] = related_docs_by_run.get(str(run["id"]), [])
 
     moc_content = _render_moc(topics, runs_by_topic)
     _write_managed_file(index_path, moc_content)
@@ -77,11 +99,31 @@ def sync_markdown(
                 pulled_analysis += 1
             written_runs += 1
 
+    written_docs = 0
+    pulled_docs = 0
+    for doc in docs:
+        doc_path = docs_dir / f"{_safe_filename(doc['id'])}.md"
+        doc = _resolve_doc_body(
+            root,
+            state_dir,
+            doc,
+            doc_path,
+            pull_docs=pull_docs,
+            force=force,
+        )
+        _write_managed_file(doc_path, _render_doc_note(doc))
+        _set_doc_body_hash(root, state_dir, str(doc["id"]), str(doc["body"]))
+        if doc.get("_body_pulled"):
+            pulled_docs += 1
+        written_docs += 1
+
     return {
         "index": str(index_path),
         "moc": str(index_path),
         "run_notes": written_runs,
+        "doc_notes": written_docs,
         "pulled_analysis": pulled_analysis,
+        "pulled_docs": pulled_docs,
     }
 
 
@@ -127,6 +169,7 @@ def _render_moc(
 def _render_run_note(run: dict[str, Any]) -> str:
     metadata = run.get("metadata", {})
     analysis = run.get("analysis") or ""
+    related_docs = run.get("related_docs", [])
     lines = [
         f"# {run['id']}",
         "",
@@ -155,6 +198,11 @@ def _render_run_note(run: dict[str, Any]) -> str:
         )
     else:
         lines.append("_No metadata recorded._")
+    if related_docs:
+        lines.extend(["", "## Related Docs", ""])
+        lines.extend(
+            f"- [[{doc['doc_id']}]] {doc['title']}" for doc in related_docs
+        )
     lines.extend(
         [
             "",
@@ -168,6 +216,67 @@ def _render_run_note(run: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_doc_note(doc: dict[str, Any]) -> str:
+    metadata = doc.get("metadata", {})
+    lines = [
+        f"# {doc['title']}",
+        "",
+        f"- id: `{doc['id']}`",
+        f"- topic: {doc['topic_title']}",
+        f"- updated_at: `{doc['updated_at']}`",
+        "",
+        "## Metadata",
+        "",
+    ]
+    if metadata:
+        lines.extend(
+            f"- `{key}`: {_metadata_value(value)}"
+            for key, value in sorted(metadata.items())
+        )
+    else:
+        lines.append("_No metadata recorded._")
+    lines.extend(
+        [
+            "",
+            "## Related Runs",
+            "",
+            _render_doc_runs_table(doc.get("runs", [])).rstrip(),
+            "",
+            "## Body",
+            "",
+            DOC_BODY_START,
+            "",
+            _doc_body_rendered_text(str(doc.get("body") or "")),
+            "",
+            DOC_BODY_END,
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_doc_runs_table(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "| # | run | role | note | status | result |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for index, row in enumerate(rows, start=1):
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(index),
+                    f"[[{row['run_id']}]]",
+                    _cell(row["role"]),
+                    _cell(row["note"]),
+                    _cell(row["status"]),
+                    _cell(row["result"]),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def sync_moc_section(
@@ -293,6 +402,52 @@ def _set_analysis_hash(
         )
 
 
+def _resolve_doc_body(
+    root: Path,
+    state_dir: Path | None,
+    doc: dict[str, Any],
+    doc_path: Path,
+    *,
+    pull_docs: bool,
+    force: bool,
+) -> dict[str, Any]:
+    existing_body = _extract_doc_body(doc_path)
+    if existing_body is None:
+        return doc
+
+    current_hash = _hash_text(existing_body)
+    rendered_hash = str(doc.get("body_rendered_hash") or "")
+    if rendered_hash and current_hash != rendered_hash:
+        if pull_docs:
+            doc = dict(doc)
+            doc["body"] = existing_body
+            doc["_body_pulled"] = True
+            with transaction(root, state_dir=state_dir) as conn:
+                conn.execute(
+                    "UPDATE docs SET body = ?, updated_at = ? WHERE id = ?",
+                    (existing_body, _now_for_update(), doc["id"]),
+                )
+            return doc
+        if not force:
+            raise RuntimeError(
+                f"{doc_path} has changed document body. Use --pull-docs or --force."
+            )
+    return doc
+
+
+def _set_doc_body_hash(
+    root: Path,
+    state_dir: Path | None,
+    doc_id: str,
+    body: str,
+) -> None:
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            "UPDATE docs SET body_rendered_hash = ? WHERE id = ?",
+            (_hash_text(_doc_body_rendered_text(body)), doc_id),
+        )
+
+
 def _extract_analysis(path: Path) -> str | None:
     if not path.exists():
         return None
@@ -304,6 +459,23 @@ def _extract_analysis(path: Path) -> str | None:
     if match is None:
         return None
     return _strip_marker_padding(match.group(1))
+
+
+def _extract_doc_body(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    match = re.search(
+        re.escape(DOC_BODY_START) + r"\n?(.*?)\n?" + re.escape(DOC_BODY_END),
+        path.read_text(encoding="utf-8"),
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    return _strip_marker_padding(match.group(1))
+
+
+def _doc_body_rendered_text(body: str) -> str:
+    return body or "Write document body here."
 
 
 def _hash_text(value: str) -> str:
@@ -349,6 +521,58 @@ def _moc_section_rows(
                 (moc_path, section),
             )
         ]
+
+
+def _doc_related_runs(conn: Any, doc_id: str) -> list[dict[str, Any]]:
+    return [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT
+                doc_runs.id,
+                doc_runs.doc_id,
+                doc_runs.run_id,
+                doc_runs.position,
+                doc_runs.role,
+                doc_runs.note,
+                runs.status,
+                runs.purpose,
+                runs.result
+            FROM doc_runs
+            JOIN runs ON runs.id = doc_runs.run_id
+            WHERE
+                doc_runs.doc_id = ?
+                AND doc_runs.deleted_at IS NULL
+                AND runs.deleted_at IS NULL
+            ORDER BY doc_runs.position ASC, doc_runs.created_at ASC
+            """,
+            (doc_id,),
+        )
+    ]
+
+
+def _related_docs_by_run(conn: Any) -> dict[str, list[dict[str, Any]]]:
+    related: dict[str, list[dict[str, Any]]] = {}
+    rows = conn.execute(
+        """
+        SELECT
+            doc_runs.run_id,
+            doc_runs.doc_id,
+            doc_runs.position,
+            docs.title
+        FROM doc_runs
+        JOIN docs ON docs.id = doc_runs.doc_id
+        JOIN runs ON runs.id = doc_runs.run_id
+        WHERE
+            doc_runs.deleted_at IS NULL
+            AND docs.deleted_at IS NULL
+            AND runs.deleted_at IS NULL
+        ORDER BY doc_runs.run_id ASC, docs.updated_at DESC, docs.id DESC
+        """
+    )
+    for row in rows:
+        related.setdefault(str(row["run_id"]), []).append(row_to_dict(row))
+    return related
 
 
 def _render_moc_table(rows: list[dict[str, Any]]) -> str:

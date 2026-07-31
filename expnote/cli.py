@@ -11,6 +11,7 @@ import typer
 from expnote.adapters.rlgarden import load_config, run_fields_from_config
 from expnote.db import (
     append_event,
+    default_docs_dir,
     init_store,
     new_id,
     now_iso,
@@ -32,6 +33,7 @@ topic_app = typer.Typer(help="Manage experiment topics.")
 run_app = typer.Typer(help="Manage experiment runs.")
 relation_app = typer.Typer(help="Manage run relations.")
 artifact_app = typer.Typer(help="Manage run artifacts.")
+doc_app = typer.Typer(help="Manage analysis documents.")
 moc_app = typer.Typer(help="Manage MOC section tables.")
 sync_app = typer.Typer(help="Sync projections.")
 import_app = typer.Typer(help="Import external metadata.")
@@ -40,6 +42,7 @@ app.add_typer(topic_app, name="topic")
 app.add_typer(run_app, name="run")
 app.add_typer(relation_app, name="relation")
 app.add_typer(artifact_app, name="artifact")
+app.add_typer(doc_app, name="doc")
 app.add_typer(moc_app, name="moc")
 app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
@@ -86,6 +89,12 @@ _AGENT_GUIDE = {
         "analysis_import": [
             "sync markdown",
             "sync markdown --pull-analysis",
+            "sync markdown --pull-docs",
+        ],
+        "create_doc": [
+            "doc add --doc-id <id> --topic <topic> --title <title>",
+            "doc link <doc_id> <run_id>",
+            "sync markdown",
         ],
         "handoff": [
             "validate --json",
@@ -100,13 +109,21 @@ _AGENT_GUIDE = {
         "run.update": "Update structured run fields and metadata",
         "run.query": "Query runs with restricted SQL-like filters and metadata keys",
         "run.status": "List runs with a specific manual status",
+        "doc.add": "Create a SQL-backed cross-run analysis document",
+        "doc.show": "Read a SQL-backed analysis document and related runs",
+        "doc.list": "List SQL-backed analysis documents",
+        "doc.update": "Update document title, body, and metadata",
+        "doc.link": "Attach a run to a document",
+        "doc.unlink": "Detach a run from a document",
+        "doc.delete": "Soft-delete an analysis document",
         "moc.add": "Add a run to a managed MOC section table",
         "moc.add_topic": "Add all active topic runs to a managed MOC section",
         "moc.sections": "List registered sections for a curated MOC",
         "moc.diff": "Compare a managed MOC section table with SQLite",
         "sync.markdown": "Render SQLite records into Markdown",
-        "sync.all": "Render run notes, auto index, and registered curated MOCs",
+        "sync.all": "Render run notes, analysis documents, auto index, and MOCs",
         "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
+        "sync.markdown.pull_docs": "Import Obsidian document body into SQLite",
         "validate": "Check active record counts before handoff",
     },
     "conflict_policy": {
@@ -114,6 +131,7 @@ _AGENT_GUIDE = {
             "Edit Purpose, Relation, Result, Metadata through CLI only"
         ),
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
+        "documents": "Obsidian document body edits require sync markdown --pull-docs",
         "moc_tables": "Managed MOC tables should be repaired with moc sync",
         "projection_paths": (
             "auto index defaults to state-dir/index.md; curated MOCs use moc --moc-path"
@@ -152,6 +170,18 @@ _AGENT_GUIDE = {
             "expnote run show <id> --root <vault> --state-dir <state> "
             "--field status"
         ),
+        "create_doc": (
+            "expnote doc add --root <vault> --state-dir <state> "
+            "--doc-id <id> --topic <topic> --title <title> "
+            "--run-id <run_id> --body <text> --json"
+        ),
+        "show_doc": (
+            "expnote doc show <id> --root <vault> --state-dir <state> --json"
+        ),
+        "append_doc_body": (
+            "expnote doc update <id> --root <vault> --state-dir <state> "
+            "--append-body <text> --json"
+        ),
         "moc_diff": (
             "expnote moc diff --root <vault> --state-dir <state> "
             "--moc-path <moc.md> --section <heading> --json"
@@ -180,6 +210,10 @@ _AGENT_GUIDE = {
         "status": (
             "status is manual; update it explicitly with "
             "run update <id> --status finished"
+        ),
+        "documents": (
+            "doc body is stored in SQLite; use sync markdown --pull-docs "
+            "to import Obsidian body edits"
         ),
         "curated_mocs": (
             "sync markdown does not update curated MOC tables; use sync all "
@@ -221,6 +255,10 @@ def _render_agent_guide() -> str:
             "expnote run query --where \"status = 'running'\" --json",
             "expnote run update <run_id> --append-analysis <text>",
             "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
+            "expnote doc show <doc_id> --json",
+            "expnote doc add --doc-id <doc_id> --topic <topic> "
+            "--title <title> --run-id <run_id> --body <text> --json",
+            "expnote doc update <doc_id> --append-body <text> --json",
             "",
             "MOC workflow:",
             "expnote moc sections --moc-path <path> --json",
@@ -231,6 +269,7 @@ def _render_agent_guide() -> str:
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
+            "- Import Obsidian doc body with sync markdown --pull-docs",
             "- Check managed MOC tables with expnote moc diff --json",
             "- Auto index defaults to state-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
@@ -294,6 +333,10 @@ def init(
     notes_dir: Annotated[
         str, typer.Option(help="Directory for run notes.")
     ] = "notes/runs",
+    docs_dir: Annotated[
+        str | None,
+        typer.Option(help="Directory for analysis documents."),
+    ] = None,
     index_path: Annotated[
         str,
         typer.Option(
@@ -314,10 +357,12 @@ def init(
     """Initialize an expnote workspace."""
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
+    output_docs_dir = docs_dir or default_docs_dir(notes_dir)
     init_store(
         root,
         state_dir=state_dir,
         notes_dir=notes_dir,
+        docs_dir=docs_dir,
         index_path=index_path,
         moc_path=moc_path,
         project=project,
@@ -330,6 +375,7 @@ def init(
             "root": str(root),
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
+            "docs_dir": output_docs_dir,
             "index_path": output_index_path,
             "index_scope": "root" if moc_path is not None else "state_dir",
         },
@@ -340,6 +386,7 @@ def init(
             "root": str(root),
             "state_dir": str(state_dir or root / ".expnote"),
             "notes_dir": notes_dir,
+            "docs_dir": output_docs_dir,
             "index_path": output_index_path,
             "index_scope": "root" if moc_path is not None else "state_dir",
         },
@@ -800,6 +847,284 @@ def run_query(
     _emit(rows, json_output)
 
 
+@doc_app.command("add")
+def doc_add(
+    doc_id: Annotated[str, typer.Option("--doc-id", help="Stable document id.")],
+    topic: Annotated[str, typer.Option("--topic", help="Topic title.")],
+    title: Annotated[str, typer.Option("--title", help="Document title.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    body: Annotated[str, typer.Option("--body", help="Document body.")] = "",
+    run_ids: Annotated[
+        list[str] | None,
+        typer.Option("--run-id", help="Related run id. Can be used repeatedly."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        tid = _topic_id(conn, topic)
+        conn.execute(
+            """
+            INSERT INTO docs(
+                id, topic_id, title, body, metadata_json, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (doc_id, tid, title, body, "{}", ts, ts),
+        )
+        seen_run_ids: set[str] = set()
+        position = 1
+        for run_id in run_ids or []:
+            if run_id in seen_run_ids:
+                continue
+            _require_run(conn, run_id)
+            seen_run_ids.add(run_id)
+            conn.execute(
+                """
+                INSERT INTO doc_runs(
+                    id, doc_id, run_id, position, role, note, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, '', '', ?, ?)
+                """,
+                (new_id("docrun"), doc_id, run_id, position, ts, ts),
+            )
+            position += 1
+        data = _doc_data(conn, doc_id)
+    append_event(root, "doc.add", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@doc_app.command("show")
+def doc_show(
+    doc_id: Annotated[str, typer.Argument(help="Document id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    with transaction(root, state_dir=state_dir) as conn:
+        data = _doc_data(conn, doc_id)
+    _emit(data, json_output)
+
+
+@doc_app.command("list")
+def doc_list(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    topic: Annotated[
+        str | None, typer.Option(help="Filter by topic title.")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    params: list[object] = []
+    topic_clause = ""
+    if topic is not None:
+        topic_clause = "AND topics.title = ?"
+        params.append(topic)
+    with transaction(root, state_dir=state_dir) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT docs.*, topics.title AS topic_title
+            FROM docs JOIN topics ON docs.topic_id = topics.id
+            WHERE docs.deleted_at IS NULL {topic_clause}
+            ORDER BY docs.updated_at DESC, docs.id DESC
+            """,
+            params,
+        ).fetchall()
+        data = [_doc_from_row(conn, row) for row in rows]
+    _emit(data, json_output)
+
+
+@doc_app.command("update")
+def doc_update(
+    doc_id: Annotated[str, typer.Argument(help="Document id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    title: Annotated[str | None, typer.Option(help="New document title.")] = None,
+    body: Annotated[str | None, typer.Option("--body", help="New body.")] = None,
+    append_body: Annotated[
+        str | None,
+        typer.Option(
+            "--append-body",
+            help="Append to body, separated from existing text by one blank line.",
+        ),
+    ] = None,
+    meta: Annotated[
+        list[str] | None, typer.Option("--meta", help="Metadata key=value to merge.")
+    ] = None,
+    meta_json: Annotated[
+        list[str] | None,
+        typer.Option("--meta-json", help="Typed metadata key=json to merge."),
+    ] = None,
+    metadata_json: Annotated[
+        str | None,
+        typer.Option("--metadata-json", help="Metadata JSON object to merge."),
+    ] = None,
+    unset_meta: Annotated[
+        list[str] | None,
+        typer.Option("--unset-meta", help="Metadata key to delete."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    if body is not None and append_body is not None:
+        raise typer.BadParameter("--body and --append-body cannot be used together")
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        row = _require_doc_row(conn, doc_id)
+        if append_body is not None:
+            current_body = row["body"] or ""
+            body = (
+                append_body
+                if current_body == ""
+                else f"{current_body}\n\n{append_body}"
+            )
+        if title is not None:
+            conn.execute(
+                "UPDATE docs SET title = ?, updated_at = ? WHERE id = ?",
+                (title, ts, doc_id),
+            )
+        if body is not None:
+            conn.execute(
+                "UPDATE docs SET body = ?, updated_at = ? WHERE id = ?",
+                (body, ts, doc_id),
+            )
+        if meta or meta_json or metadata_json or unset_meta:
+            metadata = json.loads(row["metadata_json"] or "{}")
+            try:
+                updates = _merge_metadata_options(meta, meta_json, metadata_json)
+                _check_metadata_unset_conflicts(updates, unset_meta or [])
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            for key in unset_meta or []:
+                metadata.pop(key, None)
+            metadata.update(updates)
+            conn.execute(
+                "UPDATE docs SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False, sort_keys=True), ts, doc_id),
+            )
+        data = _doc_data(conn, doc_id)
+    append_event(root, "doc.update", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@doc_app.command("link")
+def doc_link(
+    doc_id: Annotated[str, typer.Argument(help="Document id.")],
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    role: Annotated[str, typer.Option(help="Run role in this document.")] = "",
+    note: Annotated[str, typer.Option(help="Link note.")] = "",
+    position: Annotated[
+        int | None, typer.Option(help="Position in related runs.")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_doc_row(conn, doc_id)
+        _require_run(conn, run_id)
+        existing = conn.execute(
+            "SELECT position, deleted_at FROM doc_runs WHERE doc_id = ? AND run_id = ?",
+            (doc_id, run_id),
+        ).fetchone()
+        if position is None:
+            if existing is not None and existing["deleted_at"] is None:
+                position = int(existing["position"])
+            else:
+                position = _next_doc_run_position(conn, doc_id)
+        conn.execute(
+            """
+            INSERT INTO doc_runs(
+                id, doc_id, run_id, position, role, note, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id, run_id) DO UPDATE SET
+                position = excluded.position,
+                role = excluded.role,
+                note = excluded.note,
+                updated_at = excluded.updated_at,
+                deleted_at = NULL
+            """,
+            (new_id("docrun"), doc_id, run_id, position, role, note, ts, ts),
+        )
+        _normalize_doc_run_positions(conn, doc_id, ts)
+        data = _doc_data(conn, doc_id)
+    append_event(root, "doc.link", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@doc_app.command("unlink")
+def doc_unlink(
+    doc_id: Annotated[str, typer.Argument(help="Document id.")],
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_doc_row(conn, doc_id)
+        conn.execute(
+            """
+            UPDATE doc_runs
+            SET deleted_at = ?, updated_at = ?
+            WHERE doc_id = ? AND run_id = ?
+            """,
+            (ts, ts, doc_id, run_id),
+        )
+        _normalize_doc_run_positions(conn, doc_id, ts)
+        data = _doc_data(conn, doc_id)
+    append_event(
+        root,
+        "doc.unlink",
+        {"doc_id": doc_id, "run_id": run_id},
+        state_dir=state_dir,
+    )
+    _emit(data, json_output)
+
+
+@doc_app.command("delete")
+def doc_delete(
+    doc_id: Annotated[str, typer.Argument(help="Document id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_doc_row(conn, doc_id)
+        conn.execute(
+            "UPDATE docs SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, doc_id),
+        )
+        conn.execute(
+            """
+            UPDATE doc_runs
+            SET deleted_at = ?, updated_at = ?
+            WHERE doc_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, doc_id),
+        )
+    payload = {"id": doc_id, "deleted_at": ts}
+    append_event(root, "doc.delete", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
 @relation_app.command("add")
 def relation_add(
     src_run_id: Annotated[str, typer.Argument(help="Source run id.")],
@@ -1238,8 +1563,12 @@ def sync_markdown_command(
     pull_analysis: Annotated[
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
+    pull_docs: Annotated[
+        bool, typer.Option("--pull-docs", help="Import document body first.")
+    ] = False,
     force: Annotated[
-        bool, typer.Option("--force", help="Overwrite changed run note Analysis.")
+        bool,
+        typer.Option("--force", help="Overwrite changed Analysis or document body."),
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -1250,6 +1579,7 @@ def sync_markdown_command(
             root,
             state_dir=state_dir,
             pull_analysis=pull_analysis,
+            pull_docs=pull_docs,
             force=force,
         )
     except RuntimeError as exc:
@@ -1274,8 +1604,12 @@ def sync_all_command(
     pull_analysis: Annotated[
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
+    pull_docs: Annotated[
+        bool, typer.Option("--pull-docs", help="Import document body first.")
+    ] = False,
     force: Annotated[
-        bool, typer.Option("--force", help="Overwrite changed run note Analysis.")
+        bool,
+        typer.Option("--force", help="Overwrite changed Analysis or document body."),
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -1286,6 +1620,7 @@ def sync_all_command(
             root,
             state_dir=state_dir,
             pull_analysis=pull_analysis,
+            pull_docs=pull_docs,
             force=force,
         )
     except RuntimeError as exc:
@@ -1527,12 +1862,101 @@ def _parse_query_literal(value: str) -> object:
     return int(value)
 
 
+def _doc_data(conn: sqlite3.Connection, doc_id: str) -> dict[str, object]:
+    row = _require_doc_row(conn, doc_id)
+    return _doc_from_row(conn, row)
+
+
+def _doc_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
+    data = row_to_dict(row)
+    data["runs"] = _doc_runs(conn, str(data["id"]))
+    return data
+
+
+def _doc_runs(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, object]]:
+    return [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT
+                doc_runs.id,
+                doc_runs.doc_id,
+                doc_runs.run_id,
+                doc_runs.position,
+                doc_runs.role,
+                doc_runs.note,
+                runs.status,
+                runs.purpose,
+                runs.result
+            FROM doc_runs
+            JOIN runs ON runs.id = doc_runs.run_id
+            WHERE
+                doc_runs.doc_id = ?
+                AND doc_runs.deleted_at IS NULL
+                AND runs.deleted_at IS NULL
+            ORDER BY doc_runs.position ASC, doc_runs.created_at ASC
+            """,
+            (doc_id,),
+        )
+    ]
+
+
+def _require_doc_row(conn: sqlite3.Connection, doc_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT docs.*, topics.title AS topic_title
+        FROM docs JOIN topics ON docs.topic_id = topics.id
+        WHERE docs.id = ? AND docs.deleted_at IS NULL
+        """,
+        (doc_id,),
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"doc not found: {doc_id}")
+    return row
+
+
 def _require_run(conn: sqlite3.Connection, run_id: str) -> None:
     row = conn.execute(
         "SELECT id FROM runs WHERE id = ? AND deleted_at IS NULL", (run_id,)
     ).fetchone()
     if row is None:
         raise typer.BadParameter(f"run not found: {run_id}")
+
+
+def _next_doc_run_position(conn: sqlite3.Connection, doc_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(position), 0) + 1
+        FROM doc_runs
+        WHERE doc_id = ? AND deleted_at IS NULL
+        """,
+        (doc_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _normalize_doc_run_positions(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    ts: str,
+) -> None:
+    entries = [
+        row
+        for row in conn.execute(
+            """
+            SELECT id
+            FROM doc_runs
+            WHERE doc_id = ? AND deleted_at IS NULL
+            ORDER BY position ASC, created_at ASC
+            """,
+            (doc_id,),
+        )
+    ]
+    for position, entry in enumerate(entries, start=1):
+        conn.execute(
+            "UPDATE doc_runs SET position = ?, updated_at = ? WHERE id = ?",
+            (position, ts, entry["id"]),
+        )
 
 
 def _next_moc_position(conn: sqlite3.Connection, moc_path: str, section: str) -> int:

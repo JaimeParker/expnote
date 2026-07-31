@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -64,13 +64,16 @@ def init_store(
     *,
     state_dir: Path | None = None,
     notes_dir: str,
+    docs_dir: str | None = None,
     index_path: str,
     moc_path: str | None = None,
     project: str | None = None,
 ) -> None:
     paths = paths_for(root, state_dir)
+    docs_dir = docs_dir or default_docs_dir(notes_dir)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     (root / notes_dir).mkdir(parents=True, exist_ok=True)
+    (root / docs_dir).mkdir(parents=True, exist_ok=True)
     if not paths.events_path.exists():
         paths.events_path.write_text("", encoding="utf-8")
     if not paths.config_path.exists():
@@ -82,6 +85,7 @@ def init_store(
                     f'root = "{_toml_string(str(root))}"',
                     f'state_dir = "{_toml_string(str(paths.state_dir))}"',
                     f'notes_dir = "{_toml_string(notes_dir)}"',
+                    f'docs_dir = "{_toml_string(docs_dir)}"',
                     (
                         f'moc_path = "{_toml_string(moc_path)}"'
                         if moc_path is not None
@@ -159,6 +163,31 @@ def migrate(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             deleted_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS docs (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL REFERENCES topics(id),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            body_rendered_hash TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS doc_runs (
+            id TEXT PRIMARY KEY,
+            doc_id TEXT NOT NULL REFERENCES docs(id),
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            position INTEGER NOT NULL,
+            role TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(doc_id, run_id)
+        );
         """
     )
     _add_column_if_missing(conn, "runs", "analysis", "TEXT NOT NULL DEFAULT ''")
@@ -198,6 +227,8 @@ def read_config(root: Path, state_dir: Path | None = None) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         config[key.strip()] = value.strip().strip('"')
+    if "docs_dir" not in config and "notes_dir" in config:
+        config["docs_dir"] = default_docs_dir(config["notes_dir"])
     return config
 
 
@@ -228,7 +259,16 @@ def row_to_dict(
         data["metadata"] = json.loads(data.pop("metadata_json") or "{}")
     if not include_internal:
         data.pop("analysis_rendered_hash", None)
+        data.pop("body_rendered_hash", None)
     return data
+
+
+def default_docs_dir(notes_dir: str) -> str:
+    path = PurePosixPath(notes_dir)
+    parent = path.parent
+    if str(parent) == ".":
+        return "analyses"
+    return str(parent / "analyses")
 
 
 def parse_meta(items: Iterable[str]) -> dict[str, str]:

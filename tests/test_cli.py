@@ -100,6 +100,8 @@ def test_guide_agent_json_is_machine_readable():
     assert "sync all" in json.dumps(data)
     assert "moc.add_topic" in data["commands"]
     assert "moc diff" in json.dumps(data)
+    assert "doc.add" in data["commands"]
+    assert "sync markdown --pull-docs" in json.dumps(data)
 
 
 def test_guide_agent_human_output_mentions_core_workflow():
@@ -110,6 +112,7 @@ def test_guide_agent_human_output_mentions_core_workflow():
     assert "Markdown is a projection" in result.output
     assert "init -> topic add -> run add -> moc add -> sync all" in result.output
     assert "expnote moc sections" in result.output
+    assert "expnote doc show <doc_id> --json" in result.output
     assert "expnote validate --json" in result.output
 
 
@@ -200,6 +203,46 @@ def test_init_supports_index_path_alias(tmp_path):
     assert 'index_path = "custom-index.md"' in config
 
 
+def test_init_records_default_and_custom_docs_dir(tmp_path):
+    default_root = tmp_path / "default"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--root",
+            str(default_root),
+            "--notes-dir",
+            "10 Projects/Baseline/runs",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["docs_dir"] == "10 Projects/Baseline/analyses"
+    assert (default_root / "10 Projects" / "Baseline" / "analyses").exists()
+    config = (default_root / ".expnote" / "config.toml").read_text(encoding="utf-8")
+    assert 'docs_dir = "10 Projects/Baseline/analyses"' in config
+
+    custom_root = tmp_path / "custom"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--root",
+            str(custom_root),
+            "--notes-dir",
+            "runs",
+            "--docs-dir",
+            "docs/analysis",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["docs_dir"] == "docs/analysis"
+    assert (custom_root / "docs" / "analysis").exists()
+
+
 def test_existing_schema_migrates_on_cli_use(tmp_path):
     state_dir = tmp_path / ".expnote"
     state_dir.mkdir()
@@ -254,6 +297,17 @@ def test_existing_schema_migrates_on_cli_use(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["analysis"] == ""
+    conn = sqlite3.connect(state_dir / "expnote.sqlite")
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+        "('docs', 'doc_runs')"
+    ).fetchall()
+    version = conn.execute(
+        "SELECT value FROM meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    conn.close()
+    assert {row[0] for row in rows} == {"docs", "doc_runs"}
+    assert version == "3"
 
 
 def test_external_state_dir_supports_cli_workflow(tmp_path):
@@ -527,6 +581,107 @@ def test_run_status_lists_matching_runs(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["running1"]
+
+
+def test_doc_crud_and_run_links(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+    _add_run(tmp_path, "run2")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--doc-id",
+            "compare1",
+            "--topic",
+            "topic",
+            "--title",
+            "Compare seeds",
+            "--body",
+            "Initial comparison",
+            "--run-id",
+            "run2",
+            "--run-id",
+            "run1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["id"] == "compare1"
+    assert data["title"] == "Compare seeds"
+    assert data["body"] == "Initial comparison"
+    assert [row["run_id"] for row in data["runs"]] == ["run2", "run1"]
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "update",
+            "compare1",
+            "--root",
+            str(tmp_path),
+            "--append-body",
+            "Final note",
+            "--meta",
+            "owner=agent",
+            "--meta-json",
+            "seeds=[1,2]",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["body"] == "Initial comparison\n\nFinal note"
+    assert data["metadata"] == {"owner": "agent", "seeds": [1, 2]}
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "link",
+            "compare1",
+            "run1",
+            "--root",
+            str(tmp_path),
+            "--position",
+            "1",
+            "--role",
+            "baseline",
+            "--note",
+            "main comparison",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert [row["run_id"] for row in data["runs"]] == ["run1", "run2"]
+    assert data["runs"][0]["role"] == "baseline"
+
+    result = runner.invoke(
+        app,
+        ["doc", "unlink", "compare1", "run2", "--root", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert [row["run_id"] for row in data["runs"]] == ["run1"]
+
+    result = runner.invoke(app, ["doc", "list", "--root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["compare1"]
+
+    result = runner.invoke(
+        app, ["doc", "delete", "compare1", "--root", str(tmp_path), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["doc", "list", "--root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
 
 
 def test_duplicate_run_id_errors(tmp_path):

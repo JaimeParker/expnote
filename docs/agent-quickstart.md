@@ -70,7 +70,7 @@ expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
 
 Prefer `expnote sync all` when handing off a workspace with curated MOCs. It
 updates run notes, the auto index, and all registered curated MOC sections.
-`sync markdown` updates run notes and the auto index only.
+`sync markdown` updates run notes, analysis documents, and the auto index only.
 
 ## Query Records
 
@@ -135,10 +135,50 @@ with `run update <id> --status finished`.
 Use `--metadata-json '{...}'` to merge a whole metadata object. Use
 `--meta-json key=json` only for one typed key at a time.
 
+## Cross-run Documents
+
+Use `doc` commands when one analysis document compares or summarizes multiple
+runs. The body and run links are stored in SQLite; Obsidian receives an
+`analyses/<doc_id>.md` projection.
+
+```bash
+expnote doc add \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --doc-id stackcube-seed-summary \
+  --topic "StackCube SAC" \
+  --title "StackCube seed summary" \
+  --run-id a7zf90k7 \
+  --body "Initial cross-run comparison." \
+  --json
+
+expnote doc link stackcube-seed-summary other_wandb_id \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --role ablation \
+  --json
+
+expnote doc update stackcube-seed-summary \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --append-body "Seed 1 reached success earlier than the ablation." \
+  --json
+
+expnote doc show stackcube-seed-summary \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --json
+```
+
+If plain sync refuses to overwrite a changed document body, use
+`sync markdown --pull-docs` to import the Obsidian body into SQLite. Use
+`--force` only when SQLite should overwrite Obsidian document body edits.
+
 ## Obsidian Analysis Imports
 
 Generated Markdown is managed by expnote. The only Obsidian-editable area is the
-run note content inside `expnote:analysis` markers.
+run note content inside `expnote:analysis` markers and the document body inside
+`expnote:doc-body` markers.
 
 If plain sync refuses to overwrite a changed Analysis section:
 

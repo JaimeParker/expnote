@@ -76,10 +76,14 @@ Cyber Brain/
   10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md
   10 Projects/AI Lab RFT 项目/ManiSkill Training/runs/
     <run_id>.md
+  10 Projects/AI Lab RFT 项目/ManiSkill Training/analyses/
+    <doc_id>.md
 ```
 
 If `--state-dir` is omitted, expnote uses `<root>/.expnote`, which is convenient
 for a simple local workspace but not recommended for a synced Obsidian vault.
+If `--docs-dir` is omitted, expnote writes analysis documents next to the run
+notes directory: `.../runs` becomes `.../analyses`.
 
 SQLite is the source of truth. Markdown is a projection for reading, linking, and
 searching. `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` are stored
@@ -96,6 +100,34 @@ expnote sync markdown --pull-analysis
 If Analysis was changed in Obsidian, plain `expnote sync markdown` refuses to
 overwrite it. Use `--pull-analysis` to keep the Obsidian text, or `--force` to
 restore the SQLite version.
+
+## Cross-run analysis documents
+
+Use `doc` commands when one analysis document compares or summarizes multiple
+runs. The document body and run links are stored in SQLite; Obsidian receives a
+generated `analyses/<doc_id>.md` projection.
+
+```bash
+expnote doc add \
+  --doc-id calql-baseline-summary \
+  --topic "Cal-QL baseline" \
+  --title "Cal-QL baseline summary" \
+  --run-id a7zf90k7 \
+  --run-id 53ojw3kc \
+  --body "Initial cross-run comparison." \
+  --json
+
+expnote doc update calql-baseline-summary \
+  --append-body "Seed 1 converged faster than seed 3." \
+  --json
+
+expnote doc show calql-baseline-summary --json
+expnote sync markdown
+```
+
+If a document body is edited in Obsidian, plain `expnote sync markdown` refuses
+to overwrite it. Use `--pull-docs` to import the Obsidian body into SQLite, or
+`--force` to restore the SQLite version.
 
 ## MOC section tables
 
@@ -228,11 +260,11 @@ Agent contract:
   on follow-up commands.
 - Treat non-zero exit status as command failure.
 - Do not edit generated Markdown directly except Analysis inside
-  `expnote:analysis` markers.
+  `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
 - Use `expnote moc diff --json` before trusting a manually edited MOC table.
 - Run `expnote sync all` after structured updates if Markdown and curated MOCs
-  were not synced by the caller workflow. `sync markdown` updates run notes and
-  the auto index only.
+  were not synced by the caller workflow. `sync markdown` updates run notes,
+  analysis documents, and the auto index only.
 - Use `expnote validate --json` before handing off long-lived notes.
 
 ## Validate locally

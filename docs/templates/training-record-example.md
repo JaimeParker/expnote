@@ -11,6 +11,8 @@ Cyber Brain/
   10 Projects/Robot Learning/Training MOC.md
   10 Projects/Robot Learning/runs/
     stackcube-sac-seed1.md
+  10 Projects/Robot Learning/analyses/
+    stackcube-seed-summary.md
 ~/.local/share/expnote/workspaces/robot-learning/
   expnote.sqlite
   events.jsonl
@@ -48,6 +50,15 @@ expnote moc add stackcube-sac-seed1 \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
   --moc-path "10 Projects/Robot Learning/Training MOC.md" \
   --section "StackCube SAC"
+
+expnote doc add \
+  --root "/home/user/Documents/Cyber Brain" \
+  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --doc-id stackcube-seed-summary \
+  --topic "StackCube SAC" \
+  --title "StackCube seed summary" \
+  --run-id stackcube-sac-seed1 \
+  --body "Initial cross-run comparison."
 ```
 
 ## MOC Example
@@ -105,12 +116,46 @@ Watch success rate and critic loss stability.
 <!-- expnote:managed:end -->
 ```
 
-Human edits should stay inside `expnote:analysis` markers. Import those edits
-back into SQLite with:
+## Analysis Document Example
+
+```markdown
+<!-- expnote:managed:start -->
+
+# StackCube seed summary
+
+- id: `stackcube-seed-summary`
+- topic: StackCube SAC
+- updated_at: `2026-07-28T12:00:00+00:00`
+
+## Metadata
+
+_No metadata recorded._
+
+## Related Runs
+
+| # | run | role | note | status | result |
+| --- | --- | --- | --- | --- | --- |
+| 1 | [[stackcube-sac-seed1]] |  |  | running | Training in progress |
+
+## Body
+
+<!-- expnote:doc-body:start -->
+
+Initial cross-run comparison.
+
+<!-- expnote:doc-body:end -->
+
+<!-- expnote:managed:end -->
+```
+
+Human run-note edits should stay inside `expnote:analysis` markers. Human
+analysis-document edits should stay inside `expnote:doc-body` markers. Import
+those edits back into SQLite with:
 
 ```bash
 expnote sync markdown \
   --root "/home/user/Documents/Cyber Brain" \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
-  --pull-analysis
+  --pull-analysis \
+  --pull-docs
 ```

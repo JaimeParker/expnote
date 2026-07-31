@@ -61,6 +61,29 @@ def _add_run(
     assert runner.invoke(app, args).exit_code == 0
 
 
+def _add_doc(tmp_path: Path, doc_id: str = "compare1", body: str = "body") -> None:
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--doc-id",
+            doc_id,
+            "--topic",
+            "topic",
+            "--title",
+            "Compare seeds",
+            "--body",
+            body,
+            "--run-id",
+            "wandb123",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
 def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path)
@@ -433,6 +456,101 @@ def test_markdown_sync_writes_custom_auto_index_to_state_dir(tmp_path):
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["index"] == str(state_dir / "debug" / "index.md")
     assert (state_dir / "debug" / "index.md").exists()
+
+
+def test_markdown_sync_writes_doc_note_and_run_backlink(tmp_path):
+    _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
+    _add_run(tmp_path, analysis="run analysis")
+    _add_doc(tmp_path, body="Compare seed outcomes.")
+
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["doc_notes"] == 1
+    assert data["pulled_docs"] == 0
+
+    doc = (tmp_path / "Project" / "analyses" / "compare1.md").read_text(
+        encoding="utf-8"
+    )
+    run_note = (tmp_path / "Project" / "runs" / "wandb123.md").read_text(
+        encoding="utf-8"
+    )
+    assert "# Compare seeds" in doc
+    assert "| 1 | [[wandb123]]" in doc
+    assert (
+        "<!-- expnote:doc-body:start -->\n\n"
+        "Compare seed outcomes.\n\n"
+        "<!-- expnote:doc-body:end -->"
+    ) in doc
+    assert "## Related Docs" in run_note
+    assert "- [[compare1]] Compare seeds" in run_note
+
+
+def test_markdown_sync_rejects_changed_doc_body_without_policy(tmp_path):
+    _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
+    _add_run(tmp_path)
+    _add_doc(tmp_path, body="SQL body")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
+    doc_path.write_text(
+        doc_path.read_text(encoding="utf-8").replace("SQL body", "Human body"),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "--pull-docs" in result.output
+    assert "--force" in result.output
+
+
+def test_markdown_sync_pull_docs_updates_sql(tmp_path):
+    _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
+    _add_run(tmp_path)
+    _add_doc(tmp_path, body="SQL body")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
+    doc_path.write_text(
+        doc_path.read_text(encoding="utf-8").replace("SQL body", "Human body"),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["sync", "markdown", "--root", str(tmp_path), "--pull-docs"]
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app, ["doc", "show", "compare1", "--root", str(tmp_path), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "Human body"
+
+
+def test_markdown_sync_force_overwrites_changed_doc_body(tmp_path):
+    _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
+    _add_run(tmp_path)
+    _add_doc(tmp_path, body="SQL body")
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
+    doc_path.write_text(
+        doc_path.read_text(encoding="utf-8").replace("SQL body", "Human body"),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["sync", "markdown", "--root", str(tmp_path), "--force"]
+    )
+    assert result.exit_code == 0, result.output
+
+    content = doc_path.read_text(encoding="utf-8")
+    assert "SQL body" in content
+    assert "Human body" not in content
 
 
 def test_markdown_sync_omits_soft_deleted_runs_from_moc(tmp_path):
