@@ -265,6 +265,11 @@ Analysis. expnote inserts one blank line between the old and new text:
 expnote run update lu8qk41s --append-analysis "Reward plateaued after 300k steps."
 ```
 
+When one SQL text field refers to another run, prefer `[[run_id]]`. Obsidian
+renders that as a note link, and the web UI renders it as a run-detail link. The
+web UI also links bare active run ids when it can do so safely, but `[[run_id]]`
+is the clearest format for agents.
+
 `run query` uses a restricted SQL-like syntax. `--where` supports simple
 comparisons joined by `AND`; `--order-by` supports one whitelisted field plus
 optional `ASC` or `DESC`. One-level metadata keys can be queried with
@@ -288,6 +293,8 @@ Agent contract:
   `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
 - Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
   comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
+- Refer to runs as `[[run_id]]` inside Purpose, Relation, Result, Analysis, and
+  doc bodies when the reference should be clickable in both Obsidian and web.
 - Use `expnote markdown table diff --json` before trusting a manually edited
   MOC table.
 - Run `expnote sync all` after structured updates if Markdown and curated MOCs

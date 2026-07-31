@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from expnote.db import paths_for, read_config, row_to_dict, transaction
+from expnote.links import render_obsidian_run_links
 
 MANAGED_START = "<!-- expnote:managed:start -->"
 MANAGED_END = "<!-- expnote:managed:end -->"
@@ -77,8 +78,9 @@ def sync_markdown(
         for runs in runs_by_topic.values():
             for run in runs:
                 run["related_docs"] = related_docs_by_run.get(str(run["id"]), [])
+        active_run_ids = _active_run_ids(conn)
 
-    moc_content = _render_moc(topics, runs_by_topic)
+    moc_content = _render_moc(topics, runs_by_topic, active_run_ids)
     _write_managed_file(index_path, moc_content)
 
     written_runs = 0
@@ -94,8 +96,9 @@ def sync_markdown(
                 pull_analysis=pull_analysis,
                 force=force,
             )
-            _write_managed_file(run_path, _render_run_note(run))
-            _set_analysis_hash(root, state_dir, str(run["id"]), str(run["analysis"]))
+            rendered_analysis = _link_runs(str(run["analysis"]), active_run_ids)
+            _write_managed_file(run_path, _render_run_note(run, active_run_ids))
+            _set_analysis_hash(root, state_dir, str(run["id"]), rendered_analysis)
             if run.get("_analysis_pulled"):
                 pulled_analysis += 1
             written_runs += 1
@@ -112,8 +115,11 @@ def sync_markdown(
             pull_docs=pull_docs,
             force=force,
         )
-        _write_managed_file(doc_path, _render_doc_note(doc))
-        _set_doc_body_hash(root, state_dir, str(doc["id"]), str(doc["body"]))
+        rendered_body = _doc_body_rendered_text(
+            _link_runs(str(doc.get("body") or ""), active_run_ids)
+        )
+        _write_managed_file(doc_path, _render_doc_note(doc, active_run_ids))
+        _set_doc_body_hash(root, state_dir, str(doc["id"]), rendered_body)
         if doc.get("_body_pulled"):
             pulled_docs += 1
         written_docs += 1
@@ -131,6 +137,7 @@ def sync_markdown(
 def _render_moc(
     topics: list[dict[str, Any]],
     runs_by_topic: dict[str, list[dict[str, Any]]],
+    active_run_ids: set[str],
 ) -> str:
     lines = [
         "# Experiment MOC",
@@ -159,9 +166,9 @@ def _render_moc(
                     [
                         str(index),
                         f"[[{run['id']}]]",
-                        _cell(run["purpose"]),
-                        _cell(run["relation"]),
-                        _cell(run["result"]),
+                        _cell(_link_runs(run["purpose"], active_run_ids)),
+                        _cell(_link_runs(run["relation"], active_run_ids)),
+                        _cell(_link_runs(run["result"], active_run_ids)),
                         _cell(run["status"]),
                     ]
                 )
@@ -171,9 +178,9 @@ def _render_moc(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_run_note(run: dict[str, Any]) -> str:
+def _render_run_note(run: dict[str, Any], active_run_ids: set[str]) -> str:
     metadata = run.get("metadata", {})
-    analysis = run.get("analysis") or ""
+    analysis = _link_runs(str(run.get("analysis") or ""), active_run_ids)
     related_docs = run.get("related_docs", [])
     lines = [
         f"# {run['id']}",
@@ -183,15 +190,15 @@ def _render_run_note(run: dict[str, Any]) -> str:
         "",
         "## Purpose",
         "",
-        run["purpose"] or "_TBD_",
+        _link_runs(run["purpose"], active_run_ids) or "_TBD_",
         "",
         "## Relation",
         "",
-        run["relation"] or "_TBD_",
+        _link_runs(run["relation"], active_run_ids) or "_TBD_",
         "",
         "## Result",
         "",
-        run["result"] or "_TBD_",
+        _link_runs(run["result"], active_run_ids) or "_TBD_",
         "",
         "## Metadata",
         "",
@@ -223,7 +230,7 @@ def _render_run_note(run: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_doc_note(doc: dict[str, Any]) -> str:
+def _render_doc_note(doc: dict[str, Any], active_run_ids: set[str]) -> str:
     metadata = doc.get("metadata", {})
     lines = [
         f"# {doc['title']}",
@@ -247,13 +254,15 @@ def _render_doc_note(doc: dict[str, Any]) -> str:
             "",
             "## Related Runs",
             "",
-            _render_doc_runs_table(doc.get("runs", [])).rstrip(),
+            _render_doc_runs_table(doc.get("runs", []), active_run_ids).rstrip(),
             "",
             "## Body",
             "",
             DOC_BODY_START,
             "",
-            _doc_body_rendered_text(str(doc.get("body") or "")),
+            _doc_body_rendered_text(
+                _link_runs(str(doc.get("body") or ""), active_run_ids)
+            ),
             "",
             DOC_BODY_END,
         ]
@@ -261,7 +270,7 @@ def _render_doc_note(doc: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_doc_runs_table(rows: list[dict[str, Any]]) -> str:
+def _render_doc_runs_table(rows: list[dict[str, Any]], active_run_ids: set[str]) -> str:
     lines = [
         "| # | run | role | note | status | result |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -273,10 +282,10 @@ def _render_doc_runs_table(rows: list[dict[str, Any]]) -> str:
                 [
                     str(index),
                     f"[[{row['run_id']}]]",
-                    _cell(row["role"]),
-                    _cell(row["note"]),
+                    _cell(_link_runs(row["role"], active_run_ids)),
+                    _cell(_link_runs(row["note"], active_run_ids)),
                     _cell(row["status"]),
-                    _cell(row["result"]),
+                    _cell(_link_runs(row["result"], active_run_ids)),
                 ]
             )
             + " |"
@@ -293,7 +302,9 @@ def sync_moc_section(
     path = root / moc_path
     _ensure_curated_moc_target(path)
     rows = _moc_section_rows(root, state_dir, moc_path, section)
-    table = _render_moc_table(rows)
+    with transaction(root, state_dir=state_dir) as conn:
+        active_run_ids = _active_run_ids(conn)
+    table = _render_moc_table(rows, active_run_ids)
     _write_moc_section_table(path, section, table)
     return {"moc_path": str(path), "section": section, "rows": len(rows)}
 
@@ -306,7 +317,9 @@ def diff_moc_section(
 ) -> dict[str, Any]:
     path = root / moc_path
     rows = _moc_section_rows(root, state_dir, moc_path, section)
-    expected = _render_moc_table(rows).strip()
+    with transaction(root, state_dir=state_dir) as conn:
+        active_run_ids = _active_run_ids(conn)
+    expected = _render_moc_table(rows, active_run_ids).strip()
     observed = _extract_moc_table(path, section).strip()
     expected_ids = [str(row["run_id"]) for row in rows]
     observed_ids = _run_ids_from_table(observed)
@@ -580,7 +593,18 @@ def _related_docs_by_run(conn: Any) -> dict[str, list[dict[str, Any]]]:
     return related
 
 
-def _render_moc_table(rows: list[dict[str, Any]]) -> str:
+def _active_run_ids(conn: Any) -> set[str]:
+    return {
+        str(row["id"])
+        for row in conn.execute("SELECT id FROM runs WHERE deleted_at IS NULL")
+    }
+
+
+def _link_runs(value: str, active_run_ids: set[str]) -> str:
+    return render_obsidian_run_links(value or "", active_run_ids)
+
+
+def _render_moc_table(rows: list[dict[str, Any]], active_run_ids: set[str]) -> str:
     lines = [
         "| # | run | purpose | relation | result | status |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -592,9 +616,9 @@ def _render_moc_table(rows: list[dict[str, Any]]) -> str:
                 [
                     str(index),
                     f"[[{row['run_id']}]]",
-                    _cell(row["purpose"]),
-                    _cell(row["relation"]),
-                    _cell(row["result"]),
+                    _cell(_link_runs(row["purpose"], active_run_ids)),
+                    _cell(_link_runs(row["relation"], active_run_ids)),
+                    _cell(_link_runs(row["result"], active_run_ids)),
                     _cell(row["status"]),
                 ]
             )

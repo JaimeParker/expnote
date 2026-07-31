@@ -42,6 +42,8 @@ def _add_run(
     tmp_path: Path,
     run_id: str = "wandb123",
     purpose: str = "purpose",
+    relation: str = "",
+    result: str = "",
     analysis: str | None = None,
 ) -> None:
     args = [
@@ -55,6 +57,10 @@ def _add_run(
         run_id,
         "--purpose",
         purpose,
+        "--relation",
+        relation,
+        "--result",
+        result,
     ]
     if analysis is not None:
         args.extend(["--analysis", analysis])
@@ -108,6 +114,60 @@ def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_pat
     assert first == second
     assert "[[wandb123]]" in second
     assert "manual analysis" in note.read_text(encoding="utf-8")
+
+
+def test_markdown_sync_links_active_run_ids_in_text_fields(tmp_path):
+    _setup_workspace(tmp_path)
+    _add_run(tmp_path, run_id="target")
+    _add_run(
+        tmp_path,
+        run_id="source",
+        purpose="compare target and [[missing]]",
+        relation="see `target` and target",
+        result="checkpoint-target.pt target",
+        analysis="analysis mentions target\n\n```text\ntarget\n```",
+    )
+    assert (
+        runner.invoke(
+            app, ["run", "delete", "target", "--root", str(tmp_path), "--json"]
+        ).exit_code
+        == 0
+    )
+    _add_run(tmp_path, run_id="active")
+    assert (
+        runner.invoke(
+            app,
+            [
+                "run",
+                "update",
+                "source",
+                "--root",
+                str(tmp_path),
+                "--purpose",
+                "compare active and [[target]]",
+                "--relation",
+                "see `active` and active",
+                "--result",
+                "checkpoint-active.pt active",
+                "--analysis",
+                "analysis mentions active\n\n```text\nactive\n```",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    note = (tmp_path / "ManiSkill Training" / "source.md").read_text(encoding="utf-8")
+    assert "compare [[active]] and target" in note
+    assert "see `active` and [[active]]" in note
+    assert "checkpoint-active.pt [[active]]" in note
+    assert "analysis mentions [[active]]" in note
+    assert "```text\nactive\n```" in note
+
+    second = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    assert second.exit_code == 0, second.output
 
 
 def test_markdown_sync_rejects_changed_analysis_without_policy(tmp_path):

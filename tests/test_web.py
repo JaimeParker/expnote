@@ -6,7 +6,15 @@ from typer.testing import CliRunner
 
 from expnote.cli import app as cli_app
 from expnote.db import transaction
-from expnote.web import _INDEX_HTML, _doc_runs, _docs, _runs, _topics, render_markdown
+from expnote.web import (
+    _INDEX_HTML,
+    _active_run_ids,
+    _doc_runs,
+    _docs,
+    _runs,
+    _topics,
+    render_markdown,
+)
 
 runner = CliRunner()
 
@@ -120,6 +128,50 @@ def test_web_markdown_renderer_escapes_raw_html():
     assert "<strong>ok</strong>" in rendered
 
 
+def test_web_markdown_renderer_links_active_run_ids():
+    rendered = render_markdown(
+        "compare [[run1]] with run2, [[missing]], `run1`, and /tmp/run2",
+        {"run1", "run2"},
+    )
+
+    assert '<a href="#/run/run1" data-run-link="run1">run1</a>' in rendered
+    assert '<a href="#/run/run2" data-run-link="run2">run2</a>' in rendered
+    assert "<code>run1</code>" in rendered
+    assert "/tmp/run2" in rendered
+    assert "[[missing]]" not in rendered
+    assert "missing" in rendered
+
+
+def test_web_queries_include_linked_text_html(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--root",
+                str(tmp_path),
+                "--purpose",
+                "compare wandb123",
+                "--relation",
+                "see [[missing]] and wandb123",
+                "--analysis",
+                "analysis wandb123",
+            ],
+        ).exit_code
+        == 0
+    )
+    with transaction(tmp_path) as conn:
+        active_run_ids = _active_run_ids(conn)
+        runs = _runs(conn, moc_id="baseline", active_run_ids=active_run_ids)
+
+    assert 'href="#/run/wandb123"' in runs[0]["purpose_html"]
+    assert "missing" in runs[0]["relation_html"]
+    assert "[[missing]]" not in runs[0]["relation_html"]
+
+
 def test_web_index_has_routes_and_topic_table_without_metadata():
     assert "window.addEventListener('hashchange', renderRoute)" in _INDEX_HTML
     assert "history.back()" in _INDEX_HTML
@@ -134,6 +186,9 @@ def test_web_index_has_routes_and_topic_table_without_metadata():
     assert "topic_title" not in _INDEX_HTML[topic_table_start:topic_table_end]
     assert 'table data-table="doc-runs"' in _INDEX_HTML
     assert "r.run_id" in _INDEX_HTML
+    assert "r.purpose_html" in _INDEX_HTML
+    assert "r.relation_html" in _INDEX_HTML
+    assert "r.result_html" in _INDEX_HTML
     doc_run_table_start = _INDEX_HTML.index('table data-table="doc-runs"')
     doc_run_table_end = _INDEX_HTML.index("</table>", doc_run_table_start)
     assert "topic_title" not in _INDEX_HTML[doc_run_table_start:doc_run_table_end]

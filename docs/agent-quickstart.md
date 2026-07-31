@@ -26,6 +26,8 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
   commands, except human-authored Obsidian Analysis imports.
 - Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
   comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
+- Write clickable run references as `[[run_id]]` in Purpose, Relation, Result,
+  Analysis, and doc bodies. Obsidian and the web UI both resolve that form.
 
 ## Minimal Workflow
 
@@ -147,6 +149,10 @@ expnote run update a7zf90k7 \
 Use `--append-analysis` when adding observations to existing Analysis. It inserts
 one blank line between old and new text. Use `--analysis` only when replacing the
 whole Analysis field.
+
+When one run refers to another run, prefer `[[run_id]]` in SQL text fields. The
+web UI also links bare active run ids when safe, but `[[run_id]]` is the least
+ambiguous form for agents and remains clickable in Obsidian.
 
 Use `run status <status> --json` for direct status lookup before handoff.
 `status` is manual. If external checks show a run has completed, update SQLite

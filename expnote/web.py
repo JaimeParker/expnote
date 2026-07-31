@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
 from expnote.db import row_to_dict, transaction
+from expnote.links import render_html_run_links
 
 
 def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
@@ -60,7 +61,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     @app.get("/api/topics/{topic_id}/runs")
     def api_topic_runs(topic_id: str) -> list[dict[str, Any]]:
         with transaction(root, state_dir=state_dir) as conn:
-            return _runs(conn, topic_id=topic_id)
+            return _runs(conn, topic_id=topic_id, active_run_ids=_active_run_ids(conn))
 
     @app.get("/api/runs")
     def api_runs(
@@ -70,7 +71,14 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         q: str | None = None,
     ) -> list[dict[str, Any]]:
         with transaction(root, state_dir=state_dir) as conn:
-            return _runs(conn, moc_id=moc_id, topic_id=topic_id, status=status, q=q)
+            return _runs(
+                conn,
+                moc_id=moc_id,
+                topic_id=topic_id,
+                status=status,
+                q=q,
+                active_run_ids=_active_run_ids(conn),
+            )
 
     @app.get("/api/runs/{run_id}")
     def api_run(run_id: str) -> dict[str, Any]:
@@ -88,8 +96,11 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Run not found")
-            data = row_to_dict(row)
-            data["analysis_html"] = render_markdown(str(data.get("analysis") or ""))
+            active_run_ids = _active_run_ids(conn)
+            data = _render_run_text_fields(row_to_dict(row), active_run_ids)
+            data["analysis_html"] = render_markdown(
+                str(data.get("analysis") or ""), active_run_ids
+            )
             data["artifacts"] = [
                 row_to_dict(artifact)
                 for artifact in conn.execute(
@@ -136,21 +147,31 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Doc not found")
+            active_run_ids = _active_run_ids(conn)
             data = row_to_dict(row)
-            data["body_html"] = render_markdown(str(data.get("body") or ""))
-            data["runs"] = _doc_runs(conn, doc_id)
+            data["body_html"] = render_markdown(
+                str(data.get("body") or ""), active_run_ids
+            )
+            data["runs"] = _doc_runs(conn, doc_id, active_run_ids=active_run_ids)
             return data
 
     return app
 
 
-def render_markdown(text: str) -> str:
+def render_markdown(text: str, active_run_ids: set[str] | None = None) -> str:
     escaped = html.escape(text)
+    escaped = render_html_run_links(escaped, active_run_ids or set())
     return markdown_lib.markdown(
         escaped,
         extensions=["fenced_code", "tables", "sane_lists"],
         output_format="html5",
     )
+
+
+def render_inline_text(text: str, active_run_ids: set[str] | None = None) -> str:
+    escaped = html.escape(text or "")
+    linked = render_html_run_links(escaped, active_run_ids or set())
+    return linked.replace("\n", "<br>")
 
 
 def _require_moc(conn: sqlite3.Connection, moc_id: str) -> None:
@@ -185,6 +206,7 @@ def _runs(
     topic_id: str | None = None,
     status: str | None = None,
     q: str | None = None,
+    active_run_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     clauses = ["runs.deleted_at IS NULL", "topics.deleted_at IS NULL"]
     params: list[Any] = []
@@ -205,8 +227,9 @@ def _runs(
         like = f"%{q}%"
         params.extend([like, like, like, like, like])
     where = " AND ".join(clauses)
+    active_run_ids = active_run_ids or set()
     return [
-        row_to_dict(row)
+        _render_run_text_fields(row_to_dict(row), active_run_ids)
         for row in conn.execute(
             f"""
             SELECT runs.*, topics.title AS topic_title, topics.moc_id,
@@ -261,9 +284,15 @@ def _docs(
     ]
 
 
-def _doc_runs(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
+def _doc_runs(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    *,
+    active_run_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    active_run_ids = active_run_ids or set()
     return [
-        row_to_dict(row)
+        _render_doc_run_text_fields(row_to_dict(row), active_run_ids)
         for row in conn.execute(
             """
             SELECT doc_runs.*, runs.status, runs.purpose, runs.relation, runs.result,
@@ -279,6 +308,29 @@ def _doc_runs(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
             (doc_id,),
         )
     ]
+
+
+def _active_run_ids(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row["id"])
+        for row in conn.execute("SELECT id FROM runs WHERE deleted_at IS NULL")
+    }
+
+
+def _render_run_text_fields(
+    row: dict[str, Any], active_run_ids: set[str]
+) -> dict[str, Any]:
+    for field in ("purpose", "relation", "result"):
+        row[f"{field}_html"] = render_inline_text(str(row.get(field) or ""), active_run_ids)
+    return row
+
+
+def _render_doc_run_text_fields(
+    row: dict[str, Any], active_run_ids: set[str]
+) -> dict[str, Any]:
+    for field in ("role", "note", "purpose", "result"):
+        row[f"{field}_html"] = render_inline_text(str(row.get(field) or ""), active_run_ids)
+    return row
 
 
 _INDEX_HTML = """
@@ -647,11 +699,11 @@ _INDEX_HTML = """
     }
     function topicRunTable(rows) {
       if (!rows.length) return empty('No runs to display.');
-      return `<div class="table-wrap"><table data-table="topic-runs"><thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td>${statusBadge(r.status)}</td><td>${esc(r.purpose)}</td><td>${esc(r.relation)}</td><td>${esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="topic-runs"><thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td>${statusBadge(r.status)}</td><td>${r.purpose_html || esc(r.purpose)}</td><td>${r.relation_html || esc(r.relation)}</td><td>${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function docRunTable(rows) {
       if (!rows.length) return empty('No related runs linked to this document.');
-      return `<div class="table-wrap"><table data-table="doc-runs"><thead><tr><th>run</th><th>role</th><th>note</th><th>status</th><th>purpose</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td><td>${esc(r.role || '')}</td><td>${esc(r.note || '')}</td><td>${statusBadge(r.status)}</td><td>${esc(r.purpose)}</td><td>${esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="doc-runs"><thead><tr><th>run</th><th>role</th><th>note</th><th>status</th><th>purpose</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td><td>${r.role_html || esc(r.role || '')}</td><td>${r.note_html || esc(r.note || '')}</td><td>${statusBadge(r.status)}</td><td>${r.purpose_html || esc(r.purpose)}</td><td>${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function docTable(rows) {
       if (!rows.length) return empty('No analysis documents yet.');
@@ -660,7 +712,7 @@ _INDEX_HTML = """
     async function loadRun(id) {
       await ensureMocs();
       const r = await api('/api/runs/' + encodeURIComponent(id));
-      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section><section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
+      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section><section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
     }
     async function loadDoc(id) {
       await ensureMocs();
