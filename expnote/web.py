@@ -11,7 +11,7 @@ import markdown as markdown_lib
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from expnote.db import row_to_dict, transaction
+from expnote.db import readonly_transaction, row_to_dict
 from expnote.links import render_html_run_links
 from expnote.wandb_live import (
     WandbLiveError,
@@ -45,7 +45,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/mocs")
     def api_mocs() -> list[dict[str, Any]]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             return [
                 row_to_dict(row)
                 for row in conn.execute(
@@ -59,7 +59,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/mocs/{moc_id}")
     def api_moc(moc_id: str) -> dict[str, Any]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 "SELECT * FROM mocs WHERE id = ? AND deleted_at IS NULL",
                 (moc_id,),
@@ -73,13 +73,13 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/mocs/{moc_id}/topics")
     def api_moc_topics(moc_id: str) -> list[dict[str, Any]]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             _require_moc(conn, moc_id)
             return _topics(conn, moc_id)
 
     @app.get("/api/topics/{topic_id}/runs")
     def api_topic_runs(topic_id: str) -> list[dict[str, Any]]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             return _runs(conn, topic_id=topic_id, active_run_ids=_active_run_ids(conn))
 
     @app.get("/api/runs")
@@ -89,7 +89,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         status: str | None = None,
         q: str | None = None,
     ) -> list[dict[str, Any]]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             return _runs(
                 conn,
                 moc_id=moc_id,
@@ -109,7 +109,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/runs/{run_id}")
     def api_run(run_id: str) -> dict[str, Any]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
                 SELECT runs.*, topics.title AS topic_title, topics.moc_id,
@@ -155,7 +155,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/wandb")
     def api_run_wandb(run_id: str) -> dict[str, Any]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
                 SELECT id, status, metadata_json
@@ -200,7 +200,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         if not run_ids:
             return {"runs": [], "skipped": [], "errors": []}
 
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             rows = {
                 str(row["id"]): row_to_dict(row)
                 for row in conn.execute(
@@ -271,12 +271,12 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         moc_id: str | None = None,
         q: str | None = None,
     ) -> list[dict[str, Any]]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             return _docs(conn, moc_id=moc_id, q=q)
 
     @app.get("/api/docs/{doc_id}")
     def api_doc(doc_id: str) -> dict[str, Any]:
-        with transaction(root, state_dir=state_dir) as conn:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
                 SELECT docs.*, mocs.title AS moc_title

@@ -19,6 +19,7 @@ from expnote.db import (
     now_iso,
     parse_meta,
     parse_meta_json,
+    readonly_transaction,
     row_to_dict,
     transaction,
 )
@@ -106,8 +107,8 @@ _AGENT_GUIDE = {
             "run show <run_id> --json",
             "run show <run_id> --field purpose",
             "run status running --json",
+            "run query --status running --json",
             'run query --where "metadata.seed = 1" --json',
-            "run query --where \"status = 'running'\" --json",
         ],
         "analysis_import": [
             "sync markdown",
@@ -293,8 +294,8 @@ def _render_agent_guide() -> str:
             "expnote run show <run_id> --json",
             "expnote run show <run_id> --field purpose",
             "expnote run status running --json",
+            "expnote run query --status running --json",
             'expnote run query --where "metadata.seed = 1" --json',
-            "expnote run query --where \"status = 'running'\" --json",
             "expnote run update <run_id> --append-analysis <text>",
             "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
             "expnote doc show <doc_id> --json",
@@ -550,7 +551,7 @@ def topic_list(
         clauses.append("topics.moc_id = ?")
         params.append(moc_id)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -794,7 +795,7 @@ def _list_runs(
         clauses.append("topics.moc_id = ?")
         params.append(moc_id)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         return [
             row_to_dict(row)
             for row in conn.execute(
@@ -850,7 +851,7 @@ def run_show(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         row = conn.execute(
             """
             SELECT runs.*, topics.title AS topic_title, topics.moc_id,
@@ -982,6 +983,7 @@ def run_delete(
 def run_query(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
+    status: Annotated[str | None, typer.Option(help="Filter by run status.")] = None,
     where: Annotated[
         str, typer.Option(help="Restricted SQL-like WHERE expression.")
     ] = "1 = 1",
@@ -995,8 +997,11 @@ def run_query(
     root = ctx.root
     state_dir = ctx.workspace_dir
     where_sql, where_params = _compile_run_where(where)
+    if status is not None:
+        where_sql = f"({where_sql}) AND runs.status = ?"
+        where_params.append(status)
     order_sql = _compile_run_order_by(order_by)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -1077,7 +1082,7 @@ def doc_show(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         data = _doc_data(conn, doc_id)
     _emit(data, json_output)
 
@@ -1099,7 +1104,7 @@ def doc_list(
     if moc_id is not None:
         moc_clause = "AND docs.moc_id = ?"
         params.append(moc_id)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = conn.execute(
             f"""
             SELECT docs.*, mocs.title AS moc_title
@@ -1393,7 +1398,7 @@ def artifact_list(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -1469,7 +1474,7 @@ def sql_moc_list(
     root = ctx.root
     state_dir = ctx.workspace_dir
     where = "" if include_deleted else "WHERE deleted_at IS NULL"
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -1489,7 +1494,7 @@ def sql_moc_show(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         data = _moc_data(conn, moc_id)
     _emit(data, json_output)
 
@@ -1716,7 +1721,7 @@ def moc_list(
     if section is not None:
         section_clause = "AND moc_entries.section = ?"
         params.append(section)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
@@ -2038,7 +2043,7 @@ def validate(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         counts = {
             "topics": _count_active(conn, "topics"),
             "runs": _count_active(conn, "runs"),
@@ -2507,7 +2512,7 @@ def _registered_moc_sections(
     if moc_path is not None:
         moc_clause = "AND moc_path = ?"
         params.append(moc_path)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         return [
             {
                 "moc_path": str(row["moc_path"]),
@@ -2533,7 +2538,7 @@ def _moc_section_seen(
     moc_path: str,
     section: str,
 ) -> bool:
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         row = conn.execute(
             """
             SELECT 1 FROM moc_entries

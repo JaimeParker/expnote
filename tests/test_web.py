@@ -132,6 +132,25 @@ def test_web_queries_expose_sql_moc_and_run_detail(tmp_path):
     assert doc_runs[0]["relation"] == ""
 
 
+def test_web_get_endpoints_work_with_readonly_database(tmp_path):
+    _workspace(tmp_path)
+    db_path = tmp_path / ".expnote" / "expnote.sqlite"
+    db_path.chmod(0o444)
+    app = create_app(tmp_path)
+
+    def route(path: str):
+        return next(item for item in app.routes if getattr(item, "path", None) == path)
+
+    try:
+        assert route("/api/mocs").endpoint()[0]["id"] == "baseline"
+        assert route("/api/runs").endpoint()[0]["id"] == "wandb123"
+        assert route("/api/runs/{run_id}").endpoint("wandb123")["id"] == "wandb123"
+        assert route("/api/docs").endpoint()[0]["id"] == "summary"
+        assert route("/api/docs/{doc_id}").endpoint("summary")["id"] == "summary"
+    finally:
+        db_path.chmod(0o644)
+
+
 def test_web_markdown_renderer_escapes_raw_html():
     rendered = render_markdown("<script>alert(1)</script>\n\n**ok**")
 

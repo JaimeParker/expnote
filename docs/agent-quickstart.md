@@ -105,7 +105,8 @@ expnote run show a7zf90k7 \
 
 expnote run query \
   --workspace example \
-  --where "status = 'running' AND metadata.seed = 1" \
+  --status running \
+  --where "metadata.seed = 1" \
   --order-by updated_at DESC \
   --json
 
@@ -143,6 +144,8 @@ web UI also links bare active run ids when safe, but `[[run_id]]` is the least
 ambiguous form for agents and remains clickable in Obsidian.
 
 Use `run status <status> --json` for direct status lookup before handoff.
+Use `run query --status <status> --where ... --json` when combining status with
+metadata or topic filters.
 `status` is manual. If external checks show a run has completed, update SQLite
 with `run update <id> --status finished`.
 

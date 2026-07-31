@@ -46,6 +46,15 @@ def connect(root: Path, state_dir: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(root: Path, state_dir: Path | None = None) -> sqlite3.Connection:
+    paths = paths_for(root, state_dir)
+    uri = f"{paths.db_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 @contextmanager
 def transaction(root: Path, state_dir: Path | None = None):
     conn = connect(root, state_dir)
@@ -55,6 +64,15 @@ def transaction(root: Path, state_dir: Path | None = None):
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def readonly_transaction(root: Path, state_dir: Path | None = None):
+    conn = connect_readonly(root, state_dir)
+    try:
+        yield conn
     finally:
         conn.close()
 

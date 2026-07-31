@@ -307,7 +307,7 @@ def test_init_records_default_and_custom_docs_dir(tmp_path):
     assert (custom_root / "docs" / "analysis").exists()
 
 
-def test_existing_schema_migrates_on_cli_use(tmp_path):
+def test_existing_schema_migrates_on_mutating_cli_use(tmp_path):
     state_dir = tmp_path / ".expnote"
     state_dir.mkdir()
     (state_dir / "events.jsonl").write_text("", encoding="utf-8")
@@ -362,6 +362,23 @@ def test_existing_schema_migrates_on_cli_use(tmp_path):
             "old1",
             "--workspace-dir",
             str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "no such table: mocs" in str(result.exception)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "old1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--status",
+            "finished",
             "--json",
         ],
     )
@@ -1775,6 +1792,31 @@ def test_run_query_supports_restricted_where_and_order_by(tmp_path):
     assert [row["id"] for row in json.loads(result.output)] == ["abc123"]
 
 
+def test_run_query_supports_status_option(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", status="running")
+    _add_run(tmp_path, "run2", status="running")
+    _add_run(tmp_path, "done1", status="finished")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "query",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--status",
+            "running",
+            "--where",
+            "id = 'run2'",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["run2"]
+
+
 def test_run_query_supports_analysis_field(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "abc123", analysis="useful analysis")
@@ -1942,6 +1984,133 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "[[moc1]]" not in (tmp_path / moc_path).read_text(encoding="utf-8")
+
+
+def test_query_commands_work_with_readonly_database(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "readonly1", status="running", purpose="readonly purpose")
+    moc_path = "Inbox/Readonly MOC.md"
+    workspace_args = ["--workspace-dir", str(tmp_path / ".expnote")]
+    assert (
+        runner.invoke(
+            app,
+            [
+                "artifact",
+                "add",
+                "readonly1",
+                "checkpoint.pt",
+                *workspace_args,
+                "--json",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "doc",
+                "add",
+                *workspace_args,
+                "--doc-id",
+                "readonly-doc",
+                "--moc-id",
+                "default",
+                "--title",
+                "Readonly doc",
+                "--run-id",
+                "readonly1",
+                "--body",
+                "Readonly body",
+                "--json",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "markdown",
+                "table",
+                "add",
+                "readonly1",
+                *workspace_args,
+                "--moc-path",
+                moc_path,
+                "--section",
+                "Readonly",
+                "--json",
+            ],
+        ).exit_code
+        == 0
+    )
+    events_before = (tmp_path / ".expnote" / "events.jsonl").read_text(
+        encoding="utf-8"
+    )
+    db_path = tmp_path / ".expnote" / "expnote.sqlite"
+    db_path.chmod(0o444)
+    commands = [
+        ["topic", "list", *workspace_args, "--json"],
+        ["run", "list", *workspace_args, "--json"],
+        ["run", "status", "running", *workspace_args, "--json"],
+        ["run", "show", "readonly1", *workspace_args, "--json"],
+        ["run", "show", "readonly1", *workspace_args, "--field", "status"],
+        [
+            "run",
+            "query",
+            *workspace_args,
+            "--where",
+            "status = 'running'",
+            "--json",
+        ],
+        ["moc", "list", *workspace_args, "--json"],
+        ["moc", "show", "default", *workspace_args, "--json"],
+        ["doc", "list", *workspace_args, "--json"],
+        ["doc", "show", "readonly-doc", *workspace_args, "--json"],
+        ["artifact", "list", "readonly1", *workspace_args, "--json"],
+        [
+            "markdown",
+            "table",
+            "list",
+            *workspace_args,
+            "--moc-path",
+            moc_path,
+            "--json",
+        ],
+        [
+            "markdown",
+            "table",
+            "sections",
+            *workspace_args,
+            "--moc-path",
+            moc_path,
+            "--json",
+        ],
+        [
+            "markdown",
+            "table",
+            "diff",
+            *workspace_args,
+            "--moc-path",
+            moc_path,
+            "--section",
+            "Readonly",
+            "--json",
+        ],
+        ["validate", *workspace_args, "--json"],
+    ]
+
+    try:
+        for command in commands:
+            result = runner.invoke(app, command)
+            assert result.exit_code == 0, f"{command}: {result.output}"
+    finally:
+        db_path.chmod(0o644)
+
+    assert (
+        tmp_path / ".expnote" / "events.jsonl"
+    ).read_text(encoding="utf-8") == events_before
 
 
 def test_moc_sections_lists_registered_sections(tmp_path):
@@ -2271,6 +2440,66 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
     assert data["changed"] is True
     assert data["missing"] == ["moc1"]
     assert data["stale"] == ["manual"]
+
+
+def test_moc_diff_reads_observed_ids_from_run_column_only(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "moc1", purpose="p1")
+    _add_run(tmp_path, "compare1", purpose="comparison")
+    moc_path = "Inbox/Test MOC.md"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "moc1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--relation",
+            "Compare against [[compare1]].",
+            "--result",
+            "Result mentions [[compare1]].",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "markdown",
+            "table",
+            "add",
+            "moc1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "markdown",
+            "table",
+            "diff",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--moc-path",
+            moc_path,
+            "--section",
+            "StackCube",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["observed"] == ["moc1"]
+    assert data["missing"] == []
+    assert data["stale"] == []
 
 
 def test_moc_diff_reports_projection_conflict(tmp_path):

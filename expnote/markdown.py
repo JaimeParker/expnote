@@ -6,7 +6,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from expnote.db import paths_for, read_config, row_to_dict, transaction
+from expnote.db import (
+    paths_for,
+    read_config,
+    readonly_transaction,
+    row_to_dict,
+    transaction,
+)
 from expnote.links import render_obsidian_run_links
 
 MANAGED_START = "<!-- expnote:managed:start -->"
@@ -36,7 +42,7 @@ def sync_markdown(
     index_path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_auto_index_target(index_path)
 
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         topics = [
             row_to_dict(row)
             for row in conn.execute(
@@ -302,7 +308,7 @@ def sync_moc_section(
     path = root / moc_path
     _ensure_curated_moc_target(path)
     rows = _moc_section_rows(root, state_dir, moc_path, section)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         active_run_ids = _active_run_ids(conn)
     table = _render_moc_table(rows, active_run_ids)
     _write_moc_section_table(path, section, table)
@@ -317,7 +323,7 @@ def diff_moc_section(
 ) -> dict[str, Any]:
     path = root / moc_path
     rows = _moc_section_rows(root, state_dir, moc_path, section)
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         active_run_ids = _active_run_ids(conn)
     expected = _render_moc_table(rows, active_run_ids).strip()
     observed = _extract_moc_table(path, section).strip()
@@ -344,7 +350,7 @@ def projection_conflicts(
     config = read_config(root, state_dir=state_dir)
     auto_index = _auto_index_path(root, state_dir, config)
     conflicts.extend(_auto_index_conflicts(auto_index))
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         moc_paths = [
             str(row["moc_path"])
             for row in conn.execute(
@@ -512,7 +518,7 @@ def _moc_section_rows(
     moc_path: str,
     section: str,
 ) -> list[dict[str, Any]]:
-    with transaction(root, state_dir=state_dir) as conn:
+    with readonly_transaction(root, state_dir=state_dir) as conn:
         return [
             row_to_dict(row)
             for row in conn.execute(
@@ -691,7 +697,36 @@ def _find_h2_section(content: str, section: str) -> tuple[int, int] | None:
 
 
 def _run_ids_from_table(table: str) -> list[str]:
-    return re.findall(r"\[\[([^\]]+)\]\]", table)
+    ids = []
+    run_column: int | None = None
+    for line in table.splitlines():
+        cells = _markdown_table_cells(line)
+        if not cells or _is_markdown_table_separator(cells):
+            continue
+        if run_column is None:
+            headers = [cell.lower() for cell in cells]
+            if "run" in headers:
+                run_column = headers.index("run")
+            continue
+        if len(cells) <= run_column:
+            continue
+        run_cell = cells[run_column].strip()
+        if not run_cell:
+            continue
+        match = re.fullmatch(r"\[\[([^\]]+)\]\]", run_cell)
+        ids.append(match.group(1) if match else run_cell)
+    return ids
+
+
+def _markdown_table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or "|" not in stripped[1:]:
+        return []
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def _is_markdown_table_separator(cells: list[str]) -> bool:
+    return all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
 
 
 def _ensure_auto_index_target(path: Path) -> None:

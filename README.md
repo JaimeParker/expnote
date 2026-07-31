@@ -237,6 +237,7 @@ For direct status lookup:
 
 ```bash
 expnote run status running --json
+expnote run query --status running --json
 expnote run list --status finished --json
 ```
 
@@ -283,6 +284,7 @@ optional `ASC` or `DESC`. One-level metadata keys can be queried with
 `metadata.<key>`:
 
 ```bash
+expnote run query --status running --where "metadata.seed = 1" --json
 expnote run query --where "metadata.seed = 1" --json
 expnote run query --where "metadata.algo = 'sac'" --json
 ```
