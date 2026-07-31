@@ -211,6 +211,10 @@ _AGENT_GUIDE = {
             "status is manual; update it explicitly with "
             "run update <id> --status finished"
         ),
+        "result": (
+            "keep Result concise and outcome-only; put analysis in run "
+            "Analysis or cross-run docs"
+        ),
         "documents": (
             "doc body is stored in SQLite; use sync markdown --pull-docs "
             "to import Obsidian body edits"
@@ -274,6 +278,8 @@ def _render_agent_guide() -> str:
             "- Auto index defaults to state-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
             "expnote run update <id> --status finished",
+            "- Keep Result concise and outcome-only; put interpretation, "
+            "diagnosis, and comparisons in Analysis or docs",
             "",
             "Handoff checks:",
             "expnote validate --json",

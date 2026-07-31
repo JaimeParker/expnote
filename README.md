@@ -261,6 +261,8 @@ Agent contract:
 - Treat non-zero exit status as command failure.
 - Do not edit generated Markdown directly except Analysis inside
   `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
+- Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
+  comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
 - Use `expnote moc diff --json` before trusting a manually edited MOC table.
 - Run `expnote sync all` after structured updates if Markdown and curated MOCs
   were not synced by the caller workflow. `sync markdown` updates run notes,

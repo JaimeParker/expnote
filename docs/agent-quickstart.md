@@ -23,6 +23,8 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 - Reuse the same `--root` and `--state-dir` for every command in the workspace.
 - Edit `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` through CLI
   commands, except human-authored Obsidian Analysis imports.
+- Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
+  comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
 
 ## Minimal Workflow
 
