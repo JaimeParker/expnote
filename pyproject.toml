@@ -11,7 +11,10 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "expnote contributors" }]
 dependencies = [
+  "fastapi>=0.115",
+  "markdown>=3.6",
   "typer>=0.12",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]

@@ -18,6 +18,7 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 ## Core Rules
 
 - SQLite is the source of truth.
+- SQL MOC records are the first-level organization. Topics belong to a MOC.
 - Markdown is a projection for Obsidian, Git, WebDAV, and search.
 - Use `--json` for automation.
 - Reuse the same `--root` and `--state-dir` for every command in the workspace.
@@ -35,14 +36,23 @@ expnote init \
   --notes-dir "00 Inbox/runs" \
   --json
 
+expnote moc add \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --moc-id stackcube \
+  --title "StackCube training" \
+  --json
+
 expnote topic add "StackCube SAC" \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
+  --moc-id stackcube \
   --json
 
 expnote run add \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
+  --moc-id stackcube \
   --topic "StackCube SAC" \
   --run-id a7zf90k7 \
   --purpose "Train SAC on StackCube seed=1" \
@@ -54,7 +64,7 @@ expnote run add \
   --meta-json seed=1 \
   --json
 
-expnote moc add a7zf90k7 \
+expnote markdown table add a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \
@@ -73,6 +83,14 @@ expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
 Prefer `expnote sync all` when handing off a workspace with curated MOCs. It
 updates run notes, the auto index, and all registered curated MOC sections.
 `sync markdown` updates run notes, analysis documents, and the auto index only.
+
+For read-only browsing independent from Obsidian:
+
+```bash
+expnote web \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example
+```
 
 ## Query Records
 
@@ -148,7 +166,7 @@ expnote doc add \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --doc-id stackcube-seed-summary \
-  --topic "StackCube SAC" \
+  --moc-id stackcube \
   --title "StackCube seed summary" \
   --run-id a7zf90k7 \
   --body "Initial cross-run comparison." \
@@ -200,23 +218,23 @@ MOC section tables are managed inside `expnote:moc-table` markers under `##`
 headings.
 
 The generated auto index defaults to `state_dir/index.md`, outside Obsidian. The
-curated MOC path is owned by `moc add/remove/update/sync`.
+curated MOC path is owned by `markdown table add/remove/update/sync`.
 
 ```bash
-expnote moc diff \
+expnote markdown table diff \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
-expnote moc sections \
+expnote markdown table sections \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \
   --json
 
-expnote moc add-topic \
+expnote markdown table add-topic \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --topic "StackCube SAC" \
@@ -224,7 +242,7 @@ expnote moc add-topic \
   --section "StackCube SAC" \
   --json
 
-expnote moc sync \
+expnote markdown table sync \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \
@@ -232,9 +250,10 @@ expnote moc sync \
   --json
 ```
 
-Section names are exact strings. If unsure, run `moc sections` before `moc sync`.
-`moc sync` only re-renders already registered rows; use `moc add` or
-`moc add-topic` to register new runs.
+Section names are exact strings. If unsure, run `markdown table sections` before
+`markdown table sync`. `markdown table sync` only re-renders already registered
+rows; use `markdown table add` or `markdown table add-topic` to register new
+runs.
 
 ## Handoff Checklist
 
@@ -246,7 +265,7 @@ expnote validate \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --json
 
-expnote moc diff \
+expnote markdown table diff \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \

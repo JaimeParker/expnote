@@ -71,8 +71,8 @@ def _add_doc(tmp_path: Path, doc_id: str = "compare1", body: str = "body") -> No
             str(tmp_path),
             "--doc-id",
             doc_id,
-            "--topic",
-            "topic",
+            "--moc-id",
+            "default",
             "--title",
             "Compare seeds",
             "--body",
@@ -218,7 +218,8 @@ def test_markdown_markers_have_blank_lines_around_content(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "wandb123",
             "--root",
@@ -257,7 +258,8 @@ def test_sync_markdown_rejects_auto_index_with_curated_moc_table(tmp_path):
         result = runner.invoke(
             app,
             [
-                "moc",
+                "markdown",
+                "table",
                 "add",
                 run_id,
                 "--root",
@@ -279,21 +281,22 @@ def test_sync_markdown_rejects_auto_index_with_curated_moc_table(tmp_path):
 
 def test_moc_writes_reject_curated_target_with_managed_block(tmp_path):
     commands = [
-        ["moc", "add", "run1"],
-        ["moc", "remove", "run1"],
-        ["moc", "update", "run1", "--position", "1"],
-        ["moc", "sync"],
+        ["markdown", "table", "add", "run1"],
+        ["markdown", "table", "remove", "run1"],
+        ["markdown", "table", "update", "run1", "--position", "1"],
+        ["markdown", "table", "sync"],
     ]
     for index, command in enumerate(commands):
         root = tmp_path / f"case{index}"
         root.mkdir()
         _setup_workspace(root, moc_path="runs/_expnote-index.md")
         _add_run(root, run_id="run1")
-        if command[1] != "add":
+        if command[2] != "add":
             result = runner.invoke(
                 app,
                 [
-                    "moc",
+                    "markdown",
+                    "table",
                     "add",
                     "run1",
                     "--root",

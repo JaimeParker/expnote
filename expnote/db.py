@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,7 @@ def init_store(
 
 
 def migrate(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = OFF")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS meta (
@@ -108,13 +109,24 @@ def migrate(conn: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS topics (
+        CREATE TABLE IF NOT EXISTS mocs (
             id TEXT PRIMARY KEY,
-            title TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
             summary TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS topics (
+            id TEXT PRIMARY KEY,
+            moc_id TEXT NOT NULL REFERENCES mocs(id),
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(moc_id, title)
         );
 
         CREATE TABLE IF NOT EXISTS runs (
@@ -166,7 +178,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS docs (
             id TEXT PRIMARY KEY,
-            topic_id TEXT NOT NULL REFERENCES topics(id),
+            moc_id TEXT NOT NULL REFERENCES mocs(id),
             title TEXT NOT NULL,
             body TEXT NOT NULL DEFAULT '',
             body_rendered_hash TEXT NOT NULL DEFAULT '',
@@ -190,6 +202,13 @@ def migrate(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_default_moc(conn)
+    _add_column_if_missing(conn, "topics", "moc_id", "TEXT")
+    _assign_legacy_mocs(conn)
+    _rebuild_topics_if_needed(conn)
+    _add_column_if_missing(conn, "docs", "moc_id", "TEXT")
+    _assign_legacy_doc_mocs(conn)
+    _rebuild_docs_if_needed(conn)
     _add_column_if_missing(conn, "runs", "analysis", "TEXT NOT NULL DEFAULT ''")
     _add_column_if_missing(
         conn,
@@ -201,6 +220,171 @@ def migrate(conn: sqlite3.Connection) -> None:
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _ensure_default_moc(conn: sqlite3.Connection) -> None:
+    ts = now_iso()
+    conn.execute(
+        """
+        INSERT INTO mocs(id, title, summary, created_at, updated_at)
+        VALUES('default', 'Default', 'Migrated default MOC.', ?, ?)
+        ON CONFLICT(id) DO NOTHING
+        """,
+        (ts, ts),
+    )
+
+
+def _assign_legacy_mocs(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(topics)")}
+    if "moc_id" not in columns:
+        return
+    ts = now_iso()
+    legacy_rows = conn.execute(
+        """
+        SELECT DISTINCT moc_entries.moc_path, moc_entries.section, runs.topic_id
+        FROM moc_entries
+        JOIN runs ON runs.id = moc_entries.run_id
+        JOIN topics ON topics.id = runs.topic_id
+        WHERE moc_entries.deleted_at IS NULL
+            AND topics.moc_id IS NULL
+        ORDER BY moc_entries.moc_path ASC, moc_entries.section ASC
+        """
+    ).fetchall()
+    seen_topics: set[str] = set()
+    for row in legacy_rows:
+        topic_id = str(row["topic_id"])
+        if topic_id in seen_topics:
+            continue
+        moc_id = _slug_moc_id(str(row["moc_path"]))
+        conn.execute(
+            """
+            INSERT INTO mocs(id, title, summary, created_at, updated_at)
+            VALUES(?, ?, '', ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            """,
+            (moc_id, _moc_title_from_path(str(row["moc_path"])), ts, ts),
+        )
+        conn.execute(
+            "UPDATE topics SET moc_id = ?, title = ? WHERE id = ?",
+            (moc_id, str(row["section"]), topic_id),
+        )
+        seen_topics.add(topic_id)
+    conn.execute("UPDATE topics SET moc_id = 'default' WHERE moc_id IS NULL")
+
+
+def _assign_legacy_doc_mocs(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(docs)")}
+    if "moc_id" not in columns:
+        return
+    doc_columns = {row["name"] for row in conn.execute("PRAGMA table_info(docs)")}
+    if "topic_id" in doc_columns:
+        conn.execute(
+            """
+            UPDATE docs
+            SET moc_id = (
+                SELECT topics.moc_id FROM topics WHERE topics.id = docs.topic_id
+            )
+            WHERE moc_id IS NULL
+            """
+        )
+    conn.execute("UPDATE docs SET moc_id = 'default' WHERE moc_id IS NULL")
+
+
+def _rebuild_topics_if_needed(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(topics)")}
+    if "moc_id" not in columns:
+        return
+    indexes = conn.execute("PRAGMA index_list(topics)").fetchall()
+    has_legacy_unique_title = False
+    for index in indexes:
+        if not index["unique"]:
+            continue
+        fields = [
+            row["name"]
+            for row in conn.execute(f"PRAGMA index_info({index['name']})")
+        ]
+        if fields == ["title"]:
+            has_legacy_unique_title = True
+    if not has_legacy_unique_title:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE topics_new (
+            id TEXT PRIMARY KEY,
+            moc_id TEXT NOT NULL REFERENCES mocs(id),
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(moc_id, title)
+        );
+        INSERT INTO topics_new(
+            id, moc_id, title, summary, created_at, updated_at, deleted_at
+        )
+        SELECT
+            id,
+            COALESCE(moc_id, 'default'),
+            title,
+            summary,
+            created_at,
+            updated_at,
+            deleted_at
+        FROM topics;
+        DROP TABLE topics;
+        ALTER TABLE topics_new RENAME TO topics;
+        """
+    )
+
+
+def _rebuild_docs_if_needed(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(docs)")}
+    if "topic_id" not in columns:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE docs_new (
+            id TEXT PRIMARY KEY,
+            moc_id TEXT NOT NULL REFERENCES mocs(id),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            body_rendered_hash TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        INSERT INTO docs_new(
+            id, moc_id, title, body, body_rendered_hash, metadata_json,
+            created_at, updated_at, deleted_at
+        )
+        SELECT
+            id,
+            COALESCE(moc_id, 'default'),
+            title,
+            body,
+            body_rendered_hash,
+            metadata_json,
+            created_at,
+            updated_at,
+            deleted_at
+        FROM docs;
+        DROP TABLE docs;
+        ALTER TABLE docs_new RENAME TO docs;
+        """
+    )
+
+
+def _slug_moc_id(path: str) -> str:
+    stem = PurePosixPath(path).stem or path
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in stem)
+    slug = "-".join(part for part in slug.split("-") if part)
+    return slug or "default"
+
+
+def _moc_title_from_path(path: str) -> str:
+    return PurePosixPath(path).stem or path or "Default"
 
 
 def _add_column_if_missing(

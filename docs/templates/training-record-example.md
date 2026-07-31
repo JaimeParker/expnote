@@ -27,13 +27,21 @@ expnote init \
   --root "/home/user/Documents/Cyber Brain" \
   --notes-dir "10 Projects/Robot Learning/runs"
 
+expnote moc add \
+  --root "/home/user/Documents/Cyber Brain" \
+  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --moc-id robot-learning \
+  --title "Robot Learning Training"
+
 expnote topic add "StackCube SAC" \
   --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning
+  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --moc-id robot-learning
 
 expnote run add \
   --root "/home/user/Documents/Cyber Brain" \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --moc-id robot-learning \
   --topic "StackCube SAC" \
   --run-id stackcube-sac-seed1 \
   --purpose "Train SAC on StackCube with seed=1" \
@@ -45,7 +53,7 @@ expnote run add \
   --meta env_id=StackCube-v1 \
   --meta-json seed=1
 
-expnote moc add stackcube-sac-seed1 \
+expnote markdown table add stackcube-sac-seed1 \
   --root "/home/user/Documents/Cyber Brain" \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
   --moc-path "10 Projects/Robot Learning/Training MOC.md" \
@@ -55,7 +63,7 @@ expnote doc add \
   --root "/home/user/Documents/Cyber Brain" \
   --state-dir ~/.local/share/expnote/workspaces/robot-learning \
   --doc-id stackcube-seed-summary \
-  --topic "StackCube SAC" \
+  --moc-id robot-learning \
   --title "StackCube seed summary" \
   --run-id stackcube-sac-seed1 \
   --body "Initial cross-run comparison."
@@ -124,7 +132,7 @@ Watch success rate and critic loss stability.
 # StackCube seed summary
 
 - id: `stackcube-seed-summary`
-- topic: StackCube SAC
+- moc: Robot Learning Training
 - updated_at: `2026-07-28T12:00:00+00:00`
 
 ## Metadata

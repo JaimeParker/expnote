@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import webbrowser
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,7 +36,10 @@ run_app = typer.Typer(help="Manage experiment runs.")
 relation_app = typer.Typer(help="Manage run relations.")
 artifact_app = typer.Typer(help="Manage run artifacts.")
 doc_app = typer.Typer(help="Manage analysis documents.")
-moc_app = typer.Typer(help="Manage MOC section tables.")
+moc_app = typer.Typer(help="Manage SQL MOC records.")
+moc_topic_app = typer.Typer(help="Manage topics inside a SQL MOC.")
+markdown_app = typer.Typer(help="Manage Markdown projections.")
+markdown_table_app = typer.Typer(help="Manage Markdown MOC section tables.")
 sync_app = typer.Typer(help="Sync projections.")
 import_app = typer.Typer(help="Import external metadata.")
 
@@ -44,6 +49,9 @@ app.add_typer(relation_app, name="relation")
 app.add_typer(artifact_app, name="artifact")
 app.add_typer(doc_app, name="doc")
 app.add_typer(moc_app, name="moc")
+moc_app.add_typer(moc_topic_app, name="topic")
+app.add_typer(markdown_app, name="markdown")
+markdown_app.add_typer(markdown_table_app, name="table")
 app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
 
@@ -74,9 +82,10 @@ _AGENT_GUIDE = {
     "workflows": {
         "create_run": [
             "init",
-            "topic add",
-            "run add",
             "moc add",
+            "topic add --moc-id",
+            "run add",
+            "markdown table add",
             "sync all",
         ],
         "query_run": [
@@ -92,13 +101,13 @@ _AGENT_GUIDE = {
             "sync markdown --pull-docs",
         ],
         "create_doc": [
-            "doc add --doc-id <id> --topic <topic> --title <title>",
+            "doc add --doc-id <id> --moc-id <moc_id> --title <title>",
             "doc link <doc_id> <run_id>",
             "sync markdown",
         ],
         "handoff": [
             "validate --json",
-            "moc diff --moc-path <path> --section <heading> --json",
+            "markdown table diff --moc-path <path> --section <heading> --json",
         ],
     },
     "commands": {
@@ -116,10 +125,14 @@ _AGENT_GUIDE = {
         "doc.link": "Attach a run to a document",
         "doc.unlink": "Detach a run from a document",
         "doc.delete": "Soft-delete an analysis document",
-        "moc.add": "Add a run to a managed MOC section table",
-        "moc.add_topic": "Add all active topic runs to a managed MOC section",
-        "moc.sections": "List registered sections for a curated MOC",
-        "moc.diff": "Compare a managed MOC section table with SQLite",
+        "moc.add": "Create a SQL-backed first-level MOC record",
+        "moc.show": "Read a SQL-backed MOC with topics and docs",
+        "moc.topic.add": "Create a topic inside a SQL MOC",
+        "markdown.table.add": "Add a run to a Markdown MOC section table",
+        "markdown.table.add_topic": "Add all active topic runs to a Markdown table",
+        "markdown.table.sections": "List registered Markdown table sections",
+        "markdown.table.diff": "Compare a managed Markdown table with SQLite",
+        "web": "Start the read-only SQL-backed web UI",
         "sync.markdown": "Render SQLite records into Markdown",
         "sync.all": "Render run notes, analysis documents, auto index, and MOCs",
         "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
@@ -132,9 +145,13 @@ _AGENT_GUIDE = {
         ),
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
         "documents": "Obsidian document body edits require sync markdown --pull-docs",
-        "moc_tables": "Managed MOC tables should be repaired with moc sync",
+        "moc_tables": (
+            "Managed Markdown MOC tables should be repaired with "
+            "markdown table sync"
+        ),
         "projection_paths": (
-            "auto index defaults to state-dir/index.md; curated MOCs use moc --moc-path"
+            "auto index defaults to state-dir/index.md; Markdown tables use "
+            "markdown table --moc-path"
         ),
     },
     "examples": {
@@ -142,9 +159,13 @@ _AGENT_GUIDE = {
             "expnote init --root <vault> --state-dir <state> "
             "--notes-dir <runs-dir>"
         ),
+        "create_moc": (
+            "expnote moc add --root <vault> --state-dir <state> "
+            "--moc-id <moc_id> --title <title> --json"
+        ),
         "create_run": (
             "expnote run add --root <vault> --state-dir <state> "
-            "--topic <topic> --run-id <id> --purpose <text> "
+            "--moc-id <moc_id> --topic <topic> --run-id <id> --purpose <text> "
             "--meta-json seed=1 --json"
         ),
         "create_run_by_topic_id": (
@@ -172,7 +193,7 @@ _AGENT_GUIDE = {
         ),
         "create_doc": (
             "expnote doc add --root <vault> --state-dir <state> "
-            "--doc-id <id> --topic <topic> --title <title> "
+            "--doc-id <id> --moc-id <moc_id> --title <title> "
             "--run-id <run_id> --body <text> --json"
         ),
         "show_doc": (
@@ -183,17 +204,18 @@ _AGENT_GUIDE = {
             "--append-body <text> --json"
         ),
         "moc_diff": (
-            "expnote moc diff --root <vault> --state-dir <state> "
+            "expnote markdown table diff --root <vault> --state-dir <state> "
             "--moc-path <moc.md> --section <heading> --json"
         ),
         "moc_sections": (
-            "expnote moc sections --root <vault> --state-dir <state> "
+            "expnote markdown table sections --root <vault> --state-dir <state> "
             "--moc-path <moc.md> --json"
         ),
         "moc_add_topic": (
-            "expnote moc add-topic --root <vault> --state-dir <state> "
+            "expnote markdown table add-topic --root <vault> --state-dir <state> "
             "--topic <topic> --moc-path <moc.md> --section <heading> --json"
         ),
+        "web": "expnote web --root <vault> --state-dir <state> --no-open",
         "sync_all": "expnote sync all --root <vault> --state-dir <state> --json",
     },
     "common_pitfalls": {
@@ -220,8 +242,8 @@ _AGENT_GUIDE = {
             "to import Obsidian body edits"
         ),
         "curated_mocs": (
-            "sync markdown does not update curated MOC tables; use sync all "
-            "or moc sync/add/add-topic"
+            "sync markdown does not update curated Markdown tables; use "
+            "sync all or markdown table sync/add/add-topic"
         ),
     },
 }
@@ -248,7 +270,8 @@ def _render_agent_guide() -> str:
             "- Reuse the same --root and --state-dir on follow-up commands",
             "",
             "Minimal workflow:",
-            "init -> topic add -> run add -> moc add -> sync all",
+            "init -> moc add -> topic add --moc-id -> run add -> "
+            "markdown table add -> sync all",
             "Prefer using the wandb run id as expnote run id when available.",
             "",
             "Read records from SQLite:",
@@ -260,21 +283,22 @@ def _render_agent_guide() -> str:
             "expnote run update <run_id> --append-analysis <text>",
             "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
             "expnote doc show <doc_id> --json",
-            "expnote doc add --doc-id <doc_id> --topic <topic> "
+            "expnote doc add --doc-id <doc_id> --moc-id <moc_id> "
             "--title <title> --run-id <run_id> --body <text> --json",
             "expnote doc update <doc_id> --append-body <text> --json",
             "",
             "MOC workflow:",
-            "expnote moc sections --moc-path <path> --json",
-            "expnote moc add-topic --topic <topic> "
+            "expnote markdown table sections --moc-path <path> --json",
+            "expnote markdown table add-topic --topic <topic> "
             "--moc-path <path> --section <heading> --json",
+            "expnote web --no-open",
             "expnote sync all --json",
             "",
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
             "- Import Obsidian doc body with sync markdown --pull-docs",
-            "- Check managed MOC tables with expnote moc diff --json",
+            "- Check managed Markdown tables with expnote markdown table diff --json",
             "- Auto index defaults to state-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
             "expnote run update <id> --status finished",
@@ -283,15 +307,42 @@ def _render_agent_guide() -> str:
             "",
             "Handoff checks:",
             "expnote validate --json",
-            "expnote moc diff --moc-path <path> --section <heading> --json",
+            "expnote markdown table diff --moc-path <path> "
+            "--section <heading> --json",
         ]
     )
 
 
-def _topic_id(conn: sqlite3.Connection, title: str) -> str:
+def _moc_id_exists(conn: sqlite3.Connection, moc_id: str) -> str:
     row = conn.execute(
-        "SELECT id FROM topics WHERE title = ? AND deleted_at IS NULL", (title,)
+        "SELECT id FROM mocs WHERE id = ? AND deleted_at IS NULL", (moc_id,)
     ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"MOC not found: {moc_id}")
+    return str(row["id"])
+
+
+def _topic_id(
+    conn: sqlite3.Connection,
+    title: str,
+    moc_id: str | None = None,
+) -> str:
+    params: list[object] = [title]
+    moc_clause = ""
+    if moc_id is not None:
+        moc_clause = "AND moc_id = ?"
+        params.append(moc_id)
+    rows = conn.execute(
+        f"""
+        SELECT id FROM topics
+        WHERE title = ? {moc_clause} AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        """,
+        params,
+    ).fetchall()
+    if len(rows) > 1 and moc_id is None:
+        raise typer.BadParameter("--moc-id is required for duplicate topic title")
+    row = rows[0] if rows else None
     if row is None:
         raise typer.BadParameter(f"topic not found: {title}")
     return str(row["id"])
@@ -310,6 +361,7 @@ def _resolve_topic_id(
     conn: sqlite3.Connection,
     topic: str | None,
     topic_id: str | None,
+    moc_id: str | None = None,
 ) -> str:
     if topic is not None and topic_id is not None:
         raise typer.BadParameter("--topic and --topic-id cannot be used together")
@@ -318,7 +370,7 @@ def _resolve_topic_id(
     if topic_id is not None:
         return _topic_id_exists(conn, topic_id)
     assert topic is not None
-    return _topic_id(conn, topic)
+    return _topic_id(conn, topic, moc_id=moc_id)
 
 
 @app.command("guide")
@@ -405,6 +457,9 @@ def topic_add(
     title: Annotated[str, typer.Argument(help="Topic title.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    moc_id: Annotated[
+        str, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = "default",
     summary: Annotated[str, typer.Option(help="Short topic summary.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -413,14 +468,15 @@ def topic_add(
     ts = now_iso()
     topic_id = new_id("topic")
     with transaction(root, state_dir=state_dir) as conn:
+        _moc_id_exists(conn, moc_id)
         conn.execute(
             """
-            INSERT INTO topics(id, title, summary, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO topics(id, moc_id, title, summary, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
             """,
-            (topic_id, title, summary, ts, ts),
+            (topic_id, moc_id, title, summary, ts, ts),
         )
-    payload = {"id": topic_id, "title": title, "summary": summary}
+    payload = {"id": topic_id, "moc_id": moc_id, "title": title, "summary": summary}
     append_event(root, "topic.add", payload, state_dir=state_dir)
     _emit(payload, json_output)
 
@@ -429,6 +485,9 @@ def topic_add(
 def topic_list(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
+    ] = None,
     include_deleted: Annotated[
         bool, typer.Option(help="Include soft-deleted rows.")
     ] = False,
@@ -436,12 +495,25 @@ def topic_list(
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
-    where = "" if include_deleted else "WHERE deleted_at IS NULL"
+    clauses = []
+    params: list[object] = []
+    if not include_deleted:
+        clauses.append("topics.deleted_at IS NULL")
+    if moc_id is not None:
+        clauses.append("topics.moc_id = ?")
+        params.append(moc_id)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
             for row in conn.execute(
-                f"SELECT * FROM topics {where} ORDER BY created_at DESC, title DESC"
+                f"""
+                SELECT topics.*, mocs.title AS moc_title
+                FROM topics JOIN mocs ON mocs.id = topics.moc_id
+                {where}
+                ORDER BY topics.created_at DESC, topics.title DESC
+                """,
+                params,
             )
         ]
     _emit(rows, json_output)
@@ -452,6 +524,9 @@ def topic_update(
     title: Annotated[str, typer.Argument(help="Existing topic title.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = None,
     new_title: Annotated[str | None, typer.Option(help="New title.")] = None,
     summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
@@ -460,7 +535,7 @@ def topic_update(
     state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        tid = _topic_id(conn, title)
+        tid = _topic_id(conn, title, moc_id=moc_id)
         if new_title is not None:
             conn.execute(
                 "UPDATE topics SET title = ?, updated_at = ? WHERE id = ?",
@@ -482,13 +557,16 @@ def topic_delete(
     title: Annotated[str, typer.Argument(help="Topic title.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        tid = _topic_id(conn, title)
+        tid = _topic_id(conn, title, moc_id=moc_id)
         conn.execute(
             "UPDATE topics SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (ts, ts, tid),
@@ -514,6 +592,10 @@ def run_add(
     topic_id: Annotated[
         str | None,
         typer.Option("--topic-id", help="Topic id. Mutually exclusive with --topic."),
+    ] = None,
+    moc_id: Annotated[
+        str | None,
+        typer.Option("--moc-id", help="Parent SQL MOC id when using --topic."),
     ] = None,
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -547,6 +629,7 @@ def run_add(
         run_id=run_id,
         topic=topic,
         topic_id=topic_id,
+        moc_id=moc_id,
         purpose=purpose,
         relation=relation,
         result=result,
@@ -564,6 +647,7 @@ def _insert_run(
     run_id: str,
     topic: str | None = None,
     topic_id: str | None = None,
+    moc_id: str | None = None,
     purpose: str,
     relation: str,
     result: str,
@@ -573,7 +657,7 @@ def _insert_run(
 ) -> dict[str, object]:
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        tid = _resolve_topic_id(conn, topic, topic_id)
+        tid = _resolve_topic_id(conn, topic, topic_id, moc_id=moc_id)
         conn.execute(
             """
             INSERT INTO runs(
@@ -595,7 +679,17 @@ def _insert_run(
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True),
             ),
         )
-        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT runs.*, topics.title AS topic_title, topics.moc_id,
+                mocs.title AS moc_title
+            FROM runs
+            JOIN topics ON runs.topic_id = topics.id
+            JOIN mocs ON topics.moc_id = mocs.id
+            WHERE runs.id = ?
+            """,
+            (run_id,),
+        ).fetchone()
     data = row_to_dict(row)
     append_event(root, "run.add", data, state_dir=state_dir)
     return data
@@ -611,6 +705,9 @@ def run_list(
     status: Annotated[
         str | None, typer.Option(help="Filter by run status.")
     ] = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
+    ] = None,
     include_deleted: Annotated[
         bool, typer.Option(help="Include soft-deleted rows.")
     ] = False,
@@ -623,6 +720,7 @@ def run_list(
         state_dir=state_dir,
         topic=topic,
         status=status,
+        moc_id=moc_id,
         include_deleted=include_deleted,
     )
     _emit(rows, json_output)
@@ -634,6 +732,7 @@ def _list_runs(
     state_dir: Path | None,
     topic: str | None = None,
     status: str | None = None,
+    moc_id: str | None = None,
     include_deleted: bool = False,
 ) -> list[dict[str, object]]:
     params: list[object] = []
@@ -646,14 +745,20 @@ def _list_runs(
     if status is not None:
         clauses.append("runs.status = ?")
         params.append(status)
+    if moc_id is not None:
+        clauses.append("topics.moc_id = ?")
+        params.append(moc_id)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with transaction(root, state_dir=state_dir) as conn:
         return [
             row_to_dict(row)
             for row in conn.execute(
                 f"""
-                SELECT runs.*, topics.title AS topic_title
-                FROM runs JOIN topics ON runs.topic_id = topics.id
+                SELECT runs.*, topics.title AS topic_title, topics.moc_id,
+                    mocs.title AS moc_title
+                FROM runs
+                JOIN topics ON runs.topic_id = topics.id
+                JOIN mocs ON topics.moc_id = mocs.id
                 {where}
                 ORDER BY runs.started_at DESC, runs.id DESC
                 """,
@@ -670,6 +775,9 @@ def run_status(
     topic: Annotated[
         str | None, typer.Option(help="Filter by topic title.")
     ] = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
@@ -679,6 +787,7 @@ def run_status(
         state_dir=state_dir,
         topic=topic,
         status=status,
+        moc_id=moc_id,
         include_deleted=False,
     )
     _emit(rows, json_output)
@@ -699,8 +808,11 @@ def run_show(
     with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute(
             """
-            SELECT runs.*, topics.title AS topic_title
-            FROM runs JOIN topics ON runs.topic_id = topics.id
+            SELECT runs.*, topics.title AS topic_title, topics.moc_id,
+                mocs.title AS moc_title
+            FROM runs
+            JOIN topics ON runs.topic_id = topics.id
+            JOIN mocs ON topics.moc_id = mocs.id
             WHERE runs.id = ?
             """,
             (run_id,),
@@ -841,8 +953,11 @@ def run_query(
             row_to_dict(row)
             for row in conn.execute(
                 f"""
-                SELECT runs.*, topics.title AS topic_title
-                FROM runs JOIN topics ON runs.topic_id = topics.id
+                SELECT runs.*, topics.title AS topic_title, topics.moc_id,
+                    mocs.title AS moc_title
+                FROM runs
+                JOIN topics ON runs.topic_id = topics.id
+                JOIN mocs ON topics.moc_id = mocs.id
                 WHERE runs.deleted_at IS NULL AND ({where_sql})
                 ORDER BY {order_sql}
                 LIMIT ?
@@ -856,7 +971,7 @@ def run_query(
 @doc_app.command("add")
 def doc_add(
     doc_id: Annotated[str, typer.Option("--doc-id", help="Stable document id.")],
-    topic: Annotated[str, typer.Option("--topic", help="Topic title.")],
+    moc_id: Annotated[str, typer.Option("--moc-id", help="Parent SQL MOC id.")],
     title: Annotated[str, typer.Option("--title", help="Document title.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -871,22 +986,22 @@ def doc_add(
     state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        tid = _topic_id(conn, topic)
+        _moc_id_exists(conn, moc_id)
         conn.execute(
             """
             INSERT INTO docs(
-                id, topic_id, title, body, metadata_json, created_at, updated_at
+                id, moc_id, title, body, metadata_json, created_at, updated_at
             )
             VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
-            (doc_id, tid, title, body, "{}", ts, ts),
+            (doc_id, moc_id, title, body, "{}", ts, ts),
         )
         seen_run_ids: set[str] = set()
         position = 1
         for run_id in run_ids or []:
             if run_id in seen_run_ids:
                 continue
-            _require_run(conn, run_id)
+            _require_run_in_moc(conn, run_id, moc_id)
             seen_run_ids.add(run_id)
             conn.execute(
                 """
@@ -921,24 +1036,24 @@ def doc_show(
 def doc_list(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
-    topic: Annotated[
-        str | None, typer.Option(help="Filter by topic title.")
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
     params: list[object] = []
-    topic_clause = ""
-    if topic is not None:
-        topic_clause = "AND topics.title = ?"
-        params.append(topic)
+    moc_clause = ""
+    if moc_id is not None:
+        moc_clause = "AND docs.moc_id = ?"
+        params.append(moc_id)
     with transaction(root, state_dir=state_dir) as conn:
         rows = conn.execute(
             f"""
-            SELECT docs.*, topics.title AS topic_title
-            FROM docs JOIN topics ON docs.topic_id = topics.id
-            WHERE docs.deleted_at IS NULL {topic_clause}
+            SELECT docs.*, mocs.title AS moc_title
+            FROM docs JOIN mocs ON docs.moc_id = mocs.id
+            WHERE docs.deleted_at IS NULL {moc_clause}
             ORDER BY docs.updated_at DESC, docs.id DESC
             """,
             params,
@@ -1038,8 +1153,8 @@ def doc_link(
     state_dir = state_dir.resolve() if state_dir is not None else None
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
-        _require_doc_row(conn, doc_id)
-        _require_run(conn, run_id)
+        doc = _require_doc_row(conn, doc_id)
+        _require_run_in_moc(conn, run_id, str(doc["moc_id"]))
         existing = conn.execute(
             "SELECT position, deleted_at FROM doc_runs WHERE doc_id = ? AND run_id = ?",
             (doc_id, run_id),
@@ -1255,6 +1370,154 @@ def artifact_delete(
 
 
 @moc_app.command("add")
+def sql_moc_add(
+    moc_id: Annotated[str, typer.Option("--moc-id", help="Stable SQL MOC id.")],
+    title: Annotated[str, typer.Option("--title", help="MOC title.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    summary: Annotated[str, typer.Option(help="Short MOC summary.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            """
+            INSERT INTO mocs(id, title, summary, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (moc_id, title, summary, ts, ts),
+        )
+        row = conn.execute("SELECT * FROM mocs WHERE id = ?", (moc_id,)).fetchone()
+    data = row_to_dict(row)
+    append_event(root, "moc.add", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@moc_app.command("list")
+def sql_moc_list(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    include_deleted: Annotated[
+        bool, typer.Option(help="Include soft-deleted rows.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    where = "" if include_deleted else "WHERE deleted_at IS NULL"
+    with transaction(root, state_dir=state_dir) as conn:
+        rows = [
+            row_to_dict(row)
+            for row in conn.execute(
+                f"SELECT * FROM mocs {where} ORDER BY updated_at DESC, id ASC"
+            )
+        ]
+    _emit(rows, json_output)
+
+
+@moc_app.command("show")
+def sql_moc_show(
+    moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    with transaction(root, state_dir=state_dir) as conn:
+        data = _moc_data(conn, moc_id)
+    _emit(data, json_output)
+
+
+@moc_app.command("update")
+def sql_moc_update(
+    moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    title: Annotated[str | None, typer.Option("--title", help="New title.")] = None,
+    summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _moc_id_exists(conn, moc_id)
+        if title is not None:
+            conn.execute(
+                "UPDATE mocs SET title = ?, updated_at = ? WHERE id = ?",
+                (title, ts, moc_id),
+            )
+        if summary is not None:
+            conn.execute(
+                "UPDATE mocs SET summary = ?, updated_at = ? WHERE id = ?",
+                (summary, ts, moc_id),
+            )
+        row = conn.execute("SELECT * FROM mocs WHERE id = ?", (moc_id,)).fetchone()
+    data = row_to_dict(row)
+    append_event(root, "moc.update", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@moc_app.command("delete")
+def sql_moc_delete(
+    moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _moc_id_exists(conn, moc_id)
+        conn.execute(
+            "UPDATE mocs SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, moc_id),
+        )
+    payload = {"id": moc_id, "deleted_at": ts}
+    append_event(root, "moc.delete", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@moc_topic_app.command("add")
+def moc_topic_add(
+    moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
+    title: Annotated[str, typer.Option("--title", help="Topic title.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    summary: Annotated[str, typer.Option(help="Short topic summary.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    topic_add(
+        title=title,
+        root=root,
+        state_dir=state_dir,
+        moc_id=moc_id,
+        summary=summary,
+        json_output=json_output,
+    )
+
+
+@moc_topic_app.command("list")
+def moc_topic_list(
+    moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    topic_list(
+        root=root,
+        state_dir=state_dir,
+        moc_id=moc_id,
+        include_deleted=False,
+        json_output=json_output,
+    )
+
+
+@markdown_table_app.command("add")
 def moc_add(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
@@ -1297,11 +1560,11 @@ def moc_add(
         "run_id": run_id,
         "position": position,
     }
-    append_event(root, "moc.add", payload, state_dir=state_dir)
+    append_event(root, "markdown.table.add", payload, state_dir=state_dir)
     _emit({**payload, "sync": sync_result}, json_output)
 
 
-@moc_app.command("remove")
+@markdown_table_app.command("remove")
 def moc_remove(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
@@ -1330,11 +1593,11 @@ def moc_remove(
         _normalize_moc_positions(conn, moc_path, section, ts)
     sync_result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     payload = {"moc_path": moc_path, "section": section, "run_id": run_id}
-    append_event(root, "moc.remove", payload, state_dir=state_dir)
+    append_event(root, "markdown.table.remove", payload, state_dir=state_dir)
     _emit({**payload, "sync": sync_result}, json_output)
 
 
-@moc_app.command("update")
+@markdown_table_app.command("update")
 def moc_update(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     root: RootOption = Path("."),
@@ -1361,11 +1624,11 @@ def moc_update(
         "run_id": run_id,
         "position": position,
     }
-    append_event(root, "moc.update", payload, state_dir=state_dir)
+    append_event(root, "markdown.table.update", payload, state_dir=state_dir)
     _emit({**payload, "sync": sync_result}, json_output)
 
 
-@moc_app.command("list")
+@markdown_table_app.command("list")
 def moc_list(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -1415,7 +1678,7 @@ def moc_list(
     _emit(rows, json_output)
 
 
-@moc_app.command("sections")
+@markdown_table_app.command("sections")
 def moc_sections(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -1431,7 +1694,7 @@ def moc_sections(
     _emit(_registered_moc_sections(root, state_dir, moc_path=moc_path), json_output)
 
 
-@moc_app.command("add-topic")
+@markdown_table_app.command("add-topic")
 def moc_add_topic(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -1505,11 +1768,11 @@ def moc_add_topic(
         "added": added,
         "skipped": skipped,
     }
-    append_event(root, "moc.add_topic", payload, state_dir=state_dir)
+    append_event(root, "markdown.table.add_topic", payload, state_dir=state_dir)
     _emit({**payload, "sync": sync_result}, json_output)
 
 
-@moc_app.command("diff")
+@markdown_table_app.command("diff")
 def moc_diff(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -1530,7 +1793,7 @@ def moc_diff(
         _emit(_format_moc_diff(result), False)
 
 
-@moc_app.command("sync")
+@markdown_table_app.command("sync")
 def moc_sync(
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
@@ -1555,8 +1818,10 @@ def moc_sync(
     if not allow_empty and not _moc_section_seen(root, state_dir, moc_path, section):
         raise typer.BadParameter(
             "no registered MOC entries for section. "
-            "Use `expnote moc sections`, `expnote moc add`, or "
-            "`expnote moc add-topic`; pass --allow-empty to create an empty section."
+            "Use `expnote markdown table sections`, "
+            "`expnote markdown table add`, or "
+            "`expnote markdown table add-topic`; pass --allow-empty "
+            "to create an empty section."
         )
     result = _sync_moc_section_or_error(root, state_dir, moc_path, section)
     _emit(result, json_output)
@@ -1665,6 +1930,32 @@ def _preflight_moc_section_target(root: Path, moc_path: str) -> None:
         raise typer.BadParameter(str(exc)) from exc
 
 
+@markdown_app.command("sync")
+def markdown_sync_command(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    pull_analysis: Annotated[
+        bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
+    ] = False,
+    pull_docs: Annotated[
+        bool, typer.Option("--pull-docs", help="Import document body first.")
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite changed Analysis or document body."),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    sync_markdown_command(
+        root=root,
+        state_dir=state_dir,
+        pull_analysis=pull_analysis,
+        pull_docs=pull_docs,
+        force=force,
+        json_output=json_output,
+    )
+
+
 @app.command()
 def validate(
     root: RootOption = Path("."),
@@ -1684,6 +1975,32 @@ def validate(
     _emit(result, json_output)
 
 
+@app.command()
+def web(
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    host: Annotated[str, typer.Option(help="Server host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Server port.")] = 8765,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Open the web UI in a browser.")
+    ] = True,
+) -> None:
+    """Start the read-only expnote web UI."""
+    import uvicorn
+
+    from expnote.web import create_app
+
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    app_obj = create_app(root, state_dir=state_dir)
+    url_host = "localhost" if host in {"127.0.0.1", "0.0.0.0"} else host
+    url = f"http://{url_host}:{port}"
+    typer.echo(f"expnote web is read-only: {url}")
+    if open_browser and os.environ.get("EXPNOTE_NO_BROWSER") != "1":
+        webbrowser.open(url)
+    uvicorn.run(app_obj, host=host, port=port, log_level="info")
+
+
 @import_app.command("rlgarden")
 def import_rlgarden(
     config_path: Annotated[
@@ -1692,6 +2009,9 @@ def import_rlgarden(
     topic: Annotated[str, typer.Option(help="Topic title.")],
     root: RootOption = Path("."),
     state_dir: StateDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = None,
     status: Annotated[str, typer.Option(help="Initial status.")] = "running",
     purpose: Annotated[str | None, typer.Option(help="Override purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
@@ -1707,6 +2027,7 @@ def import_rlgarden(
         state_dir=state_dir,
         run_id=fields["run_id"],
         topic=topic,
+        moc_id=moc_id,
         purpose=purpose if purpose is not None else fields["purpose"],
         relation=relation,
         result=result,
@@ -1734,6 +2055,8 @@ _RUN_QUERY_FIELDS = {
     "updated_at": "runs.updated_at",
     "topic": "topics.title",
     "topic_title": "topics.title",
+    "moc_id": "topics.moc_id",
+    "moc_title": "mocs.title",
 }
 _RUN_QUERY_OPERATORS = {"=", "!=", "<", "<=", ">", ">="}
 _RUN_WHERE_RE = re.compile(
@@ -1753,6 +2076,8 @@ _RUN_SHOW_FIELDS = {
     "topic_id",
     "topic_title",
     "topic",
+    "moc_id",
+    "moc_title",
     "purpose",
     "relation",
     "result",
@@ -1893,9 +2218,12 @@ def _doc_runs(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, object]]:
                 doc_runs.note,
                 runs.status,
                 runs.purpose,
-                runs.result
+                runs.result,
+                topics.title AS topic_title,
+                topics.moc_id
             FROM doc_runs
             JOIN runs ON runs.id = doc_runs.run_id
+            JOIN topics ON topics.id = runs.topic_id
             WHERE
                 doc_runs.doc_id = ?
                 AND doc_runs.deleted_at IS NULL
@@ -1910,8 +2238,8 @@ def _doc_runs(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, object]]:
 def _require_doc_row(conn: sqlite3.Connection, doc_id: str) -> sqlite3.Row:
     row = conn.execute(
         """
-        SELECT docs.*, topics.title AS topic_title
-        FROM docs JOIN topics ON docs.topic_id = topics.id
+        SELECT docs.*, mocs.title AS moc_title
+        FROM docs JOIN mocs ON docs.moc_id = mocs.id
         WHERE docs.id = ? AND docs.deleted_at IS NULL
         """,
         (doc_id,),
@@ -1927,6 +2255,58 @@ def _require_run(conn: sqlite3.Connection, run_id: str) -> None:
     ).fetchone()
     if row is None:
         raise typer.BadParameter(f"run not found: {run_id}")
+
+
+def _require_run_in_moc(
+    conn: sqlite3.Connection,
+    run_id: str,
+    moc_id: str,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT runs.id
+        FROM runs JOIN topics ON topics.id = runs.topic_id
+        WHERE runs.id = ?
+            AND topics.moc_id = ?
+            AND runs.deleted_at IS NULL
+            AND topics.deleted_at IS NULL
+        """,
+        (run_id, moc_id),
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"run not found in MOC {moc_id}: {run_id}")
+
+
+def _moc_data(conn: sqlite3.Connection, moc_id: str) -> dict[str, object]:
+    row = conn.execute(
+        "SELECT * FROM mocs WHERE id = ? AND deleted_at IS NULL", (moc_id,)
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"MOC not found: {moc_id}")
+    data = row_to_dict(row)
+    data["topics"] = [
+        row_to_dict(topic)
+        for topic in conn.execute(
+            """
+            SELECT * FROM topics
+            WHERE moc_id = ? AND deleted_at IS NULL
+            ORDER BY created_at DESC, title DESC
+            """,
+            (moc_id,),
+        )
+    ]
+    data["docs"] = [
+        row_to_dict(doc)
+        for doc in conn.execute(
+            """
+            SELECT * FROM docs
+            WHERE moc_id = ? AND deleted_at IS NULL
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (moc_id,),
+        )
+    ]
+    return data
 
 
 def _next_doc_run_position(conn: sqlite3.Connection, doc_id: str) -> int:

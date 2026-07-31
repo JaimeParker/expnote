@@ -98,8 +98,8 @@ def test_guide_agent_json_is_machine_readable():
     assert "run.show" in data["commands"]
     assert "sync markdown --pull-analysis" in json.dumps(data)
     assert "sync all" in json.dumps(data)
-    assert "moc.add_topic" in data["commands"]
-    assert "moc diff" in json.dumps(data)
+    assert "markdown.table.add_topic" in data["commands"]
+    assert "markdown table diff" in json.dumps(data)
     assert "doc.add" in data["commands"]
     assert "sync markdown --pull-docs" in json.dumps(data)
 
@@ -110,8 +110,8 @@ def test_guide_agent_human_output_mentions_core_workflow():
     assert result.exit_code == 0, result.output
     assert "SQLite is the source of truth" in result.output
     assert "Markdown is a projection" in result.output
-    assert "init -> topic add -> run add -> moc add -> sync all" in result.output
-    assert "expnote moc sections" in result.output
+    assert "init -> moc add -> topic add --moc-id -> run add" in result.output
+    assert "expnote markdown table sections" in result.output
     assert "expnote doc show <doc_id> --json" in result.output
     assert "expnote validate --json" in result.output
 
@@ -307,7 +307,7 @@ def test_existing_schema_migrates_on_cli_use(tmp_path):
     ).fetchone()[0]
     conn.close()
     assert {row[0] for row in rows} == {"docs", "doc_runs"}
-    assert version == "3"
+    assert version == "4"
 
 
 def test_external_state_dir_supports_cli_workflow(tmp_path):
@@ -379,7 +379,8 @@ def test_validate_reports_projection_conflicts(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "run1",
             "--root",
@@ -597,8 +598,8 @@ def test_doc_crud_and_run_links(tmp_path):
             str(tmp_path),
             "--doc-id",
             "compare1",
-            "--topic",
-            "topic",
+            "--moc-id",
+            "default",
             "--title",
             "Compare seeds",
             "--body",
@@ -614,6 +615,7 @@ def test_doc_crud_and_run_links(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["id"] == "compare1"
+    assert data["moc_id"] == "default"
     assert data["title"] == "Compare seeds"
     assert data["body"] == "Initial comparison"
     assert [row["run_id"] for row in data["runs"]] == ["run2", "run1"]
@@ -682,6 +684,125 @@ def test_doc_crud_and_run_links(tmp_path):
     result = runner.invoke(app, ["doc", "list", "--root", str(tmp_path), "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
+
+
+def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
+    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "moc",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--moc-id",
+            "baseline",
+            "--title",
+            "Baseline MOC",
+            "--summary",
+            "Offline to online baselines",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["id"] == "baseline"
+
+    for moc_id in ["baseline", "default"]:
+        result = runner.invoke(
+            app,
+            [
+                "topic",
+                "add",
+                "Same Topic",
+                "--root",
+                str(tmp_path),
+                "--moc-id",
+                moc_id,
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        ["moc", "show", "baseline", "--root", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["summary"] == "Offline to online baselines"
+    assert [topic["title"] for topic in data["topics"]] == ["Same Topic"]
+
+
+def test_doc_link_rejects_cross_moc_run(tmp_path):
+    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "moc",
+                "add",
+                "--root",
+                str(tmp_path),
+                "--moc-id",
+                "other",
+                "--title",
+                "Other MOC",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "topic",
+                "add",
+                "Other Topic",
+                "--root",
+                str(tmp_path),
+                "--moc-id",
+                "other",
+            ],
+        ).exit_code
+        == 0
+    )
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "default-run")
+    _add_run(tmp_path, "other-run", topic="Other Topic")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--root",
+            str(tmp_path),
+            "--doc-id",
+            "default-doc",
+            "--moc-id",
+            "default",
+            "--title",
+            "Default Doc",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "link",
+            "default-doc",
+            "other-run",
+            "--root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "run not found in MOC default" in result.output
 
 
 def test_duplicate_run_id_errors(tmp_path):
@@ -1490,7 +1611,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "moc1",
             "--root",
@@ -1512,7 +1634,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "list",
             "--root",
             str(tmp_path),
@@ -1529,7 +1652,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "diff",
             "--root",
             str(tmp_path),
@@ -1546,7 +1670,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "remove",
             "moc1",
             "--root",
@@ -1569,7 +1694,8 @@ def test_moc_sections_lists_registered_sections(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "moc1",
             "--root",
@@ -1585,7 +1711,8 @@ def test_moc_sections_lists_registered_sections(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "sections",
             "--root",
             str(tmp_path),
@@ -1610,7 +1737,8 @@ def test_moc_add_topic_registers_active_topic_runs(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add-topic",
             "--root",
             str(tmp_path),
@@ -1633,7 +1761,8 @@ def test_moc_add_topic_registers_active_topic_runs(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add-topic",
             "--root",
             str(tmp_path),
@@ -1664,7 +1793,8 @@ def test_moc_sync_rejects_unregistered_empty_section(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "sync",
             "--root",
             str(tmp_path),
@@ -1688,7 +1818,8 @@ def test_moc_sync_allow_empty_creates_empty_section(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "sync",
             "--root",
             str(tmp_path),
@@ -1713,7 +1844,8 @@ def test_sync_all_updates_registered_curated_mocs(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "moc1",
             "--root",
@@ -1769,10 +1901,12 @@ def test_moc_update_normalizes_positions(tmp_path):
     ]
 
     for run_id in ["a", "b", "c"]:
-        result = runner.invoke(app, ["moc", "add", run_id, *common, "--json"])
+        result = runner.invoke(
+            app, ["markdown", "table", "add", run_id, *common, "--json"]
+        )
         assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["moc", "list", *common, "--json"])
+    result = runner.invoke(app, ["markdown", "table", "list", *common, "--json"])
     assert result.exit_code == 0, result.output
     rows = json.loads(result.output)
     assert [row["run_id"] for row in rows] == ["a", "b", "c"]
@@ -1780,7 +1914,7 @@ def test_moc_update_normalizes_positions(tmp_path):
 
     result = runner.invoke(
         app,
-        ["moc", "update", "c", *common, "--position", "1", "--json"],
+        ["markdown", "table", "update", "c", *common, "--position", "1", "--json"],
     )
     assert result.exit_code == 0, result.output
     rows = _moc_rows(tmp_path, moc_path, "StackCube")
@@ -1790,7 +1924,7 @@ def test_moc_update_normalizes_positions(tmp_path):
 
     result = runner.invoke(
         app,
-        ["moc", "update", "a", *common, "--position", "99", "--json"],
+        ["markdown", "table", "update", "a", *common, "--position", "99", "--json"],
     )
     assert result.exit_code == 0, result.output
     rows = _moc_rows(tmp_path, moc_path, "StackCube")
@@ -1799,14 +1933,14 @@ def test_moc_update_normalizes_positions(tmp_path):
 
     result = runner.invoke(
         app,
-        ["moc", "update", "a", *common, "--position", "0", "--json"],
+        ["markdown", "table", "update", "a", *common, "--position", "0", "--json"],
     )
     assert result.exit_code == 0, result.output
     rows = _moc_rows(tmp_path, moc_path, "StackCube")
     assert [row["run_id"] for row in rows] == ["a", "c", "b"]
     assert [row["position"] for row in rows] == [1, 2, 3]
 
-    result = runner.invoke(app, ["moc", "remove", "c", *common, "--json"])
+    result = runner.invoke(app, ["markdown", "table", "remove", "c", *common, "--json"])
     assert result.exit_code == 0, result.output
     rows = _moc_rows(tmp_path, moc_path, "StackCube")
     assert [row["run_id"] for row in rows] == ["a", "b"]
@@ -1814,7 +1948,16 @@ def test_moc_update_normalizes_positions(tmp_path):
 
     result = runner.invoke(
         app,
-        ["moc", "update", "missing", *common, "--position", "1", "--json"],
+        [
+            "markdown",
+            "table",
+            "update",
+            "missing",
+            *common,
+            "--position",
+            "1",
+            "--json",
+        ],
     )
     assert result.exit_code != 0
 
@@ -1826,7 +1969,8 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "add",
             "moc1",
             "--root",
@@ -1847,7 +1991,8 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "diff",
             "--root",
             str(tmp_path),
@@ -1879,7 +2024,8 @@ def test_moc_diff_reports_projection_conflict(tmp_path):
     result = runner.invoke(
         app,
         [
-            "moc",
+            "markdown",
+            "table",
             "diff",
             "--root",
             str(tmp_path),

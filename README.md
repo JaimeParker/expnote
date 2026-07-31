@@ -26,9 +26,17 @@ PYTHONPATH=. python -m expnote.cli --help
 ```bash
 expnote init --notes-dir notes/runs
 
-expnote topic add "260703-StackCube SAC reproduction" --json
+expnote moc add \
+  --moc-id stackcube \
+  --title "StackCube training" \
+  --json
+
+expnote topic add "260703-StackCube SAC reproduction" \
+  --moc-id stackcube \
+  --json
 
 expnote run add \
+  --moc-id stackcube \
   --topic "260703-StackCube SAC reproduction" \
   --run-id a7zf90k7 \
   --purpose "Reproduce seed=1 trajectory on current main" \
@@ -89,6 +97,10 @@ SQLite is the source of truth. Markdown is a projection for reading, linking, an
 searching. `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` are stored
 in SQLite and returned by `expnote run show <run_id> --json`.
 
+SQL MOC records are the first-level organization. Topics belong to a MOC; runs
+belong to one topic. Obsidian MOC files are only Markdown projections of that
+SQLite hierarchy.
+
 Generated Markdown is wrapped in managed markers. Edit structured fields through
 the CLI. The only Obsidian-editable field is the run note `Analysis` section
 inside `expnote:analysis` markers. To import those edits back into SQLite, run:
@@ -110,7 +122,7 @@ generated `analyses/<doc_id>.md` projection.
 ```bash
 expnote doc add \
   --doc-id calql-baseline-summary \
-  --topic "Cal-QL baseline" \
+  --moc-id calql \
   --title "Cal-QL baseline summary" \
   --run-id a7zf90k7 \
   --run-id 53ojw3kc \
@@ -129,22 +141,34 @@ If a document body is edited in Obsidian, plain `expnote sync markdown` refuses
 to overwrite it. Use `--pull-docs` to import the Obsidian body into SQLite, or
 `--force` to restore the SQLite version.
 
-## MOC section tables
+## Read-only web UI
+
+Start a local read-only web UI that reads directly from SQLite:
+
+```bash
+expnote web --root "/path/to/vault" --state-dir ~/.local/share/expnote/workspaces/example
+```
+
+The web UI is independent from Obsidian. It shows SQL MOCs, topics, runs, run
+details, rendered Analysis, and MOC-level analysis documents. It defaults to
+`127.0.0.1`; pass `--host 0.0.0.0` only when you explicitly want LAN access.
+
+## Markdown MOC section tables
 
 Add a run to a managed table under a specific level-two heading:
 
 ```bash
-expnote moc add lu8qk41s \
+expnote markdown table add lu8qk41s \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC"
 ```
 
-MOC table membership is stored in SQLite. The table itself is rendered inside
+Markdown table membership is stored in SQLite. The table itself is rendered inside
 `expnote:moc-table` markers under the requested `##` heading. A run can appear in
-multiple MOCs or sections.
+multiple Markdown files or sections.
 
 The generated auto index defaults to `state_dir/index.md`, outside the Obsidian
-vault. `moc` commands own curated MOC section tables inside the vault.
+vault. `markdown table` commands own curated MOC section tables inside the vault.
 
 See [docs/templates/training-record-example.md](docs/templates/training-record-example.md)
 for an example MOC and generated `runs/<id>.md` note.
@@ -152,34 +176,35 @@ for an example MOC and generated `runs/<id>.md` note.
 Useful operations:
 
 ```bash
-expnote moc sections \
+expnote markdown table sections \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --json
 
-expnote moc add-topic \
+expnote markdown table add-topic \
   --topic "260703-StackCube SAC reproduction" \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
-expnote moc list \
+expnote markdown table list \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
-expnote moc diff \
+expnote markdown table diff \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
-expnote moc remove lu8qk41s \
+expnote markdown table remove lu8qk41s \
   --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
   --section "StackCube SAC"
 ```
 
-`moc sync` re-renders registered rows for an exact section name. It does not
-discover runs by topic. Use `moc sections` to inspect existing section names and
-`moc add-topic` to register all active runs from a topic.
+`markdown table sync` re-renders registered rows for an exact section name. It
+does not discover runs by topic. Use `markdown table sections` to inspect
+existing section names and `markdown table add-topic` to register all active
+runs from a topic.
 
 ## Agent-friendly output
 
@@ -263,7 +288,8 @@ Agent contract:
   `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
 - Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
   comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
-- Use `expnote moc diff --json` before trusting a manually edited MOC table.
+- Use `expnote markdown table diff --json` before trusting a manually edited
+  MOC table.
 - Run `expnote sync all` after structured updates if Markdown and curated MOCs
   were not synced by the caller workflow. `sync markdown` updates run notes,
   analysis documents, and the auto index only.
