@@ -17,10 +17,16 @@ def _write_config(tmp_path: Path, config: dict[str, object]) -> Path:
 
 
 def _init_with_topic(tmp_path: Path) -> None:
-    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
     assert (
         runner.invoke(
-            app, ["topic", "add", "topic", "--root", str(tmp_path)]
+            app, ["init", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            ["topic", "add", "topic", "--workspace-dir", str(tmp_path / ".expnote")],
         ).exit_code
         == 0
     )
@@ -52,8 +58,8 @@ def test_import_rlgarden_config(tmp_path):
             "import",
             "rlgarden",
             str(config_path),
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--json",
@@ -81,8 +87,8 @@ def test_import_rlgarden_uses_exp_name_when_run_name_is_missing(tmp_path):
             "import",
             "rlgarden",
             str(config_path),
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--json",
@@ -105,8 +111,8 @@ def test_import_rlgarden_errors_when_no_run_identifier_exists(tmp_path):
             "import",
             "rlgarden",
             str(config_path),
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--json",
@@ -125,8 +131,8 @@ def test_import_rlgarden_purpose_override(tmp_path):
             "import",
             "rlgarden",
             str(config_path),
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--purpose",
@@ -147,8 +153,8 @@ def test_duplicate_rlgarden_import_errors_and_does_not_append_import_event(tmp_p
         "import",
         "rlgarden",
         str(config_path),
-        "--root",
-        str(tmp_path),
+        "--workspace-dir",
+        str(tmp_path / ".expnote"),
         "--topic",
         "topic",
         "--json",

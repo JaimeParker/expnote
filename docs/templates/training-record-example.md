@@ -23,24 +23,22 @@ Cyber Brain/
 
 ```bash
 expnote init \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
-  --root "/home/user/Documents/Cyber Brain" \
+  --workspace robot-learning \
+  --workspace-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --obsidian-root "/home/user/Documents/Cyber Brain" \
   --notes-dir "10 Projects/Robot Learning/runs"
 
 expnote moc add \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --moc-id robot-learning \
   --title "Robot Learning Training"
 
 expnote topic add "StackCube SAC" \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --moc-id robot-learning
 
 expnote run add \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --moc-id robot-learning \
   --topic "StackCube SAC" \
   --run-id stackcube-sac-seed1 \
@@ -54,14 +52,12 @@ expnote run add \
   --meta-json seed=1
 
 expnote markdown table add stackcube-sac-seed1 \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --moc-path "10 Projects/Robot Learning/Training MOC.md" \
   --section "StackCube SAC"
 
 expnote doc add \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --doc-id stackcube-seed-summary \
   --moc-id robot-learning \
   --title "StackCube seed summary" \
@@ -162,8 +158,7 @@ those edits back into SQLite with:
 
 ```bash
 expnote sync markdown \
-  --root "/home/user/Documents/Cyber Brain" \
-  --state-dir ~/.local/share/expnote/workspaces/robot-learning \
+  --workspace robot-learning \
   --pull-analysis \
   --pull-docs
 ```

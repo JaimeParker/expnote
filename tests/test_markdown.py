@@ -20,7 +20,9 @@ def _setup_workspace(
             app,
             [
                 "init",
-                "--root",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--obsidian-root",
                 str(tmp_path),
                 "--notes-dir",
                 notes_dir,
@@ -32,7 +34,8 @@ def _setup_workspace(
     )
     assert (
         runner.invoke(
-            app, ["topic", "add", "topic", "--root", str(tmp_path)]
+            app,
+            ["topic", "add", "topic", "--workspace-dir", str(tmp_path / ".expnote")],
         ).exit_code
         == 0
     )
@@ -49,8 +52,8 @@ def _add_run(
     args = [
         "run",
         "add",
-        "--root",
-        str(tmp_path),
+        "--workspace-dir",
+        str(tmp_path / ".expnote"),
         "--topic",
         "topic",
         "--run-id",
@@ -73,8 +76,8 @@ def _add_doc(tmp_path: Path, doc_id: str = "compare1", body: str = "body") -> No
         [
             "doc",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--doc-id",
             doc_id,
             "--moc-id",
@@ -94,7 +97,9 @@ def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_pat
     _setup_workspace(tmp_path)
     _add_run(tmp_path)
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 
@@ -106,7 +111,9 @@ def test_markdown_sync_is_idempotent_and_preserves_run_note_user_content(tmp_pat
 
     first = (tmp_path / "ManiSkill Training MOC.md").read_text(encoding="utf-8")
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
     second = (tmp_path / "ManiSkill Training MOC.md").read_text(encoding="utf-8")
@@ -129,7 +136,15 @@ def test_markdown_sync_links_active_run_ids_in_text_fields(tmp_path):
     )
     assert (
         runner.invoke(
-            app, ["run", "delete", "target", "--root", str(tmp_path), "--json"]
+            app,
+            [
+                "run",
+                "delete",
+                "target",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--json",
+            ],
         ).exit_code
         == 0
     )
@@ -141,8 +156,8 @@ def test_markdown_sync_links_active_run_ids_in_text_fields(tmp_path):
                 "run",
                 "update",
                 "source",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--purpose",
                 "compare active and [[target]]",
                 "--relation",
@@ -156,7 +171,9 @@ def test_markdown_sync_links_active_run_ids_in_text_fields(tmp_path):
         == 0
     )
 
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
 
     assert result.exit_code == 0, result.output
     note = (tmp_path / "ManiSkill Training" / "source.md").read_text(encoding="utf-8")
@@ -166,24 +183,28 @@ def test_markdown_sync_links_active_run_ids_in_text_fields(tmp_path):
     assert "analysis mentions [[active]]" in note
     assert "```text\nactive\n```" in note
 
-    second = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    second = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert second.exit_code == 0, second.output
 
 
 def test_markdown_sync_rejects_changed_analysis_without_policy(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, analysis="initial analysis")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     note = tmp_path / "ManiSkill Training" / "wandb123.md"
     note.write_text(
-        note.read_text(encoding="utf-8").replace(
-            "initial analysis", "human analysis"
-        ),
+        note.read_text(encoding="utf-8").replace("initial analysis", "human analysis"),
         encoding="utf-8",
     )
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
 
     assert result.exit_code != 0
     assert "--pull-analysis" in result.output
@@ -193,23 +214,38 @@ def test_markdown_sync_rejects_changed_analysis_without_policy(tmp_path):
 def test_markdown_sync_pull_analysis_updates_sql(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, analysis="initial analysis")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     note = tmp_path / "ManiSkill Training" / "wandb123.md"
     note.write_text(
-        note.read_text(encoding="utf-8").replace(
-            "initial analysis", "human analysis"
-        ),
+        note.read_text(encoding="utf-8").replace("initial analysis", "human analysis"),
         encoding="utf-8",
     )
     result = runner.invoke(
-        app, ["sync", "markdown", "--root", str(tmp_path), "--pull-analysis"]
+        app,
+        [
+            "sync",
+            "markdown",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--pull-analysis",
+        ],
     )
     assert result.exit_code == 0, result.output
 
     result = runner.invoke(
-        app, ["run", "show", "wandb123", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "show",
+            "wandb123",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["analysis"] == "human analysis"
@@ -218,7 +254,9 @@ def test_markdown_sync_pull_analysis_updates_sql(tmp_path):
 def test_markdown_sync_force_overwrites_changed_analysis(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, analysis="sql analysis")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     note = tmp_path / "ManiSkill Training" / "wandb123.md"
@@ -227,7 +265,8 @@ def test_markdown_sync_force_overwrites_changed_analysis(tmp_path):
         encoding="utf-8",
     )
     result = runner.invoke(
-        app, ["sync", "markdown", "--root", str(tmp_path), "--force"]
+        app,
+        ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote"), "--force"],
     )
     assert result.exit_code == 0, result.output
 
@@ -239,7 +278,9 @@ def test_markdown_sync_preserves_moc_user_content_outside_managed_block(tmp_path
     _setup_workspace(tmp_path)
     _add_run(tmp_path)
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 
@@ -249,7 +290,9 @@ def test_markdown_sync_preserves_moc_user_content_outside_managed_block(tmp_path
         encoding="utf-8",
     )
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 
@@ -262,7 +305,9 @@ def test_markdown_table_cells_escape_pipes_and_newlines(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, purpose="compare a|b\nsecond line")
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 
@@ -273,7 +318,9 @@ def test_markdown_table_cells_escape_pipes_and_newlines(tmp_path):
 def test_markdown_markers_have_blank_lines_around_content(tmp_path):
     _setup_workspace(tmp_path)
     _add_run(tmp_path, analysis="analysis")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
     result = runner.invoke(
         app,
@@ -282,8 +329,8 @@ def test_markdown_markers_have_blank_lines_around_content(tmp_path):
             "table",
             "add",
             "wandb123",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             "Section MOC.md",
             "--section",
@@ -293,14 +340,11 @@ def test_markdown_markers_have_blank_lines_around_content(tmp_path):
     assert result.exit_code == 0, result.output
 
     moc = (tmp_path / "Section MOC.md").read_text(encoding="utf-8")
-    note = (tmp_path / "ManiSkill Training" / "wandb123.md").read_text(
-        encoding="utf-8"
-    )
+    note = (tmp_path / "ManiSkill Training" / "wandb123.md").read_text(encoding="utf-8")
 
     assert "<!-- expnote:managed:start -->\n\n# wandb123" in note
     assert (
-        "<!-- expnote:analysis:start -->\n\nanalysis\n\n"
-        "<!-- expnote:analysis:end -->"
+        "<!-- expnote:analysis:start -->\n\nanalysis\n\n<!-- expnote:analysis:end -->"
     ) in note
     assert "<!-- expnote:analysis:end -->\n\n<!-- expnote:managed:end -->" in note
     assert (
@@ -322,8 +366,8 @@ def test_sync_markdown_rejects_auto_index_with_curated_moc_table(tmp_path):
                 "table",
                 "add",
                 run_id,
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-path",
                 "Baseline MOC.md",
                 "--section",
@@ -332,7 +376,9 @@ def test_sync_markdown_rejects_auto_index_with_curated_moc_table(tmp_path):
         )
         assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
 
     assert result.exit_code != 0
     assert "projection conflict" in result.output
@@ -359,8 +405,8 @@ def test_moc_writes_reject_curated_target_with_managed_block(tmp_path):
                     "table",
                     "add",
                     "run1",
-                    "--root",
-                    str(root),
+                    "--workspace-dir",
+                    str(root / ".expnote"),
                     "--moc-path",
                     "Curated MOC.md",
                     "--section",
@@ -378,8 +424,8 @@ def test_moc_writes_reject_curated_target_with_managed_block(tmp_path):
             app,
             [
                 *command,
-                "--root",
-                str(root),
+                "--workspace-dir",
+                str(root / ".expnote"),
                 "--moc-path",
                 "Curated MOC.md",
                 "--section",
@@ -400,7 +446,8 @@ def test_markdown_sync_supports_custom_chinese_paths(tmp_path):
     )
     _add_run(tmp_path, run_id="cn123")
     result = runner.invoke(
-        app, ["sync", "markdown", "--root", str(tmp_path), "--json"]
+        app,
+        ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote"), "--json"],
     )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -413,13 +460,15 @@ def test_markdown_sync_supports_custom_chinese_paths(tmp_path):
 def test_markdown_sync_uses_external_state_dir_and_writes_to_root(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state"
-    common = ["--root", str(root), "--state-dir", str(state_dir)]
+    common = ["--workspace-dir", str(state_dir)]
 
     result = runner.invoke(
         app,
         [
             "init",
             *common,
+            "--obsidian-root",
+            str(root),
             "--notes-dir",
             "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs",
             "--moc-path",
@@ -468,9 +517,20 @@ def test_markdown_sync_uses_external_state_dir_and_writes_to_root(tmp_path):
 def test_markdown_sync_writes_default_auto_index_to_state_dir(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state"
-    common = ["--root", str(root), "--state-dir", str(state_dir)]
+    common = ["--workspace-dir", str(state_dir)]
 
-    result = runner.invoke(app, ["init", *common, "--notes-dir", "runs", "--json"])
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            *common,
+            "--obsidian-root",
+            str(root),
+            "--notes-dir",
+            "runs",
+            "--json",
+        ],
+    )
     assert result.exit_code == 0, result.output
     result = runner.invoke(app, ["topic", "add", "topic", *common])
     assert result.exit_code == 0, result.output
@@ -501,10 +561,19 @@ def test_markdown_sync_writes_default_auto_index_to_state_dir(tmp_path):
 def test_markdown_sync_writes_custom_auto_index_to_state_dir(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state"
-    common = ["--root", str(root), "--state-dir", str(state_dir)]
+    common = ["--workspace-dir", str(state_dir)]
 
     result = runner.invoke(
-        app, ["init", *common, "--index-path", "debug/index.md", "--json"]
+        app,
+        [
+            "init",
+            *common,
+            "--obsidian-root",
+            str(root),
+            "--index-path",
+            "debug/index.md",
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     result = runner.invoke(app, ["topic", "add", "topic", *common])
@@ -526,7 +595,10 @@ def test_markdown_sync_writes_doc_note_and_run_backlink(tmp_path):
     _add_run(tmp_path, analysis="run analysis")
     _add_doc(tmp_path, body="Compare seed outcomes.")
 
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app,
+        ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote"), "--json"],
+    )
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -554,7 +626,9 @@ def test_markdown_sync_rejects_changed_doc_body_without_policy(tmp_path):
     _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
     _add_run(tmp_path)
     _add_doc(tmp_path, body="SQL body")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
@@ -563,7 +637,9 @@ def test_markdown_sync_rejects_changed_doc_body_without_policy(tmp_path):
         encoding="utf-8",
     )
 
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
 
     assert result.exit_code != 0
     assert "--pull-docs" in result.output
@@ -574,7 +650,9 @@ def test_markdown_sync_pull_docs_updates_sql(tmp_path):
     _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
     _add_run(tmp_path)
     _add_doc(tmp_path, body="SQL body")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
@@ -583,12 +661,27 @@ def test_markdown_sync_pull_docs_updates_sql(tmp_path):
         encoding="utf-8",
     )
     result = runner.invoke(
-        app, ["sync", "markdown", "--root", str(tmp_path), "--pull-docs"]
+        app,
+        [
+            "sync",
+            "markdown",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--pull-docs",
+        ],
     )
     assert result.exit_code == 0, result.output
 
     result = runner.invoke(
-        app, ["doc", "show", "compare1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "doc",
+            "show",
+            "compare1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["body"] == "Human body"
@@ -598,7 +691,9 @@ def test_markdown_sync_force_overwrites_changed_doc_body(tmp_path):
     _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
     _add_run(tmp_path)
     _add_doc(tmp_path, body="SQL body")
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
 
     doc_path = tmp_path / "Project" / "analyses" / "compare1.md"
@@ -607,7 +702,8 @@ def test_markdown_sync_force_overwrites_changed_doc_body(tmp_path):
         encoding="utf-8",
     )
     result = runner.invoke(
-        app, ["sync", "markdown", "--root", str(tmp_path), "--force"]
+        app,
+        ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote"), "--force"],
     )
     assert result.exit_code == 0, result.output
 
@@ -622,11 +718,21 @@ def test_markdown_sync_omits_soft_deleted_runs_from_moc(tmp_path):
     _add_run(tmp_path, run_id="active")
 
     result = runner.invoke(
-        app, ["run", "delete", "deleted", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "delete",
+            "deleted",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert (
-        runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app, ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 

@@ -21,7 +21,9 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 - SQL MOC records are the first-level organization. Topics belong to a MOC.
 - Markdown is a projection for Obsidian, Git, WebDAV, and search.
 - Use `--json` for automation.
-- Reuse the same `--root` and `--state-dir` for every command in the workspace.
+- Use `expnote workspace use <name>` once, or pass `--workspace <name>` on
+  follow-up commands.
+- `--obsidian-root` is optional and only controls Markdown projection output.
 - Edit `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` through CLI
   commands, except human-authored Obsidian Analysis imports.
 - Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
@@ -33,27 +35,25 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 
 ```bash
 expnote init \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
+  --workspace-dir ~/.local/share/expnote/workspaces/example \
+  --obsidian-root "/path/to/obsidian/vault" \
   --notes-dir "00 Inbox/runs" \
   --json
 
 expnote moc add \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-id stackcube \
   --title "StackCube training" \
   --json
 
 expnote topic add "StackCube SAC" \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-id stackcube \
   --json
 
 expnote run add \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-id stackcube \
   --topic "StackCube SAC" \
   --run-id a7zf90k7 \
@@ -67,15 +67,13 @@ expnote run add \
   --json
 
 expnote markdown table add a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
 expnote sync all \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --json
 ```
 
@@ -89,9 +87,7 @@ updates run notes, the auto index, and all registered curated MOC sections.
 For read-only browsing independent from Obsidian:
 
 ```bash
-expnote web \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example
+expnote web --workspace example
 ```
 
 ## Query Records
@@ -100,48 +96,40 @@ Do not grep generated Markdown for facts. Query SQLite through expnote:
 
 ```bash
 expnote run show a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --field purpose
 
 expnote run show a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --json
 
 expnote run query \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --where "status = 'running' AND metadata.seed = 1" \
   --order-by updated_at DESC \
   --json
 
 expnote run status running \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --json
 
 expnote run update a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --status finished \
   --json
 
 expnote run update a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --unset-meta seed \
   --json
 
 expnote run update a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --append-analysis "Reward plateaued after 300k steps." \
   --json
 
 expnote run update a7zf90k7 \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --metadata-json '{"algo":"sac","seed":1}' \
   --json
 ```
@@ -169,8 +157,7 @@ runs. The body and run links are stored in SQLite; Obsidian receives an
 
 ```bash
 expnote doc add \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --doc-id stackcube-seed-summary \
   --moc-id stackcube \
   --title "StackCube seed summary" \
@@ -179,20 +166,17 @@ expnote doc add \
   --json
 
 expnote doc link stackcube-seed-summary other_wandb_id \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --role ablation \
   --json
 
 expnote doc update stackcube-seed-summary \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --append-body "Seed 1 reached success earlier than the ablation." \
   --json
 
 expnote doc show stackcube-seed-summary \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --json
 ```
 
@@ -210,8 +194,7 @@ If plain sync refuses to overwrite a changed Analysis section:
 
 ```bash
 expnote sync markdown \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --pull-analysis \
   --json
 ```
@@ -223,34 +206,30 @@ Use `--force` only when SQLite should overwrite Obsidian Analysis.
 MOC section tables are managed inside `expnote:moc-table` markers under `##`
 headings.
 
-The generated auto index defaults to `state_dir/index.md`, outside Obsidian. The
-curated MOC path is owned by `markdown table add/remove/update/sync`.
+The generated auto index defaults to `workspace_dir/index.md`, outside Obsidian.
+The curated MOC path is owned by `markdown table add/remove/update/sync`.
 
 ```bash
 expnote markdown table diff \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
 expnote markdown table sections \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-path "00 Inbox/Training MOC.md" \
   --json
 
 expnote markdown table add-topic \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --topic "StackCube SAC" \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json
 
 expnote markdown table sync \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json
@@ -267,13 +246,11 @@ Run these before handing off long-lived notes:
 
 ```bash
 expnote validate \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --json
 
 expnote markdown table diff \
-  --root "/path/to/obsidian/vault" \
-  --state-dir ~/.local/share/expnote/workspaces/example \
+  --workspace example \
   --moc-path "00 Inbox/Training MOC.md" \
   --section "StackCube SAC" \
   --json

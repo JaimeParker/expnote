@@ -24,18 +24,21 @@ PYTHONPATH=. python -m expnote.cli --help
 ## Quick start
 
 ```bash
-expnote init --notes-dir notes/runs
+expnote init --workspace stackcube-demo
 
 expnote moc add \
+  --workspace stackcube-demo \
   --moc-id stackcube \
   --title "StackCube training" \
   --json
 
 expnote topic add "260703-StackCube SAC reproduction" \
+  --workspace stackcube-demo \
   --moc-id stackcube \
   --json
 
 expnote run add \
+  --workspace stackcube-demo \
   --moc-id stackcube \
   --topic "260703-StackCube SAC reproduction" \
   --run-id a7zf90k7 \
@@ -46,7 +49,7 @@ expnote run add \
   --meta env_id=StackCube-v1 \
   --json
 
-expnote sync markdown
+expnote web --workspace stackcube-demo --no-open
 ```
 
 `expnote run create --id ...` is also accepted as an alias for
@@ -58,7 +61,7 @@ expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
 The same workflow without installing:
 
 ```bash
-PYTHONPATH=. python -m expnote.cli init --notes-dir notes/runs
+PYTHONPATH=. python -m expnote.cli init --workspace stackcube-demo
 ```
 
 ## Obsidian layout
@@ -68,8 +71,9 @@ vault and write only Markdown into the vault:
 
 ```bash
 expnote init \
-  --state-dir ~/.local/share/expnote/workspaces/mani-skill-training \
-  --root "/home/hazyparker/Documents/Cyber Brain" \
+  --workspace mani-skill-training \
+  --workspace-dir ~/.local/share/expnote/workspaces/mani-skill-training \
+  --obsidian-root "/home/hazyparker/Documents/Cyber Brain" \
   --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs"
 ```
 
@@ -88,8 +92,10 @@ Cyber Brain/
     <doc_id>.md
 ```
 
-If `--state-dir` is omitted, expnote uses `<root>/.expnote`, which is convenient
-for a simple local workspace but not recommended for a synced Obsidian vault.
+If `--workspace-dir` is omitted, expnote uses
+`~/.local/share/expnote/workspaces/<workspace>`. For synced Obsidian vaults,
+keep `--workspace-dir` outside the vault and store only generated Markdown under
+`--obsidian-root`.
 If `--docs-dir` is omitted, expnote writes analysis documents next to the run
 notes directory: `.../runs` becomes `.../analyses`.
 
@@ -146,7 +152,7 @@ to overwrite it. Use `--pull-docs` to import the Obsidian body into SQLite, or
 Start a local read-only web UI that reads directly from SQLite:
 
 ```bash
-expnote web --root "/path/to/vault" --state-dir ~/.local/share/expnote/workspaces/example
+expnote web --workspace example
 ```
 
 The web UI is independent from Obsidian. It shows SQL MOCs, topics, runs, run
@@ -167,8 +173,9 @@ Markdown table membership is stored in SQLite. The table itself is rendered insi
 `expnote:moc-table` markers under the requested `##` heading. A run can appear in
 multiple Markdown files or sections.
 
-The generated auto index defaults to `state_dir/index.md`, outside the Obsidian
-vault. `markdown table` commands own curated MOC section tables inside the vault.
+The generated auto index defaults to `workspace_dir/index.md`, outside the
+Obsidian vault. `markdown table` commands own curated MOC section tables inside
+the vault.
 
 See [docs/templates/training-record-example.md](docs/templates/training-record-example.md)
 for an example MOC and generated `runs/<id>.md` note.
@@ -286,8 +293,8 @@ supported yet.
 Agent contract:
 
 - Prefer `--json` for automation.
-- If a workspace was initialized with `--state-dir`, pass the same `--state-dir`
-  on follow-up commands.
+- Use `expnote workspace use <name>` once, or pass `--workspace <name>` on
+  follow-up commands.
 - Treat non-zero exit status as command failure.
 - Do not edit generated Markdown directly except Analysis inside
   `expnote:analysis` markers and document body inside `expnote:doc-body` markers.

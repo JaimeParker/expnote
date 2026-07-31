@@ -27,15 +27,20 @@ runner = CliRunner()
 
 
 def _workspace(tmp_path: Path) -> None:
-    assert runner.invoke(cli_app, ["init", "--root", str(tmp_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_app, ["init", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
+        == 0
+    )
     assert (
         runner.invoke(
             cli_app,
             [
                 "moc",
                 "add",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "baseline",
                 "--title",
@@ -51,8 +56,8 @@ def _workspace(tmp_path: Path) -> None:
                 "topic",
                 "add",
                 "CalQL",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "baseline",
             ],
@@ -65,8 +70,8 @@ def _workspace(tmp_path: Path) -> None:
             [
                 "run",
                 "add",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "baseline",
                 "--topic",
@@ -91,8 +96,8 @@ def _workspace(tmp_path: Path) -> None:
             [
                 "doc",
                 "add",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--doc-id",
                 "summary",
                 "--moc-id",
@@ -158,8 +163,8 @@ def test_web_queries_include_linked_text_html(tmp_path):
                 "run",
                 "update",
                 "wandb123",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--purpose",
                 "compare wandb123",
                 "--relation",
@@ -207,7 +212,7 @@ def test_web_index_has_routes_and_topic_table_without_metadata():
     assert '<col class="col-result">' in _INDEX_HTML
     assert 'data-cell="purpose"' in _INDEX_HTML
     assert 'data-cell="relation"' in _INDEX_HTML
-    assert 'table-layout: auto' in _INDEX_HTML
+    assert "table-layout: auto" in _INDEX_HTML
     assert "nth-child" not in _INDEX_HTML
     assert "<th>relation</th>" in _INDEX_HTML
     topic_table_start = _INDEX_HTML.index('table data-table="topic-runs"')
@@ -381,8 +386,8 @@ def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
                 "run",
                 "update",
                 "wandb123",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--metadata-json",
                 '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
             ],
@@ -426,8 +431,8 @@ def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
                 "run",
                 "update",
                 "wandb123",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--metadata-json",
                 '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
             ],
@@ -475,9 +480,7 @@ def test_web_wandb_compare_endpoint_skips_missing_urls(tmp_path):
     assert response["errors"][0]["reason"] == "run_not_found"
 
 
-def test_web_wandb_compare_endpoint_returns_successes_and_errors(
-    tmp_path, monkeypatch
-):
+def test_web_wandb_compare_endpoint_returns_successes_and_errors(tmp_path, monkeypatch):
     _workspace(tmp_path)
     assert (
         runner.invoke(
@@ -486,8 +489,8 @@ def test_web_wandb_compare_endpoint_returns_successes_and_errors(
                 "run",
                 "update",
                 "wandb123",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--metadata-json",
                 '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
             ],
@@ -500,8 +503,8 @@ def test_web_wandb_compare_endpoint_returns_successes_and_errors(
             [
                 "run",
                 "add",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "baseline",
                 "--topic",

@@ -68,12 +68,14 @@ def init_store(
     index_path: str,
     moc_path: str | None = None,
     project: str | None = None,
+    obsidian_enabled: bool = True,
 ) -> None:
     paths = paths_for(root, state_dir)
     docs_dir = docs_dir or default_docs_dir(notes_dir)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
-    (root / notes_dir).mkdir(parents=True, exist_ok=True)
-    (root / docs_dir).mkdir(parents=True, exist_ok=True)
+    if obsidian_enabled:
+        (root / notes_dir).mkdir(parents=True, exist_ok=True)
+        (root / docs_dir).mkdir(parents=True, exist_ok=True)
     if not paths.events_path.exists():
         paths.events_path.write_text("", encoding="utf-8")
     if not paths.config_path.exists():
@@ -82,10 +84,16 @@ def init_store(
             "\n".join(
                 [
                     f'project = "{_toml_string(project_name)}"',
-                    f'root = "{_toml_string(str(root))}"',
                     f'state_dir = "{_toml_string(str(paths.state_dir))}"',
-                    f'notes_dir = "{_toml_string(notes_dir)}"',
-                    f'docs_dir = "{_toml_string(docs_dir)}"',
+                    *(
+                        [
+                            f'obsidian_root = "{_toml_string(str(root))}"',
+                            f'notes_dir = "{_toml_string(notes_dir)}"',
+                            f'docs_dir = "{_toml_string(docs_dir)}"',
+                        ]
+                        if obsidian_enabled
+                        else []
+                    ),
                     (
                         f'moc_path = "{_toml_string(moc_path)}"'
                         if moc_path is not None
@@ -413,6 +421,8 @@ def read_config(root: Path, state_dir: Path | None = None) -> dict[str, str]:
         config[key.strip()] = value.strip().strip('"')
     if "docs_dir" not in config and "notes_dir" in config:
         config["docs_dir"] = default_docs_dir(config["notes_dir"])
+    if "obsidian_root" not in config and "root" in config:
+        config["obsidian_root"] = config["root"]
     return config
 
 

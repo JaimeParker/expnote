@@ -12,9 +12,23 @@ runner = CliRunner()
 
 
 def _init_with_topic(tmp_path: Path, topic: str = "topic") -> None:
-    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
     assert (
-        runner.invoke(app, ["topic", "add", topic, "--root", str(tmp_path)]).exit_code
+        runner.invoke(
+            app,
+            [
+                "init",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--obsidian-root",
+                str(tmp_path),
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app, ["topic", "add", topic, "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
         == 0
     )
 
@@ -30,8 +44,8 @@ def _add_run(
     args = [
         "run",
         "add",
-        "--root",
-        str(tmp_path),
+        "--workspace-dir",
+        str(tmp_path / ".expnote"),
         "--topic",
         topic,
         "--run-id",
@@ -52,9 +66,9 @@ def _add_run(
 def _events(tmp_path: Path) -> list[dict[str, object]]:
     return [
         json.loads(line)
-        for line in (tmp_path / ".expnote" / "events.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in (tmp_path / ".expnote" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line
     ]
 
@@ -93,7 +107,7 @@ def test_guide_agent_json_is_machine_readable():
     data = json.loads(result.output)
     assert data["topic"] == "agent"
     assert "SQLite is the source of truth" in data["principles"]
-    assert "--state-dir" in data["required_flags"]
+    assert "--workspace" in data["required_flags"]
     assert "create_run" in data["workflows"]
     assert "run.show" in data["commands"]
     assert "sync markdown --pull-analysis" in json.dumps(data)
@@ -109,7 +123,7 @@ def test_guide_agent_human_output_mentions_core_workflow():
 
     assert result.exit_code == 0, result.output
     assert "SQLite is the source of truth" in result.output
-    assert "Markdown is a projection" in result.output
+    assert "Obsidian Markdown is an optional projection" in result.output
     assert "init -> moc add -> topic add --moc-id -> run add" in result.output
     assert "expnote markdown table sections" in result.output
     assert "expnote doc show <doc_id> --json" in result.output
@@ -146,10 +160,10 @@ def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
         app,
         [
             "init",
-            "--root",
-            str(root),
-            "--state-dir",
+            "--workspace-dir",
             str(state_dir),
+            "--obsidian-root",
+            str(root),
             "--notes-dir",
             "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs",
             "--moc-path",
@@ -160,8 +174,8 @@ def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
 
-    assert data["root"] == str(root.resolve())
-    assert data["state_dir"] == str(state_dir.resolve())
+    assert data["obsidian_root"] == str(root.resolve())
+    assert data["workspace_dir"] == str(state_dir.resolve())
     assert (state_dir / "expnote.sqlite").exists()
     assert (state_dir / "events.jsonl").exists()
     assert (state_dir / "config.toml").exists()
@@ -171,11 +185,10 @@ def test_init_with_external_state_dir_keeps_state_out_of_root(tmp_path):
     ).exists()
 
     config = (state_dir / "config.toml").read_text(encoding="utf-8")
-    assert f'root = "{root.resolve()}"' in config
+    assert f'obsidian_root = "{root.resolve()}"' in config
     assert f'state_dir = "{state_dir.resolve()}"' in config
     assert (
-        'moc_path = "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md"'
-        in config
+        'moc_path = "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md"' in config
     )
 
 
@@ -185,9 +198,7 @@ def test_init_supports_index_path_alias(tmp_path):
         app,
         [
             "init",
-            "--root",
-            str(tmp_path),
-            "--state-dir",
+            "--workspace-dir",
             str(state_dir),
             "--index-path",
             "custom-index.md",
@@ -198,9 +209,58 @@ def test_init_supports_index_path_alias(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["index_path"] == "custom-index.md"
-    assert data["index_scope"] == "state_dir"
+    assert data["index_scope"] == "workspace_dir"
     config = (state_dir / "config.toml").read_text(encoding="utf-8")
     assert 'index_path = "custom-index.md"' in config
+
+
+def test_workspace_registry_supports_active_workspace(tmp_path):
+    state_dir = tmp_path / "state"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--workspace",
+            "baseline",
+            "--workspace-dir",
+            str(state_dir),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["workspace", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data == [
+        {
+            "active": True,
+            "name": "baseline",
+            "workspace_dir": str(state_dir.resolve()),
+        }
+    ]
+
+    result = runner.invoke(app, ["moc", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["id"] == "default"
+
+
+def test_web_only_workspace_rejects_markdown_projection(tmp_path):
+    state_dir = tmp_path / "state"
+    result = runner.invoke(app, ["init", "--workspace-dir", str(state_dir), "--json"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app, ["validate", "--workspace-dir", str(state_dir), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["projection_conflicts"] == []
+
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(state_dir), "--json"]
+    )
+    assert result.exit_code != 0
+    assert "no Obsidian projection configured" in result.output
 
 
 def test_init_records_default_and_custom_docs_dir(tmp_path):
@@ -209,7 +269,9 @@ def test_init_records_default_and_custom_docs_dir(tmp_path):
         app,
         [
             "init",
-            "--root",
+            "--workspace-dir",
+            str(default_root / ".expnote"),
+            "--obsidian-root",
             str(default_root),
             "--notes-dir",
             "10 Projects/Baseline/runs",
@@ -228,7 +290,9 @@ def test_init_records_default_and_custom_docs_dir(tmp_path):
         app,
         [
             "init",
-            "--root",
+            "--workspace-dir",
+            str(custom_root / ".expnote"),
+            "--obsidian-root",
             str(custom_root),
             "--notes-dir",
             "runs",
@@ -291,7 +355,15 @@ def test_existing_schema_migrates_on_cli_use(tmp_path):
     conn.close()
 
     result = runner.invoke(
-        app, ["run", "show", "old1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "show",
+            "old1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -313,9 +385,11 @@ def test_existing_schema_migrates_on_cli_use(tmp_path):
 def test_external_state_dir_supports_cli_workflow(tmp_path):
     root = tmp_path / "vault"
     state_dir = tmp_path / "state"
-    common = ["--root", str(root), "--state-dir", str(state_dir)]
+    common = ["--workspace-dir", str(state_dir)]
 
-    result = runner.invoke(app, ["init", *common, "--json"])
+    result = runner.invoke(
+        app, ["init", *common, "--obsidian-root", str(root), "--json"]
+    )
     assert result.exit_code == 0, result.output
     result = runner.invoke(app, ["topic", "add", "topic", *common, "--json"])
     assert result.exit_code == 0, result.output
@@ -366,14 +440,18 @@ def test_validate_reports_projection_conflicts(tmp_path):
         app,
         [
             "init",
-            "--root",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--obsidian-root",
             str(tmp_path),
             "--moc-path",
             "notes/experiments.md",
         ],
     )
     assert result.exit_code == 0, result.output
-    result = runner.invoke(app, ["topic", "add", "topic", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["topic", "add", "topic", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
     _add_run(tmp_path, "run1")
     result = runner.invoke(
@@ -383,8 +461,8 @@ def test_validate_reports_projection_conflicts(tmp_path):
             "table",
             "add",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             "notes/experiments.md",
             "--section",
@@ -393,7 +471,9 @@ def test_validate_reports_projection_conflicts(tmp_path):
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["validate", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["validate", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -409,23 +489,35 @@ def test_external_state_dir_must_be_reused_for_follow_up_commands(tmp_path):
     state_dir = tmp_path / "state"
 
     result = runner.invoke(
-        app, ["init", "--root", str(root), "--state-dir", str(state_dir)]
+        app,
+        ["init", "--workspace-dir", str(state_dir), "--obsidian-root", str(root)],
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["topic", "list", "--root", str(root), "--json"])
+    result = runner.invoke(
+        app, ["topic", "list", "--workspace-dir", str(root / ".expnote"), "--json"]
+    )
     assert result.exit_code != 0
     assert not (root / ".expnote").exists()
 
 
 def test_init_add_query_and_soft_delete(tmp_path):
-    result = runner.invoke(app, ["init", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["init", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".expnote" / "expnote.sqlite").exists()
 
     result = runner.invoke(
         app,
-        ["topic", "add", "StackCube ablation", "--root", str(tmp_path), "--json"],
+        [
+            "topic",
+            "add",
+            "StackCube ablation",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -434,8 +526,8 @@ def test_init_add_query_and_soft_delete(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "StackCube ablation",
             "--run-id",
@@ -459,8 +551,8 @@ def test_init_add_query_and_soft_delete(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "status = 'running'",
             "--json",
@@ -471,11 +563,21 @@ def test_init_add_query_and_soft_delete(tmp_path):
     assert [row["id"] for row in rows] == ["abc123"]
 
     result = runner.invoke(
-        app, ["run", "delete", "abc123", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "delete",
+            "abc123",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["run", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
 
@@ -490,8 +592,8 @@ def test_run_list_filters_by_status(tmp_path):
         [
             "run",
             "list",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--status",
             "running",
             "--json",
@@ -510,7 +612,14 @@ def test_run_list_combines_topic_and_status_filters(tmp_path):
     _init_with_topic(tmp_path, topic="Topic A")
     result = runner.invoke(
         app,
-        ["topic", "add", "Topic B", "--root", str(tmp_path), "--json"],
+        [
+            "topic",
+            "add",
+            "Topic B",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     _add_run(tmp_path, "a-running", topic="Topic A", status="running")
@@ -522,8 +631,8 @@ def test_run_list_combines_topic_and_status_filters(tmp_path):
         [
             "run",
             "list",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "Topic A",
             "--status",
@@ -542,7 +651,14 @@ def test_run_list_status_hides_soft_deleted_runs(tmp_path):
     _add_run(tmp_path, "deleted", status="running")
     result = runner.invoke(
         app,
-        ["run", "delete", "deleted", "--root", str(tmp_path), "--json"],
+        [
+            "run",
+            "delete",
+            "deleted",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -551,8 +667,8 @@ def test_run_list_status_hides_soft_deleted_runs(tmp_path):
         [
             "run",
             "list",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--status",
             "running",
             "--json",
@@ -574,8 +690,8 @@ def test_run_status_lists_matching_runs(tmp_path):
             "run",
             "status",
             "running",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--json",
         ],
     )
@@ -594,8 +710,8 @@ def test_doc_crud_and_run_links(tmp_path):
         [
             "doc",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--doc-id",
             "compare1",
             "--moc-id",
@@ -626,8 +742,8 @@ def test_doc_crud_and_run_links(tmp_path):
             "doc",
             "update",
             "compare1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--append-body",
             "Final note",
             "--meta",
@@ -649,8 +765,8 @@ def test_doc_crud_and_run_links(tmp_path):
             "link",
             "compare1",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--position",
             "1",
             "--role",
@@ -667,35 +783,60 @@ def test_doc_crud_and_run_links(tmp_path):
 
     result = runner.invoke(
         app,
-        ["doc", "unlink", "compare1", "run2", "--root", str(tmp_path), "--json"],
+        [
+            "doc",
+            "unlink",
+            "compare1",
+            "run2",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert [row["run_id"] for row in data["runs"]] == ["run1"]
 
-    result = runner.invoke(app, ["doc", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["doc", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["compare1"]
 
     result = runner.invoke(
-        app, ["doc", "delete", "compare1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "doc",
+            "delete",
+            "compare1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
-    result = runner.invoke(app, ["doc", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["doc", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
 
 
 def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
-    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["init", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
+        == 0
+    )
 
     result = runner.invoke(
         app,
         [
             "moc",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-id",
             "baseline",
             "--title",
@@ -715,8 +856,8 @@ def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
                 "topic",
                 "add",
                 "Same Topic",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 moc_id,
                 "--json",
@@ -726,7 +867,14 @@ def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
 
     result = runner.invoke(
         app,
-        ["moc", "show", "baseline", "--root", str(tmp_path), "--json"],
+        [
+            "moc",
+            "show",
+            "baseline",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -735,15 +883,20 @@ def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
 
 
 def test_doc_link_rejects_cross_moc_run(tmp_path):
-    assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["init", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
+        == 0
+    )
     assert (
         runner.invoke(
             app,
             [
                 "moc",
                 "add",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "other",
                 "--title",
@@ -759,8 +912,8 @@ def test_doc_link_rejects_cross_moc_run(tmp_path):
                 "topic",
                 "add",
                 "Other Topic",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--moc-id",
                 "other",
             ],
@@ -776,8 +929,8 @@ def test_doc_link_rejects_cross_moc_run(tmp_path):
         [
             "doc",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--doc-id",
             "default-doc",
             "--moc-id",
@@ -796,8 +949,8 @@ def test_doc_link_rejects_cross_moc_run(tmp_path):
             "link",
             "default-doc",
             "other-run",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--json",
         ],
     )
@@ -810,8 +963,8 @@ def test_duplicate_run_id_errors(tmp_path):
     args = [
         "run",
         "add",
-        "--root",
-        str(tmp_path),
+        "--workspace-dir",
+        str(tmp_path / ".expnote"),
         "--topic",
         "topic",
         "--run-id",
@@ -830,8 +983,8 @@ def test_topic_update_delete_and_include_deleted(tmp_path):
             "topic",
             "update",
             "old",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--new-title",
             "new",
             "--summary",
@@ -845,11 +998,21 @@ def test_topic_update_delete_and_include_deleted(tmp_path):
     assert data["summary"] == "summary"
 
     result = runner.invoke(
-        app, ["topic", "delete", "new", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "topic",
+            "delete",
+            "new",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["topic", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["topic", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
 
@@ -858,8 +1021,8 @@ def test_topic_update_delete_and_include_deleted(tmp_path):
         [
             "topic",
             "list",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--include-deleted",
             "--json",
         ],
@@ -881,8 +1044,8 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--purpose",
             "new purpose",
             "--relation",
@@ -908,7 +1071,15 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert updated["metadata"] == {"algo": "sac", "seed": "1"}
 
     result = runner.invoke(
-        app, ["run", "show", "run1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "show",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     shown = json.loads(result.output)
@@ -916,7 +1087,9 @@ def test_run_show_update_list_and_metadata_merge(tmp_path):
     assert shown["analysis"] == "updated analysis"
     assert shown["metadata"] == {"algo": "sac", "seed": "1"}
 
-    result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["run", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     rows = json.loads(result.output)
     assert [row["id"] for row in rows] == ["run1"]
@@ -931,8 +1104,8 @@ def test_run_create_accepts_id_alias(tmp_path):
         [
             "run",
             "create",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--id",
@@ -947,7 +1120,9 @@ def test_run_create_accepts_id_alias(tmp_path):
 
 def test_run_add_accepts_topic_id(tmp_path):
     _init_with_topic(tmp_path)
-    result = runner.invoke(app, ["topic", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["topic", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     topic_id = json.loads(result.output)[0]["id"]
 
@@ -956,8 +1131,8 @@ def test_run_add_accepts_topic_id(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic-id",
             topic_id,
             "--run-id",
@@ -978,8 +1153,8 @@ def test_run_add_rejects_topic_and_topic_id_together(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--topic-id",
@@ -1003,8 +1178,8 @@ def test_run_update_appends_analysis_with_blank_line(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--append-analysis",
             "second observation",
             "--json",
@@ -1027,8 +1202,8 @@ def test_run_update_appends_analysis_without_leading_blank_line(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--append-analysis",
             "first observation",
             "--json",
@@ -1049,8 +1224,8 @@ def test_run_update_rejects_analysis_replace_and_append(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--analysis",
             "replacement",
             "--append-analysis",
@@ -1070,8 +1245,8 @@ def test_run_add_and_update_support_typed_metadata(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1103,8 +1278,8 @@ def test_run_add_and_update_support_typed_metadata(tmp_path):
             "run",
             "update",
             "typed",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--meta-json",
             'hparams={"batch":256}',
             "--json",
@@ -1122,8 +1297,8 @@ def test_run_add_and_update_support_metadata_json_object(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1142,8 +1317,8 @@ def test_run_add_and_update_support_metadata_json_object(tmp_path):
             "run",
             "update",
             "metadata-object",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--metadata-json",
             '{"clip":true}',
             "--json",
@@ -1167,8 +1342,8 @@ def test_run_update_unsets_metadata_keys(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--meta",
             "seed=1",
             "--unset-meta",
@@ -1193,8 +1368,8 @@ def test_run_update_rejects_set_and_unset_same_metadata_key(tmp_path):
             "run",
             "update",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--meta",
             "seed=1",
             "--unset-meta",
@@ -1214,8 +1389,8 @@ def test_run_add_rejects_invalid_meta_json(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1236,8 +1411,8 @@ def test_run_add_rejects_nested_metadata_key_object(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1256,7 +1431,16 @@ def test_run_show_field_outputs_single_public_field(tmp_path):
     _add_run(tmp_path, "run1")
 
     result = runner.invoke(
-        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "purpose"]
+        app,
+        [
+            "run",
+            "show",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--field",
+            "purpose",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1273,8 +1457,8 @@ def test_run_show_field_outputs_json_scalar(tmp_path):
             "run",
             "show",
             "run1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--field",
             "status",
             "--json",
@@ -1291,7 +1475,15 @@ def test_run_show_field_outputs_metadata_object(tmp_path):
 
     result = runner.invoke(
         app,
-        ["run", "show", "run1", "--root", str(tmp_path), "--field", "metadata"],
+        [
+            "run",
+            "show",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--field",
+            "metadata",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1303,7 +1495,16 @@ def test_run_show_field_supports_topic_alias(tmp_path):
     _add_run(tmp_path, "run1", topic="StackCube SAC")
 
     result = runner.invoke(
-        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "topic"]
+        app,
+        [
+            "run",
+            "show",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--field",
+            "topic",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1315,7 +1516,16 @@ def test_run_show_field_rejects_unknown_field(tmp_path):
     _add_run(tmp_path, "run1")
 
     result = runner.invoke(
-        app, ["run", "show", "run1", "--root", str(tmp_path), "--field", "unknown"]
+        app,
+        [
+            "run",
+            "show",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--field",
+            "unknown",
+        ],
     )
 
     assert result.exit_code != 0
@@ -1328,11 +1538,21 @@ def test_run_delete_hides_run_from_list_and_query(tmp_path):
     _add_run(tmp_path, "active")
 
     result = runner.invoke(
-        app, ["run", "delete", "deleted", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "run",
+            "delete",
+            "deleted",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["run", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["active"]
 
@@ -1341,8 +1561,8 @@ def test_run_delete_hides_run_from_list_and_query(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "1 = 1",
             "--json",
@@ -1363,8 +1583,8 @@ def test_artifact_add_list_and_delete(tmp_path):
             "add",
             "run1",
             "file:///tmp/model.pt",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--kind",
             "checkpoint",
             "--note",
@@ -1379,7 +1599,15 @@ def test_artifact_add_list_and_delete(tmp_path):
     assert artifact["uri"] == "file:///tmp/model.pt"
 
     result = runner.invoke(
-        app, ["artifact", "list", "run1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "artifact",
+            "list",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     rows = json.loads(result.output)
@@ -1388,12 +1616,27 @@ def test_artifact_add_list_and_delete(tmp_path):
 
     result = runner.invoke(
         app,
-        ["artifact", "delete", artifact["id"], "--root", str(tmp_path), "--json"],
+        [
+            "artifact",
+            "delete",
+            artifact["id"],
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
     result = runner.invoke(
-        app, ["artifact", "list", "run1", "--root", str(tmp_path), "--json"]
+        app,
+        [
+            "artifact",
+            "list",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
@@ -1411,8 +1654,8 @@ def test_relation_add_and_delete_updates_database_and_events(tmp_path):
             "add",
             "src",
             "dst",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--kind",
             "compares-to",
             "--note",
@@ -1435,7 +1678,14 @@ def test_relation_add_and_delete_updates_database_and_events(tmp_path):
 
     result = runner.invoke(
         app,
-        ["relation", "delete", relation["id"], "--root", str(tmp_path), "--json"],
+        [
+            "relation",
+            "delete",
+            relation["id"],
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -1461,8 +1711,8 @@ def test_events_jsonl_records_mutating_commands_and_not_failed_duplicates(tmp_pa
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1490,7 +1740,14 @@ def test_run_query_rejects_unsafe_fragments(tmp_path):
     for fragment in unsafe_args:
         result = runner.invoke(
             app,
-            ["run", "query", "--root", str(tmp_path), *fragment, "--json"],
+            [
+                "run",
+                "query",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                *fragment,
+                "--json",
+            ],
         )
         assert result.exit_code != 0
 
@@ -1505,8 +1762,8 @@ def test_run_query_supports_restricted_where_and_order_by(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "status = 'running' AND id = 'abc123'",
             "--order-by",
@@ -1528,8 +1785,8 @@ def test_run_query_supports_analysis_field(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "analysis = 'useful analysis'",
             "--json",
@@ -1547,8 +1804,8 @@ def test_run_query_supports_metadata_fields(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1568,8 +1825,8 @@ def test_run_query_supports_metadata_fields(tmp_path):
         [
             "run",
             "add",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--run-id",
@@ -1590,8 +1847,8 @@ def test_run_query_supports_metadata_fields(tmp_path):
             [
                 "run",
                 "query",
-                "--root",
-                str(tmp_path),
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
                 "--where",
                 where,
                 "--order-by",
@@ -1615,8 +1872,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
             "table",
             "add",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1637,8 +1894,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
             "markdown",
             "table",
             "list",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1655,8 +1912,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
             "markdown",
             "table",
             "diff",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1674,8 +1931,8 @@ def test_moc_add_list_remove_and_diff(tmp_path):
             "table",
             "remove",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1698,8 +1955,8 @@ def test_moc_sections_lists_registered_sections(tmp_path):
             "table",
             "add",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1714,8 +1971,8 @@ def test_moc_sections_lists_registered_sections(tmp_path):
             "markdown",
             "table",
             "sections",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--json",
@@ -1740,8 +1997,8 @@ def test_moc_add_topic_registers_active_topic_runs(tmp_path):
             "markdown",
             "table",
             "add-topic",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--moc-path",
@@ -1764,8 +2021,8 @@ def test_moc_add_topic_registers_active_topic_runs(tmp_path):
             "markdown",
             "table",
             "add-topic",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--topic",
             "topic",
             "--moc-path",
@@ -1796,8 +2053,8 @@ def test_moc_sync_rejects_unregistered_empty_section(tmp_path):
             "markdown",
             "table",
             "sync",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1821,8 +2078,8 @@ def test_moc_sync_allow_empty_creates_empty_section(tmp_path):
             "markdown",
             "table",
             "sync",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1848,8 +2105,8 @@ def test_sync_all_updates_registered_curated_mocs(tmp_path):
             "table",
             "add",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1864,22 +2121,27 @@ def test_sync_all_updates_registered_curated_mocs(tmp_path):
             "run",
             "update",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--purpose",
             "new",
         ],
     )
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["sync", "markdown", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app,
+        ["sync", "markdown", "--workspace-dir", str(tmp_path / ".expnote"), "--json"],
+    )
     assert result.exit_code == 0, result.output
     markdown_data = json.loads(result.output)
     assert markdown_data["curated_moc_sections"]["synced"] == 0
     assert markdown_data["curated_moc_sections"]["registered"] == 1
     assert "old" in (tmp_path / moc_path).read_text(encoding="utf-8")
 
-    result = runner.invoke(app, ["sync", "all", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["sync", "all", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["curated_moc_sections"]["synced"] == 1
@@ -1892,8 +2154,8 @@ def test_moc_update_normalizes_positions(tmp_path):
         _add_run(tmp_path, run_id, purpose=f"purpose {run_id}")
     moc_path = "Inbox/Test MOC.md"
     common = [
-        "--root",
-        str(tmp_path),
+        "--workspace-dir",
+        str(tmp_path / ".expnote"),
         "--moc-path",
         moc_path,
         "--section",
@@ -1973,8 +2235,8 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
             "table",
             "add",
             "moc1",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -1994,8 +2256,8 @@ def test_moc_diff_reports_manual_table_changes(tmp_path):
             "markdown",
             "table",
             "diff",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             moc_path,
             "--section",
@@ -2027,8 +2289,8 @@ def test_moc_diff_reports_projection_conflict(tmp_path):
             "markdown",
             "table",
             "diff",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--moc-path",
             "Inbox/Managed MOC.md",
             "--section",
@@ -2044,7 +2306,9 @@ def test_moc_diff_reports_projection_conflict(tmp_path):
 
 def test_run_query_supports_topic_alias_and_limit(tmp_path):
     _init_with_topic(tmp_path, "topic a")
-    result = runner.invoke(app, ["topic", "add", "topic b", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["topic", "add", "topic b", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
     assert result.exit_code == 0, result.output
     _add_run(tmp_path, "a1", topic="topic a")
     _add_run(tmp_path, "b1", topic="topic b")
@@ -2055,8 +2319,8 @@ def test_run_query_supports_topic_alias_and_limit(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "topic = 'topic b'",
             "--order-by",
@@ -2080,8 +2344,8 @@ def test_run_query_treats_sql_like_literal_as_value(tmp_path):
         [
             "run",
             "query",
-            "--root",
-            str(tmp_path),
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
             "--where",
             "status = 'running''; DROP TABLE runs; --'",
             "--json",
@@ -2090,7 +2354,9 @@ def test_run_query_treats_sql_like_literal_as_value(tmp_path):
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["odd"]
 
-    result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
+    result = runner.invoke(
+        app, ["run", "list", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
     assert result.exit_code == 0, result.output
     assert [row["id"] for row in json.loads(result.output)] == ["odd"]
 
@@ -2112,6 +2378,13 @@ def test_run_query_rejects_unsupported_restricted_syntax(tmp_path):
     for fragment in unsupported:
         result = runner.invoke(
             app,
-            ["run", "query", "--root", str(tmp_path), *fragment, "--json"],
+            [
+                "run",
+                "query",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                *fragment,
+                "--json",
+            ],
         )
         assert result.exit_code != 0

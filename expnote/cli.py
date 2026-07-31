@@ -29,6 +29,14 @@ from expnote.markdown import (
     sync_markdown,
     sync_moc_section,
 )
+from expnote.workspace import (
+    WorkspaceContext,
+    default_workspace_dir,
+    list_workspaces,
+    resolve_workspace,
+    set_active_workspace,
+    write_workspace_config,
+)
 
 app = typer.Typer(help="Local-first experiment notes.")
 topic_app = typer.Typer(help="Manage experiment topics.")
@@ -42,6 +50,7 @@ markdown_app = typer.Typer(help="Manage Markdown projections.")
 markdown_table_app = typer.Typer(help="Manage Markdown MOC section tables.")
 sync_app = typer.Typer(help="Sync projections.")
 import_app = typer.Typer(help="Import external metadata.")
+workspace_app = typer.Typer(help="Manage expnote workspaces.")
 
 app.add_typer(topic_app, name="topic")
 app.add_typer(run_app, name="run")
@@ -54,18 +63,23 @@ app.add_typer(markdown_app, name="markdown")
 markdown_app.add_typer(markdown_table_app, name="table")
 app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
+app.add_typer(workspace_app, name="workspace")
 
 
-RootOption = Annotated[
-    Path,
-    typer.Option("--root", "-r", help="Markdown workspace root."),
+WorkspaceOption = Annotated[
+    str | None,
+    typer.Option("--workspace", "-w", help="Registered workspace name."),
 ]
-StateDirOption = Annotated[
+WorkspaceDirOption = Annotated[
     Path | None,
     typer.Option(
-        "--state-dir",
-        help="Directory for expnote.sqlite, events.jsonl, and config.toml.",
+        "--workspace-dir",
+        help="Directory for expnote.sqlite, events.jsonl, config.toml, and cache.",
     ),
+]
+ObsidianRootOption = Annotated[
+    Path | None,
+    typer.Option("--obsidian-root", help="Optional Obsidian vault root."),
 ]
 
 
@@ -75,10 +89,10 @@ _AGENT_GUIDE = {
         "SQLite is the source of truth",
         "Markdown is a projection",
         "Use --json for automation",
-        "Pass the same --root and --state-dir on follow-up commands",
+        "Use --workspace or expnote workspace use <name> on follow-up commands",
         "Edit structured fields through the CLI",
     ],
-    "required_flags": ["--root", "--state-dir"],
+    "required_flags": ["--workspace"],
     "workflows": {
         "create_run": [
             "init",
@@ -92,7 +106,7 @@ _AGENT_GUIDE = {
             "run show <run_id> --json",
             "run show <run_id> --field purpose",
             "run status running --json",
-            "run query --where \"metadata.seed = 1\" --json",
+            'run query --where "metadata.seed = 1" --json',
             "run query --where \"status = 'running'\" --json",
         ],
         "analysis_import": [
@@ -146,77 +160,66 @@ _AGENT_GUIDE = {
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
         "documents": "Obsidian document body edits require sync markdown --pull-docs",
         "moc_tables": (
-            "Managed Markdown MOC tables should be repaired with "
-            "markdown table sync"
+            "Managed Markdown MOC tables should be repaired with markdown table sync"
         ),
         "projection_paths": (
-            "auto index defaults to state-dir/index.md; Markdown tables use "
+            "auto index defaults to workspace-dir/index.md; Markdown tables use "
             "markdown table --moc-path"
         ),
     },
     "examples": {
         "init": (
-            "expnote init --root <vault> --state-dir <state> "
+            "expnote init --workspace <name> --obsidian-root <vault> "
             "--notes-dir <runs-dir>"
         ),
         "create_moc": (
-            "expnote moc add --root <vault> --state-dir <state> "
+            "expnote moc add --workspace <name> "
             "--moc-id <moc_id> --title <title> --json"
         ),
         "create_run": (
-            "expnote run add --root <vault> --state-dir <state> "
+            "expnote run add --workspace <name> "
             "--moc-id <moc_id> --topic <topic> --run-id <id> --purpose <text> "
             "--meta-json seed=1 --json"
         ),
         "create_run_by_topic_id": (
-            "expnote run create --root <vault> --state-dir <state> "
+            "expnote run create --workspace <name> "
             "--topic-id <topic_id> --id <id> --purpose <text> --json"
         ),
         "metadata_json": (
-            "expnote run update <id> --root <vault> --state-dir <state> "
-            "--metadata-json '{\"seed\":1,\"algo\":\"calql\"}'"
+            "expnote run update <id> --workspace <name> "
+            '--metadata-json \'{"seed":1,"algo":"calql"}\''
         ),
         "unset_metadata": (
-            "expnote run update <id> --root <vault> --state-dir <state> "
-            "--unset-meta seed"
+            "expnote run update <id> --workspace <name> --unset-meta seed"
         ),
         "append_analysis": (
-            "expnote run update <id> --root <vault> --state-dir <state> "
-            "--append-analysis <text>"
+            "expnote run update <id> --workspace <name> --append-analysis <text>"
         ),
-        "show_run": (
-            "expnote run show <id> --root <vault> --state-dir <state> --json"
-        ),
-        "show_field": (
-            "expnote run show <id> --root <vault> --state-dir <state> "
-            "--field status"
-        ),
+        "show_run": ("expnote run show <id> --workspace <name> --json"),
+        "show_field": ("expnote run show <id> --workspace <name> --field status"),
         "create_doc": (
-            "expnote doc add --root <vault> --state-dir <state> "
+            "expnote doc add --workspace <name> "
             "--doc-id <id> --moc-id <moc_id> --title <title> "
             "--run-id <run_id> --body <text> --json"
         ),
-        "show_doc": (
-            "expnote doc show <id> --root <vault> --state-dir <state> --json"
-        ),
+        "show_doc": ("expnote doc show <id> --workspace <name> --json"),
         "append_doc_body": (
-            "expnote doc update <id> --root <vault> --state-dir <state> "
-            "--append-body <text> --json"
+            "expnote doc update <id> --workspace <name> --append-body <text> --json"
         ),
         "moc_diff": (
-            "expnote markdown table diff --root <vault> --state-dir <state> "
+            "expnote markdown table diff --workspace <name> "
             "--moc-path <moc.md> --section <heading> --json"
         ),
         "moc_sections": (
-            "expnote markdown table sections --root <vault> --state-dir <state> "
+            "expnote markdown table sections --workspace <name> "
             "--moc-path <moc.md> --json"
         ),
         "moc_add_topic": (
-            "expnote markdown table add-topic --root <vault> --state-dir <state> "
+            "expnote markdown table add-topic --workspace <name> "
             "--topic <topic> --moc-path <moc.md> --section <heading> --json"
         ),
-        "web": "expnote web --root <vault> --state-dir <state> --no-open",
-        "sync_all": "expnote sync all --root <vault> --state-dir <state> --json",
+        "web": "expnote web --workspace <name> --no-open",
+        "sync_all": "expnote sync all --workspace <name> --json",
     },
     "common_pitfalls": {
         "run_create": "run create is supported as an alias for run add",
@@ -226,8 +229,7 @@ _AGENT_GUIDE = {
         ),
         "topic_id": "use --topic-id when you have a topic id; use --topic for title",
         "metadata_json": (
-            "use --metadata-json '{...}' for a whole object; "
-            "--meta-json is key=json"
+            "use --metadata-json '{...}' for a whole object; --meta-json is key=json"
         ),
         "status": (
             "status is manual; update it explicitly with "
@@ -258,6 +260,19 @@ def _emit(data: object, as_json: bool) -> None:
         )
 
 
+def _workspace_context(
+    workspace: str | None,
+    workspace_dir: Path | None,
+    *,
+    require_obsidian: bool = False,
+) -> WorkspaceContext:
+    return resolve_workspace(
+        workspace=workspace,
+        workspace_dir=workspace_dir,
+        require_obsidian=require_obsidian,
+    )
+
+
 def _render_agent_guide() -> str:
     return "\n".join(
         [
@@ -265,9 +280,9 @@ def _render_agent_guide() -> str:
             "",
             "Core rules:",
             "- SQLite is the source of truth",
-            "- Markdown is a projection",
+            "- Obsidian Markdown is an optional projection",
             "- Use --json for automation",
-            "- Reuse the same --root and --state-dir on follow-up commands",
+            "- Use expnote workspace use <name> before follow-up commands",
             "",
             "Minimal workflow:",
             "init -> moc add -> topic add --moc-id -> run add -> "
@@ -278,7 +293,7 @@ def _render_agent_guide() -> str:
             "expnote run show <run_id> --json",
             "expnote run show <run_id> --field purpose",
             "expnote run status running --json",
-            "expnote run query --where \"metadata.seed = 1\" --json",
+            'expnote run query --where "metadata.seed = 1" --json',
             "expnote run query --where \"status = 'running'\" --json",
             "expnote run update <run_id> --append-analysis <text>",
             "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
@@ -299,7 +314,7 @@ def _render_agent_guide() -> str:
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
             "- Import Obsidian doc body with sync markdown --pull-docs",
             "- Check managed Markdown tables with expnote markdown table diff --json",
-            "- Auto index defaults to state-dir/index.md, outside Obsidian",
+            "- Auto index defaults to workspace-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
             "expnote run update <id> --status finished",
             "- Keep Result concise and outcome-only; put interpretation, "
@@ -307,8 +322,7 @@ def _render_agent_guide() -> str:
             "",
             "Handoff checks:",
             "expnote validate --json",
-            "expnote markdown table diff --moc-path <path> "
-            "--section <heading> --json",
+            "expnote markdown table diff --moc-path <path> --section <heading> --json",
         ]
     )
 
@@ -386,8 +400,9 @@ def guide(
 
 @app.command()
 def init(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    obsidian_root: ObsidianRootOption = None,
     notes_dir: Annotated[
         str, typer.Option(help="Directory for run notes.")
     ] = "notes/runs",
@@ -399,22 +414,29 @@ def init(
         str,
         typer.Option(
             "--index-path",
-            help="Generated auto-index path relative to state-dir.",
+            help="Generated auto-index path relative to workspace-dir.",
         ),
     ] = "index.md",
     moc_path: Annotated[
         str | None,
         typer.Option(
             "--moc-path",
-            help="Legacy generated auto-index path relative to root.",
+            help="Legacy generated auto-index path relative to obsidian-root.",
         ),
     ] = None,
     project: Annotated[str | None, typer.Option(help="Project name.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Initialize an expnote workspace."""
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    workspace_name = workspace or project or Path.cwd().name
+    state_dir = (
+        workspace_dir.expanduser().resolve()
+        if workspace_dir is not None
+        else default_workspace_dir(workspace_name).resolve()
+    )
+    root = (
+        obsidian_root.expanduser().resolve() if obsidian_root is not None else state_dir
+    )
     output_docs_dir = docs_dir or default_docs_dir(notes_dir)
     init_store(
         root,
@@ -423,48 +445,72 @@ def init(
         docs_dir=docs_dir,
         index_path=index_path,
         moc_path=moc_path,
-        project=project,
+        project=project or workspace_name,
+        obsidian_enabled=obsidian_root is not None,
+    )
+    write_workspace_config(
+        workspace=workspace_name,
+        workspace_dir=state_dir,
+        set_active=True,
     )
     output_index_path = moc_path or index_path
     append_event(
         root,
         "init",
         {
-            "root": str(root),
-            "state_dir": str(state_dir or root / ".expnote"),
-            "notes_dir": notes_dir,
-            "docs_dir": output_docs_dir,
+            "workspace": workspace_name,
+            "workspace_dir": str(state_dir),
+            "obsidian_root": str(obsidian_root.resolve()) if obsidian_root else None,
+            "notes_dir": notes_dir if obsidian_root is not None else None,
+            "docs_dir": output_docs_dir if obsidian_root is not None else None,
             "index_path": output_index_path,
-            "index_scope": "root" if moc_path is not None else "state_dir",
+            "index_scope": "obsidian_root" if moc_path is not None else "workspace_dir",
         },
         state_dir=state_dir,
     )
     _emit(
         {
-            "root": str(root),
-            "state_dir": str(state_dir or root / ".expnote"),
-            "notes_dir": notes_dir,
-            "docs_dir": output_docs_dir,
+            "workspace": workspace_name,
+            "workspace_dir": str(state_dir),
+            "obsidian_root": str(obsidian_root.resolve()) if obsidian_root else None,
+            "notes_dir": notes_dir if obsidian_root is not None else None,
+            "docs_dir": output_docs_dir if obsidian_root is not None else None,
             "index_path": output_index_path,
-            "index_scope": "root" if moc_path is not None else "state_dir",
+            "index_scope": "obsidian_root" if moc_path is not None else "workspace_dir",
         },
         json_output,
     )
 
 
+@workspace_app.command("use")
+def workspace_use(
+    workspace: Annotated[str, typer.Argument(help="Registered workspace name.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    _emit(set_active_workspace(workspace), json_output)
+
+
+@workspace_app.command("list")
+def workspace_list(
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    _emit(list_workspaces(), json_output)
+
+
 @topic_app.command("add")
 def topic_add(
     title: Annotated[str, typer.Argument(help="Topic title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str, typer.Option("--moc-id", help="Parent SQL MOC id.")
     ] = "default",
     summary: Annotated[str, typer.Option(help="Short topic summary.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     topic_id = new_id("topic")
     with transaction(root, state_dir=state_dir) as conn:
@@ -483,8 +529,8 @@ def topic_add(
 
 @topic_app.command("list")
 def topic_list(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
     ] = None,
@@ -493,8 +539,9 @@ def topic_list(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     clauses = []
     params: list[object] = []
     if not include_deleted:
@@ -522,8 +569,8 @@ def topic_list(
 @topic_app.command("update")
 def topic_update(
     title: Annotated[str, typer.Argument(help="Existing topic title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
     ] = None,
@@ -531,8 +578,9 @@ def topic_update(
     summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, title, moc_id=moc_id)
@@ -555,15 +603,16 @@ def topic_update(
 @topic_app.command("delete")
 def topic_delete(
     title: Annotated[str, typer.Argument(help="Topic title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, title, moc_id=moc_id)
@@ -579,9 +628,7 @@ def topic_delete(
 @run_app.command("add")
 @run_app.command("create")
 def run_add(
-    run_id: Annotated[
-        str, typer.Option("--run-id", "--id", help="Stable run id.")
-    ],
+    run_id: Annotated[str, typer.Option("--run-id", "--id", help="Stable run id.")],
     topic: Annotated[
         str | None,
         typer.Option(
@@ -597,8 +644,8 @@ def run_add(
         str | None,
         typer.Option("--moc-id", help="Parent SQL MOC id when using --topic."),
     ] = None,
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     purpose: Annotated[str, typer.Option(help="Short run purpose.")] = "",
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
@@ -617,8 +664,9 @@ def run_add(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     try:
         metadata = _merge_metadata_options(meta, meta_json, metadata_json)
     except ValueError as exc:
@@ -697,14 +745,10 @@ def _insert_run(
 
 @run_app.command("list")
 def run_list(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
-    topic: Annotated[
-        str | None, typer.Option(help="Filter by topic title.")
-    ] = None,
-    status: Annotated[
-        str | None, typer.Option(help="Filter by run status.")
-    ] = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    topic: Annotated[str | None, typer.Option(help="Filter by topic title.")] = None,
+    status: Annotated[str | None, typer.Option(help="Filter by run status.")] = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
     ] = None,
@@ -713,8 +757,9 @@ def run_list(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     rows = _list_runs(
         root,
         state_dir=state_dir,
@@ -770,18 +815,17 @@ def _list_runs(
 @run_app.command("status")
 def run_status(
     status: Annotated[str, typer.Argument(help="Run status to list.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
-    topic: Annotated[
-        str | None, typer.Option(help="Filter by topic title.")
-    ] = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    topic: Annotated[str | None, typer.Option(help="Filter by topic title.")] = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     rows = _list_runs(
         root,
         state_dir=state_dir,
@@ -796,15 +840,16 @@ def run_status(
 @run_app.command("show")
 def run_show(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     field: Annotated[
         str | None, typer.Option("--field", help="Return one public run field.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute(
             """
@@ -829,8 +874,8 @@ def run_show(
 @run_app.command("update")
 def run_update(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     purpose: Annotated[str | None, typer.Option(help="New purpose.")] = None,
     relation: Annotated[str | None, typer.Option(help="New relation.")] = None,
     result: Annotated[str | None, typer.Option(help="New result.")] = None,
@@ -860,8 +905,9 @@ def run_update(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if analysis is not None and append_analysis is not None:
         raise typer.BadParameter(
             "--analysis and --append-analysis cannot be used together"
@@ -914,12 +960,13 @@ def run_update(
 @run_app.command("delete")
 def run_delete(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
@@ -933,8 +980,8 @@ def run_delete(
 
 @run_app.command("query")
 def run_query(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     where: Annotated[
         str, typer.Option(help="Restricted SQL-like WHERE expression.")
     ] = "1 = 1",
@@ -944,8 +991,9 @@ def run_query(
     limit: Annotated[int, typer.Option(help="Max rows.")] = 50,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     where_sql, where_params = _compile_run_where(where)
     order_sql = _compile_run_order_by(order_by)
     with transaction(root, state_dir=state_dir) as conn:
@@ -973,8 +1021,8 @@ def doc_add(
     doc_id: Annotated[str, typer.Option("--doc-id", help="Stable document id.")],
     moc_id: Annotated[str, typer.Option("--moc-id", help="Parent SQL MOC id.")],
     title: Annotated[str, typer.Option("--title", help="Document title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     body: Annotated[str, typer.Option("--body", help="Document body.")] = "",
     run_ids: Annotated[
         list[str] | None,
@@ -982,8 +1030,9 @@ def doc_add(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _moc_id_exists(conn, moc_id)
@@ -1021,12 +1070,13 @@ def doc_add(
 @doc_app.command("show")
 def doc_show(
     doc_id: Annotated[str, typer.Argument(help="Document id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     with transaction(root, state_dir=state_dir) as conn:
         data = _doc_data(conn, doc_id)
     _emit(data, json_output)
@@ -1034,15 +1084,16 @@ def doc_show(
 
 @doc_app.command("list")
 def doc_list(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Filter by SQL MOC id.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     params: list[object] = []
     moc_clause = ""
     if moc_id is not None:
@@ -1065,8 +1116,8 @@ def doc_list(
 @doc_app.command("update")
 def doc_update(
     doc_id: Annotated[str, typer.Argument(help="Document id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     title: Annotated[str | None, typer.Option(help="New document title.")] = None,
     body: Annotated[str | None, typer.Option("--body", help="New body.")] = None,
     append_body: Annotated[
@@ -1093,8 +1144,9 @@ def doc_update(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if body is not None and append_body is not None:
         raise typer.BadParameter("--body and --append-body cannot be used together")
     ts = now_iso()
@@ -1140,8 +1192,8 @@ def doc_update(
 def doc_link(
     doc_id: Annotated[str, typer.Argument(help="Document id.")],
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     role: Annotated[str, typer.Option(help="Run role in this document.")] = "",
     note: Annotated[str, typer.Option(help="Link note.")] = "",
     position: Annotated[
@@ -1149,8 +1201,9 @@ def doc_link(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         doc = _require_doc_row(conn, doc_id)
@@ -1189,12 +1242,13 @@ def doc_link(
 def doc_unlink(
     doc_id: Annotated[str, typer.Argument(help="Document id.")],
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _require_doc_row(conn, doc_id)
@@ -1220,12 +1274,13 @@ def doc_unlink(
 @doc_app.command("delete")
 def doc_delete(
     doc_id: Annotated[str, typer.Argument(help="Document id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _require_doc_row(conn, doc_id)
@@ -1251,13 +1306,14 @@ def relation_add(
     src_run_id: Annotated[str, typer.Argument(help="Source run id.")],
     dst_run_id: Annotated[str, typer.Argument(help="Destination run id.")],
     kind: Annotated[str, typer.Option(help="Relation kind.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     note: Annotated[str, typer.Option(help="Relation note.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     rid = new_id("rel")
     with transaction(root, state_dir=state_dir) as conn:
@@ -1281,12 +1337,13 @@ def relation_add(
 @relation_app.command("delete")
 def relation_delete(
     relation_id: Annotated[str, typer.Argument(help="Relation id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
@@ -1303,13 +1360,14 @@ def artifact_add(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
     uri: Annotated[str, typer.Argument(help="Artifact URI or path.")],
     kind: Annotated[str, typer.Option(help="Artifact kind.")] = "file",
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     note: Annotated[str, typer.Option(help="Artifact note.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     aid = new_id("art")
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
@@ -1328,12 +1386,13 @@ def artifact_add(
 @artifact_app.command("list")
 def artifact_list(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     with transaction(root, state_dir=state_dir) as conn:
         rows = [
             row_to_dict(row)
@@ -1352,12 +1411,13 @@ def artifact_list(
 @artifact_app.command("delete")
 def artifact_delete(
     artifact_id: Annotated[str, typer.Argument(help="Artifact id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
@@ -1373,13 +1433,14 @@ def artifact_delete(
 def sql_moc_add(
     moc_id: Annotated[str, typer.Option("--moc-id", help="Stable SQL MOC id.")],
     title: Annotated[str, typer.Option("--title", help="MOC title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     summary: Annotated[str, typer.Option(help="Short MOC summary.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         conn.execute(
@@ -1397,15 +1458,16 @@ def sql_moc_add(
 
 @moc_app.command("list")
 def sql_moc_list(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     include_deleted: Annotated[
         bool, typer.Option(help="Include soft-deleted rows.")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     where = "" if include_deleted else "WHERE deleted_at IS NULL"
     with transaction(root, state_dir=state_dir) as conn:
         rows = [
@@ -1420,12 +1482,13 @@ def sql_moc_list(
 @moc_app.command("show")
 def sql_moc_show(
     moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     with transaction(root, state_dir=state_dir) as conn:
         data = _moc_data(conn, moc_id)
     _emit(data, json_output)
@@ -1434,14 +1497,15 @@ def sql_moc_show(
 @moc_app.command("update")
 def sql_moc_update(
     moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     title: Annotated[str | None, typer.Option("--title", help="New title.")] = None,
     summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _moc_id_exists(conn, moc_id)
@@ -1464,12 +1528,13 @@ def sql_moc_update(
 @moc_app.command("delete")
 def sql_moc_delete(
     moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _moc_id_exists(conn, moc_id)
@@ -1486,15 +1551,15 @@ def sql_moc_delete(
 def moc_topic_add(
     moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
     title: Annotated[str, typer.Option("--title", help="Topic title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     summary: Annotated[str, typer.Option(help="Short topic summary.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     topic_add(
         title=title,
-        root=root,
-        state_dir=state_dir,
+        workspace=workspace,
+        workspace_dir=workspace_dir,
         moc_id=moc_id,
         summary=summary,
         json_output=json_output,
@@ -1504,13 +1569,13 @@ def moc_topic_add(
 @moc_topic_app.command("list")
 def moc_topic_list(
     moc_id: Annotated[str, typer.Argument(help="SQL MOC id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     topic_list(
-        root=root,
-        state_dir=state_dir,
+        workspace=workspace,
+        workspace_dir=workspace_dir,
         moc_id=moc_id,
         include_deleted=False,
         json_output=json_output,
@@ -1520,16 +1585,17 @@ def moc_topic_list(
 @markdown_table_app.command("add")
 def moc_add(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
@@ -1567,16 +1633,17 @@ def moc_add(
 @markdown_table_app.command("remove")
 def moc_remove(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
@@ -1600,8 +1667,8 @@ def moc_remove(
 @markdown_table_app.command("update")
 def moc_update(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
@@ -1609,8 +1676,9 @@ def moc_update(
     position: Annotated[int, typer.Option(help="New table position.")] = 1,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
@@ -1630,18 +1698,17 @@ def moc_update(
 
 @markdown_table_app.command("list")
 def moc_list(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
-    section: Annotated[
-        str | None, typer.Option(help="MOC level-two heading.")
-    ] = None,
+    section: Annotated[str | None, typer.Option(help="MOC level-two heading.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path:
         raise typer.BadParameter("--moc-path is required")
     params: list[object] = [moc_path]
@@ -1680,15 +1747,16 @@ def moc_list(
 
 @markdown_table_app.command("sections")
 def moc_sections(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path:
         raise typer.BadParameter("--moc-path is required")
     _emit(_registered_moc_sections(root, state_dir, moc_path=moc_path), json_output)
@@ -1696,8 +1764,8 @@ def moc_sections(
 
 @markdown_table_app.command("add-topic")
 def moc_add_topic(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     topic: Annotated[
         str | None,
         typer.Option(
@@ -1715,8 +1783,9 @@ def moc_add_topic(
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
@@ -1774,16 +1843,17 @@ def moc_add_topic(
 
 @markdown_table_app.command("diff")
 def moc_diff(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
     section: Annotated[str, typer.Option(help="MOC level-two heading.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     result = diff_moc_section(root, state_dir, moc_path, section)
@@ -1795,8 +1865,8 @@ def moc_diff(
 
 @markdown_table_app.command("sync")
 def moc_sync(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_path: Annotated[
         str, typer.Option(help="Curated MOC path relative to root.")
     ] = "",
@@ -1810,8 +1880,9 @@ def moc_sync(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     if not moc_path or not section:
         raise typer.BadParameter("--moc-path and --section are required")
     _preflight_moc_section_target(root, moc_path)
@@ -1829,8 +1900,8 @@ def moc_sync(
 
 @sync_app.command("markdown")
 def sync_markdown_command(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     pull_analysis: Annotated[
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
@@ -1843,8 +1914,9 @@ def sync_markdown_command(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     try:
         result = sync_markdown(
             root,
@@ -1870,8 +1942,8 @@ def sync_markdown_command(
 
 @sync_app.command("all")
 def sync_all_command(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     pull_analysis: Annotated[
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
@@ -1884,8 +1956,9 @@ def sync_all_command(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     try:
         result = sync_markdown(
             root,
@@ -1932,8 +2005,8 @@ def _preflight_moc_section_target(root: Path, moc_path: str) -> None:
 
 @markdown_app.command("sync")
 def markdown_sync_command(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     pull_analysis: Annotated[
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
@@ -1947,8 +2020,8 @@ def markdown_sync_command(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     sync_markdown_command(
-        root=root,
-        state_dir=state_dir,
+        workspace=workspace,
+        workspace_dir=workspace_dir,
         pull_analysis=pull_analysis,
         pull_docs=pull_docs,
         force=force,
@@ -1958,27 +2031,32 @@ def markdown_sync_command(
 
 @app.command()
 def validate(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     with transaction(root, state_dir=state_dir) as conn:
         counts = {
             "topics": _count_active(conn, "topics"),
             "runs": _count_active(conn, "runs"),
             "artifacts": _count_active(conn, "artifacts"),
         }
-    conflicts = projection_conflicts(root, state_dir=state_dir)
+    conflicts = (
+        projection_conflicts(root, state_dir=state_dir)
+        if ctx.obsidian_root is not None
+        else []
+    )
     result = {"ok": not conflicts, "counts": counts, "projection_conflicts": conflicts}
     _emit(result, json_output)
 
 
 @app.command()
 def web(
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     host: Annotated[str, typer.Option(help="Server host.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Server port.")] = 8765,
     open_browser: Annotated[
@@ -1990,8 +2068,9 @@ def web(
 
     from expnote.web import create_app
 
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     app_obj = create_app(root, state_dir=state_dir)
     url_host = "localhost" if host in {"127.0.0.1", "0.0.0.0"} else host
     url = f"http://{url_host}:{port}"
@@ -2007,8 +2086,8 @@ def import_rlgarden(
         Path, typer.Argument(help="rl-garden resolved config.json.")
     ],
     topic: Annotated[str, typer.Option(help="Topic title.")],
-    root: RootOption = Path("."),
-    state_dir: StateDirOption = None,
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
     moc_id: Annotated[
         str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
     ] = None,
@@ -2019,8 +2098,9 @@ def import_rlgarden(
     analysis: Annotated[str, typer.Option(help="Initial analysis.")] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    root = root.resolve()
-    state_dir = state_dir.resolve() if state_dir is not None else None
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
     fields = run_fields_from_config(load_config(config_path))
     data = _insert_run(
         root,
