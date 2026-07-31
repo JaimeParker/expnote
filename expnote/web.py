@@ -5,21 +5,27 @@ from __future__ import annotations
 import html
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import markdown as markdown_lib
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
 from expnote.db import row_to_dict, transaction
 from expnote.links import render_html_run_links
-from expnote.wandb_live import WandbLiveError, fetch_live_wandb_charts
+from expnote.wandb_live import (
+    WandbLiveError,
+    clear_wandb_cache,
+    fetch_wandb_charts,
+    wandb_cache_stats,
+)
 
 
 def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="expnote", docs_url=None, redoc_url=None)
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
+    cache_dir = (state_dir or root / ".expnote") / "wandb-cache"
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -93,6 +99,14 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 active_run_ids=_active_run_ids(conn),
             )
 
+    @app.get("/api/wandb/cache")
+    def api_wandb_cache() -> dict[str, int]:
+        return wandb_cache_stats(cache_dir)
+
+    @app.delete("/api/wandb/cache")
+    def api_clear_wandb_cache() -> dict[str, int]:
+        return clear_wandb_cache(cache_dir)
+
     @app.get("/api/runs/{run_id}")
     def api_run(run_id: str) -> dict[str, Any]:
         with transaction(root, state_dir=state_dir) as conn:
@@ -144,7 +158,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         with transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
-                SELECT id, metadata_json
+                SELECT id, status, metadata_json
                 FROM runs
                 WHERE id = ? AND deleted_at IS NULL
                 """,
@@ -161,13 +175,96 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "message": "This run does not have metadata.wandb_url.",
             }
         try:
-            return fetch_live_wandb_charts(str(url), samples=1000)
+            return fetch_wandb_charts(
+                str(url),
+                run_id=run_id,
+                status=str(data.get("status") or ""),
+                cache_dir=cache_dir,
+                samples=1000,
+            )
         except WandbLiveError as exc:
             return {
                 "available": False,
                 "reason": exc.reason,
                 "message": exc.message,
             }
+
+    @app.get("/api/wandb/compare")
+    def api_wandb_compare(
+        run_id: Annotated[list[str] | None, Query()] = None,
+    ) -> dict[str, Any]:
+        seen: set[str] = set()
+        run_ids = [
+            item for item in (run_id or []) if item and not (item in seen or seen.add(item))
+        ]
+        if not run_ids:
+            return {"runs": [], "skipped": [], "errors": []}
+
+        with transaction(root, state_dir=state_dir) as conn:
+            rows = {
+                str(row["id"]): row_to_dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT id, purpose, status, metadata_json
+                    FROM runs
+                    WHERE deleted_at IS NULL
+                        AND id IN ({",".join("?" for _ in run_ids)})
+                    """,
+                    run_ids,
+                )
+            }
+
+        runs: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
+        for item in run_ids:
+            row = rows.get(item)
+            if row is None:
+                errors.append(
+                    {
+                        "run_id": item,
+                        "reason": "run_not_found",
+                        "message": "Run not found or deleted.",
+                    }
+                )
+                continue
+            url = (row.get("metadata") or {}).get("wandb_url")
+            if not url:
+                skipped.append(
+                    {
+                        "run_id": item,
+                        "reason": "missing_wandb_url",
+                        "message": "This run does not have metadata.wandb_url.",
+                    }
+                )
+                continue
+            try:
+                data = fetch_wandb_charts(
+                    str(url),
+                    run_id=item,
+                    status=str(row.get("status") or ""),
+                    cache_dir=cache_dir,
+                    samples=1000,
+                )
+            except WandbLiveError as exc:
+                errors.append(
+                    {
+                        "run_id": item,
+                        "reason": exc.reason,
+                        "message": exc.message,
+                    }
+                )
+                continue
+            runs.append(
+                {
+                    "id": item,
+                    "purpose": row.get("purpose") or "",
+                    "run_path": data["run_path"],
+                    "cached": data.get("cached", False),
+                    "groups": data["groups"],
+                }
+            )
+        return {"runs": runs, "skipped": skipped, "errors": errors}
 
     @app.get("/api/docs")
     def api_docs(
@@ -544,6 +641,7 @@ _INDEX_HTML = """
       color: #344054;
     }
     .top-button:hover, .top-button.active { background: var(--accent-soft); color: var(--accent); }
+    [hidden] { display: none !important; }
     input, select {
       height: 36px;
       border: 1px solid var(--line);
@@ -716,6 +814,49 @@ _INDEX_HTML = """
       border: 0;
       border-radius: 0;
     }
+    .compare-panel { margin-top: 18px; }
+    .compare-summary { margin: 0 0 10px; color: var(--muted); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(17, 24, 39, 0.34);
+      backdrop-filter: blur(8px);
+    }
+    .modal {
+      width: min(760px, 100%);
+      max-height: min(720px, calc(100vh - 36px));
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-strong);
+      box-shadow: 0 24px 70px rgba(17, 24, 39, 0.24);
+      overflow: hidden;
+    }
+    .modal-header, .modal-footer { padding: 14px 16px; }
+    .modal-header { border-bottom: 1px solid var(--line); }
+    .modal-footer { border-top: 1px solid var(--line); }
+    .modal-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .modal-title h3 { margin: 0; font-size: 16px; }
+    .modal-body { overflow: auto; padding: 8px 16px; }
+    .compare-row {
+      display: grid;
+      grid-template-columns: 28px minmax(150px, 0.34fr) minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+    }
+    .compare-row:last-child { border-bottom: 0; }
+    .compare-row input { width: 16px; height: 16px; margin-top: 3px; }
+    .compare-run { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .compare-purpose { color: var(--muted); overflow-wrap: anywhere; }
+    .star { color: #d97706; font-weight: 900; }
     a { color: var(--accent); font-weight: 700; text-decoration: none; text-underline-offset: 3px; }
     a:hover { color: var(--accent-strong); text-decoration: underline; }
     .empty {
@@ -773,12 +914,12 @@ _INDEX_HTML = """
     </main>
   </div>
   <script>
-    const state = { mocs: [], selectedMoc: null, wandbChartMode: 'combined', wandbChartData: null };
+    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartMode: 'combined', wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection' };
     const $ = (id) => document.getElementById(id);
     const route = () => window.location.hash || '#/';
 
-    async function api(path) {
-      const res = await fetch(path);
+    async function api(path, options = {}) {
+      const res = await fetch(path, options);
       if (!res.ok) throw new Error(await res.text());
       return await res.json();
     }
@@ -806,12 +947,20 @@ _INDEX_HTML = """
     function hasWandbUrl(meta) {
       return Boolean(meta && meta.wandb_url);
     }
+    function formatBytes(bytes) {
+      const value = Number(bytes || 0);
+      if (value < 1024) return `${value} B`;
+      if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+      return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    }
     function wandbPanel(r) {
       if (!hasWandbUrl(r.metadata)) return '';
       const id = esc(r.id);
       state.wandbChartMode = 'combined';
       state.wandbChartData = null;
-      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbModeToggle" class="top-button" type="button" onclick="toggleWandbChartMode()" disabled>Split metrics</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div></section>`;
+      state.wandbCompareData = null;
+      state.wandbCompareMode = 'intersection';
+      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbModeToggle" class="top-button" type="button" onclick="toggleWandbChartMode()" disabled>Split metrics</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
     }
     async function loadWandbCharts(runId) {
       const button = $('wandbFetch');
@@ -823,9 +972,12 @@ _INDEX_HTML = """
       }
       button.disabled = true;
       state.wandbChartData = null;
+      state.wandbCompareData = null;
       updateWandbModeToggle();
+      updateWandbCompareButton();
       status.textContent = 'Fetching live W&B history...';
       target.innerHTML = '';
+      $('wandbCompareResults').innerHTML = '';
       try {
         const data = await api('/api/runs/' + encodeURIComponent(runId) + '/wandb');
         if (!data.available) {
@@ -835,7 +987,8 @@ _INDEX_HTML = """
         state.wandbChartData = data;
         renderWandbCharts(data);
         updateWandbModeToggle();
-        status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows.`;
+        updateWandbCompareButton();
+        status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
       } catch (err) {
         status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
       } finally {
@@ -845,14 +998,24 @@ _INDEX_HTML = """
     function toggleWandbChartMode() {
       if (!state.wandbChartData) return;
       state.wandbChartMode = state.wandbChartMode === 'combined' ? 'split' : 'combined';
+      state.wandbCompareData = null;
+      $('wandbCompareResults').innerHTML = '';
       renderWandbCharts(state.wandbChartData);
       updateWandbModeToggle();
+      updateWandbCompareButton();
     }
     function updateWandbModeToggle() {
       const button = $('wandbModeToggle');
       if (!button) return;
       button.disabled = !state.wandbChartData;
       button.textContent = state.wandbChartMode === 'combined' ? 'Split metrics' : 'Combine group';
+    }
+    function updateWandbCompareButton() {
+      const button = $('wandbCompare');
+      if (!button) return;
+      const visible = Boolean(state.wandbChartData && state.wandbChartMode === 'split');
+      button.hidden = !visible;
+      button.disabled = !visible;
     }
     function renderWandbCharts(data) {
       const target = $('wandbCharts');
@@ -910,6 +1073,119 @@ _INDEX_HTML = """
         });
       });
     }
+    function relationRecommendedRunIds(run) {
+      const text = String((run && run.relation) || '');
+      const ids = new Set();
+      for (const candidate of state.wandbCompareRuns) {
+        const id = String(candidate.id || '');
+        if (!id || id === run.id) continue;
+        if (text.includes(`[[${id}]]`) || new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(id)}([^A-Za-z0-9_-]|$)`).test(text)) {
+          ids.add(id);
+        }
+      }
+      return ids;
+    }
+    function escapeRegExp(value) {
+      const slash = String.fromCharCode(92);
+      const specials = new Set(['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', slash]);
+      return String(value).split('').map(char => specials.has(char) ? slash + char : char).join('');
+    }
+    async function openWandbCompareModal() {
+      if (!(state.currentRun && state.wandbChartData && state.wandbChartMode === 'split')) return;
+      state.wandbCompareRuns = await api('/api/runs?moc_id=' + encodeURIComponent(state.currentRun.moc_id));
+      const recommended = relationRecommendedRunIds(state.currentRun);
+      const rows = state.wandbCompareRuns.map(run => {
+        const id = idForRun(run);
+        const checked = id === state.currentRun.id ? 'checked' : '';
+        const current = id === state.currentRun.id ? '<span class="pill">Current</span>' : '';
+        const star = recommended.has(id) ? '<span class="star" title="relation recommended">*</span>' : '';
+        return `<label class="compare-row"><input type="checkbox" value="${esc(id)}" ${checked}><div class="compare-run"><code>${esc(id)}</code>${current}${star}</div><div class="compare-purpose">${esc(run.purpose || 'No purpose recorded.')}</div></label>`;
+      }).join('');
+      document.body.insertAdjacentHTML('beforeend', `<div class="modal-backdrop" id="wandbCompareModal"><div class="modal"><div class="modal-header"><div class="modal-title"><h3>Compare runs</h3><button class="top-button" type="button" onclick="closeWandbCompareModal()">Close</button></div></div><div class="modal-body">${rows || empty('No runs in this MOC.')}</div><div class="modal-footer"><p class="subtle">* 星标为relation中记录的推荐对比实验</p><div class="wandb-actions"><button class="wandb-button" type="button" onclick="loadWandbComparison()">Show comparison</button></div></div></div></div>`);
+    }
+    function closeWandbCompareModal() {
+      const modal = $('wandbCompareModal');
+      if (modal) modal.remove();
+    }
+    async function loadWandbComparison() {
+      const modal = $('wandbCompareModal');
+      if (!modal) return;
+      const selected = Array.from(modal.querySelectorAll('input[type="checkbox"]:checked')).map(input => input.value);
+      closeWandbCompareModal();
+      const target = $('wandbCompareResults');
+      if (!selected.length) {
+        target.innerHTML = `<div class="compare-panel">${empty('No comparison runs selected.')}</div>`;
+        return;
+      }
+      target.innerHTML = '<div class="compare-panel"><p class="compare-summary">Fetching comparison W&B histories...</p></div>';
+      $('wandbCharts').innerHTML = '';
+      const query = selected.map(id => 'run_id=' + encodeURIComponent(id)).join('&');
+      const data = await api('/api/wandb/compare?' + query);
+      state.wandbCompareData = data;
+      state.wandbCompareMode = 'intersection';
+      renderWandbComparison();
+    }
+    function toggleWandbCompareMetricMode() {
+      if (!state.wandbCompareData) return;
+      state.wandbCompareMode = state.wandbCompareMode === 'intersection' ? 'union' : 'intersection';
+      renderWandbComparison();
+    }
+    function renderWandbComparison() {
+      const target = $('wandbCompareResults');
+      const data = state.wandbCompareData || { runs: [], skipped: [], errors: [] };
+      const runs = data.runs || [];
+      if (!runs.length) {
+        target.innerHTML = `<div class="compare-panel">${empty('No selected runs with usable W&B charts.')}${compareMessages(data)}</div>`;
+        return;
+      }
+      const metrics = comparisonMetrics(runs, state.wandbCompareMode);
+      const toggleLabel = state.wandbCompareMode === 'intersection' ? 'Show all metrics' : 'Show common metrics';
+      target.innerHTML = `<div class="compare-panel"><div class="wandb-actions"><button class="top-button" type="button" onclick="toggleWandbCompareMetricMode()">${toggleLabel}</button><span class="compare-summary">${runs.length} runs, ${metrics.length} ${state.wandbCompareMode === 'intersection' ? 'common' : 'total'} metrics.</span></div>${compareMessages(data)}${metrics.map((metric, index) => `<div class="wandb-group"><h3>${esc(metric.group)}</h3><div class="wandb-chart-card"><div class="wandb-chart-title">${esc(metric.name)}</div><div class="wandb-chart" id="wandb-compare-chart-${index}"></div></div></div>`).join('') || empty('No metrics match the current comparison mode.')}</div>`;
+      metrics.forEach((metric, index) => {
+        const traces = runs.flatMap(run => {
+          const chart = findRunChart(run, metric.name);
+          if (!chart) return [];
+          const trace = wandbTrace(chart);
+          trace.name = run.id;
+          trace.line = { color: colorForRun(run.id), width: 2 };
+          return [trace];
+        });
+        Plotly.newPlot(`wandb-compare-chart-${index}`, traces, wandbLayout('', true), wandbPlotOptions());
+      });
+    }
+    function compareMessages(data) {
+      const skipped = (data.skipped || []).map(item => `<span class="pill">${esc(item.run_id)}: ${esc(item.reason)}</span>`).join('');
+      const errors = (data.errors || []).map(item => `<span class="pill error">${esc(item.run_id)}: ${esc(item.reason)}</span>`).join('');
+      if (!skipped && !errors) return '';
+      return `<p class="compare-summary">${skipped}${errors}</p>`;
+    }
+    function comparisonMetrics(runs, mode) {
+      const counts = new Map();
+      const groups = new Map();
+      runs.forEach(run => {
+        const names = new Set();
+        (run.groups || []).forEach(group => (group.charts || []).forEach(chart => {
+          names.add(chart.metric);
+          groups.set(chart.metric, group.name);
+        }));
+        names.forEach(name => counts.set(name, (counts.get(name) || 0) + 1));
+      });
+      return Array.from(counts.keys()).filter(name => mode === 'union' || counts.get(name) === runs.length).sort().map(name => ({ name, group: groups.get(name) || 'metrics' }));
+    }
+    function findRunChart(run, metricName) {
+      for (const group of run.groups || []) {
+        for (const chart of group.charts || []) {
+          if (chart.metric === metricName) return chart;
+        }
+      }
+      return null;
+    }
+    function colorForRun(runId) {
+      const colors = ['#2f5bd8', '#0f9f8f', '#b54708', '#b42318', '#7c3aed', '#0284c7', '#16a34a', '#db2777', '#ca8a04', '#475569'];
+      let hash = 0;
+      for (const char of String(runId)) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+      return colors[Math.abs(hash) % colors.length];
+    }
     function empty(label) {
       return `<div class="empty">${esc(label)}</div>`;
     }
@@ -940,8 +1216,14 @@ _INDEX_HTML = """
     }
     async function loadHome() {
       await ensureMocs();
-      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div></div>`;
+      const cache = await api('/api/wandb/cache');
+      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div><div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
       $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>`;
+    }
+    async function clearWandbCache() {
+      const cache = await api('/api/wandb/cache', { method: 'DELETE' });
+      const target = $('wandbCacheSize');
+      if (target) target.textContent = formatBytes(cache.bytes);
     }
     async function loadMoc(id) {
       await ensureMocs();
@@ -993,6 +1275,7 @@ _INDEX_HTML = """
     async function loadRun(id) {
       await ensureMocs();
       const r = await api('/api/runs/' + encodeURIComponent(id));
+      state.currentRun = r;
       $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
     }
     async function loadDoc(id) {

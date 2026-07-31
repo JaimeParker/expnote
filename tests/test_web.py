@@ -8,6 +8,7 @@ from expnote.cli import app as cli_app
 from expnote.db import transaction
 from expnote.wandb_live import (
     WandbLiveError,
+    fetch_wandb_charts,
     group_wandb_history,
     parse_wandb_run_url,
 )
@@ -299,6 +300,78 @@ def test_web_wandb_endpoint_reports_missing_url(tmp_path):
     }
 
 
+def test_wandb_finished_runs_use_local_cache(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_live(url: str, *, samples: int):
+        nonlocal calls
+        calls += 1
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": "entity/project/run1",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": []}],
+        }
+
+    monkeypatch.setattr("expnote.wandb_live.fetch_live_wandb_charts", fake_live)
+    cache_dir = tmp_path / "cache"
+
+    first = fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+    )
+    second = fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+    )
+
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert calls == 1
+    assert len(list(cache_dir.glob("*.json"))) == 1
+
+
+def test_wandb_running_runs_do_not_use_local_cache(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_live(url: str, *, samples: int):
+        nonlocal calls
+        calls += 1
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": f"entity/project/run{calls}",
+            "samples": samples,
+            "groups": [],
+        }
+
+    monkeypatch.setattr("expnote.wandb_live.fetch_live_wandb_charts", fake_live)
+    cache_dir = tmp_path / "cache"
+
+    first = fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="running",
+        cache_dir=cache_dir,
+    )
+    second = fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="running",
+        cache_dir=cache_dir,
+    )
+
+    assert first["cached"] is False
+    assert second["cached"] is False
+    assert calls == 2
+    assert not cache_dir.exists()
+
+
 def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
     _workspace(tmp_path)
     assert (
@@ -317,15 +390,18 @@ def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(url: str, *, samples: int):
+    def fake_fetch(
+        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+    ):
         return {
             "available": True,
+            "cached": status == "finished",
             "run_path": "entity/project/wandb123",
             "samples": samples,
             "groups": [{"name": "eval", "charts": []}],
         }
 
-    monkeypatch.setattr("expnote.web.fetch_live_wandb_charts", fake_fetch)
+    monkeypatch.setattr("expnote.web.fetch_wandb_charts", fake_fetch)
     app = create_app(tmp_path)
     route = next(
         route
@@ -337,6 +413,7 @@ def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
 
     assert response["available"] is True
     assert response["samples"] == 1000
+    assert response["cached"] is False
     assert response["groups"][0]["name"] == "eval"
 
 
@@ -358,10 +435,12 @@ def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(url: str, *, samples: int):
+    def fake_fetch(
+        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+    ):
         raise WandbLiveError("wandb_api_error", "permission denied")
 
-    monkeypatch.setattr("expnote.web.fetch_live_wandb_charts", fake_fetch)
+    monkeypatch.setattr("expnote.web.fetch_wandb_charts", fake_fetch)
     app = create_app(tmp_path)
     route = next(
         route
@@ -378,24 +457,164 @@ def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
     }
 
 
+def test_web_wandb_compare_endpoint_skips_missing_urls(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/wandb/compare"
+    )
+
+    response = route.endpoint(["wandb123", "missing"])
+
+    assert response["runs"] == []
+    assert response["skipped"][0]["run_id"] == "wandb123"
+    assert response["skipped"][0]["reason"] == "missing_wandb_url"
+    assert response["errors"][0]["run_id"] == "missing"
+    assert response["errors"][0]["reason"] == "run_not_found"
+
+
+def test_web_wandb_compare_endpoint_returns_successes_and_errors(
+    tmp_path, monkeypatch
+):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--root",
+                str(tmp_path),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "add",
+                "--root",
+                str(tmp_path),
+                "--moc-id",
+                "baseline",
+                "--topic",
+                "CalQL",
+                "--run-id",
+                "badwandb",
+                "--purpose",
+                "Bad W&B",
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/badwandb"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(
+        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+    ):
+        if "badwandb" in url:
+            raise WandbLiveError("wandb_api_error", "permission denied")
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": "entity/project/wandb123",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": [{"metric": "eval/return"}]}],
+        }
+
+    monkeypatch.setattr("expnote.web.fetch_wandb_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/wandb/compare"
+    )
+
+    response = route.endpoint(["wandb123", "badwandb"])
+
+    assert response["runs"][0]["id"] == "wandb123"
+    assert response["runs"][0]["purpose"] == "Train baseline"
+    assert response["runs"][0]["cached"] is False
+    assert response["runs"][0]["groups"][0]["name"] == "eval"
+    assert response["skipped"] == []
+    assert response["errors"][0]["run_id"] == "badwandb"
+    assert response["errors"][0]["reason"] == "wandb_api_error"
+
+
+def test_web_wandb_cache_stats_and_clear(tmp_path):
+    state_dir = tmp_path / "state"
+    cache_dir = state_dir / "wandb-cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "one.json").write_text("1234", encoding="utf-8")
+    app = create_app(tmp_path, state_dir=state_dir)
+    stats_route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/wandb/cache"
+        and "GET" in getattr(route, "methods", set())
+    )
+    clear_route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/wandb/cache"
+        and "DELETE" in getattr(route, "methods", set())
+    )
+
+    stats = stats_route.endpoint()
+    cleared = clear_route.endpoint()
+
+    assert stats == {"files": 1, "bytes": 4}
+    assert cleared == {"files": 0, "bytes": 0}
+    assert not cache_dir.exists()
+
+
 def test_web_index_has_wandb_live_chart_controls():
     assert '<script src="/assets/plotly.min.js"></script>' in _INDEX_HTML
     assert "Fetch live W&B charts" in _INDEX_HTML
     assert "Split metrics" in _INDEX_HTML
     assert "Combine group" in _INDEX_HTML
+    assert "Compare runs" in _INDEX_HTML
+    assert "Show comparison" in _INDEX_HTML
+    assert "* 星标为relation中记录的推荐对比实验" in _INDEX_HTML
+    assert "[hidden] { display: none !important; }" in _INDEX_HTML
+    assert "hidden disabled>Compare runs" in _INDEX_HTML
+    assert "$('wandbCharts').innerHTML = ''" in _INDEX_HTML
+    assert "data.cached ? 'cached' : 'live'" in _INDEX_HTML
+    assert "W&B cache" in _INDEX_HTML
+    assert "Clear W&B cache" in _INDEX_HTML
+    assert "/api/wandb/cache" in _INDEX_HTML
+    assert "method: 'DELETE'" in _INDEX_HTML
     assert "/api/runs/" in _INDEX_HTML
     assert "/wandb" in _INDEX_HTML
+    assert "/api/wandb/compare?" in _INDEX_HTML
     assert "Plotly.newPlot" in _INDEX_HTML
     assert "loadWandbCharts" in _INDEX_HTML
     assert "state.wandbChartMode = 'combined'" in _INDEX_HTML
     assert "state.wandbChartData = data" in _INDEX_HTML
+    assert "state.wandbCompareMode = 'intersection'" in _INDEX_HTML
     assert "toggleWandbChartMode" in _INDEX_HTML
+    assert "openWandbCompareModal" in _INDEX_HTML
+    assert "toggleWandbCompareMetricMode" in _INDEX_HTML
+    assert "comparisonMetrics" in _INDEX_HTML
+    assert "colorForRun" in _INDEX_HTML
     assert "renderCombinedWandbCharts" in _INDEX_HTML
     assert "renderSplitWandbCharts" in _INDEX_HTML
     assert "wandb-chart-grid" in _INDEX_HTML
+    assert "modal-backdrop" in _INDEX_HTML
+    assert "checkbox" in _INDEX_HTML
+    assert "Current" in _INDEX_HTML
     assert "wandb-chart-card" in _INDEX_HTML
     assert "wandb-chart-title" in _INDEX_HTML
     assert "repeat(auto-fit, minmax(320px, 1fr))" in _INDEX_HTML
     assert "wandb-chart-split-${groupIndex}-${chartIndex}" in _INDEX_HTML
+    assert "wandb-compare-chart-${index}" in _INDEX_HTML
     assert "state.wandbChartData) return" in _INDEX_HTML
     assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
