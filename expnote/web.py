@@ -9,10 +9,11 @@ from typing import Any
 
 import markdown as markdown_lib
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from expnote.db import row_to_dict, transaction
 from expnote.links import render_html_run_links
+from expnote.wandb_live import WandbLiveError, fetch_live_wandb_charts
 
 
 def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
@@ -23,6 +24,18 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         return HTMLResponse(_INDEX_HTML, headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/plotly.min.js")
+    def plotly_asset() -> Response:
+        try:
+            from plotly.offline.offline import get_plotlyjs
+        except ImportError as exc:
+            raise HTTPException(status_code=404, detail="Plotly is not installed") from exc
+        return Response(
+            get_plotlyjs(),
+            media_type="application/javascript",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @app.get("/api/mocs")
     def api_mocs() -> list[dict[str, Any]]:
@@ -125,6 +138,36 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             ]
             data["docs"] = _docs(conn, run_id=run_id)
             return data
+
+    @app.get("/api/runs/{run_id}/wandb")
+    def api_run_wandb(run_id: str) -> dict[str, Any]:
+        with transaction(root, state_dir=state_dir) as conn:
+            row = conn.execute(
+                """
+                SELECT id, metadata_json
+                FROM runs
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Run not found")
+            data = row_to_dict(row)
+        url = (data.get("metadata") or {}).get("wandb_url")
+        if not url:
+            return {
+                "available": False,
+                "reason": "missing_wandb_url",
+                "message": "This run does not have metadata.wandb_url.",
+            }
+        try:
+            return fetch_live_wandb_charts(str(url), samples=1000)
+        except WandbLiveError as exc:
+            return {
+                "available": False,
+                "reason": exc.reason,
+                "message": exc.message,
+            }
 
     @app.get("/api/docs")
     def api_docs(
@@ -340,21 +383,27 @@ _INDEX_HTML = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>expnote</title>
+  <script src="/assets/plotly.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <style>
     :root {
       color-scheme: light;
-      --ink: #182230;
-      --muted: #667085;
-      --subtle: #98a2b3;
-      --line: rgba(102, 112, 133, 0.22);
-      --panel: rgba(255, 255, 255, 0.76);
-      --panel-strong: rgba(255, 255, 255, 0.94);
-      --accent: #3157d5;
-      --accent-soft: #eef4ff;
+      --ink: #111827;
+      --muted: #5f6b7a;
+      --subtle: #8993a1;
+      --line: rgba(31, 41, 55, 0.12);
+      --line-strong: rgba(31, 41, 55, 0.20);
+      --panel: rgba(255, 255, 255, 0.78);
+      --panel-strong: rgba(255, 255, 255, 0.96);
+      --accent: #2f5bd8;
+      --accent-strong: #2447ad;
+      --accent-soft: #edf3ff;
+      --teal: #0f9f8f;
       --green: #067647;
       --amber: #b54708;
       --red: #b42318;
-      --shadow: 0 18px 60px rgba(16, 24, 40, 0.10);
+      --shadow: 0 18px 50px rgba(17, 24, 39, 0.10);
+      --shadow-soft: 0 8px 24px rgba(17, 24, 39, 0.07);
     }
     * { box-sizing: border-box; }
     body {
@@ -363,18 +412,18 @@ _INDEX_HTML = """
       color: var(--ink);
       font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 12% 8%, rgba(61, 90, 254, 0.13), transparent 28%),
-        radial-gradient(circle at 88% 14%, rgba(20, 184, 166, 0.12), transparent 30%),
-        linear-gradient(135deg, #f8fbff 0%, #f6f7fb 52%, #fffaf4 100%);
+        radial-gradient(circle at 16% 4%, rgba(47, 91, 216, 0.10), transparent 28%),
+        radial-gradient(circle at 86% 10%, rgba(15, 159, 143, 0.09), transparent 28%),
+        linear-gradient(135deg, #f7f9fc 0%, #f3f6fb 48%, #f8faf7 100%);
     }
     body::before {
       content: "";
       position: fixed;
       inset: 0;
       pointer-events: none;
-      background-image: linear-gradient(rgba(24, 34, 48, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(24, 34, 48, 0.03) 1px, transparent 1px);
+      background-image: linear-gradient(rgba(17, 24, 39, 0.026) 1px, transparent 1px), linear-gradient(90deg, rgba(17, 24, 39, 0.022) 1px, transparent 1px);
       background-size: 32px 32px;
-      mask-image: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent 70%);
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,0.40), transparent 70%);
     }
     button, input, select { font: inherit; }
     button {
@@ -386,7 +435,7 @@ _INDEX_HTML = """
     }
     .shell {
       display: grid;
-      grid-template-columns: 284px minmax(0, 1fr);
+      grid-template-columns: 292px minmax(0, 1fr);
       min-height: 100vh;
       position: relative;
       z-index: 1;
@@ -395,25 +444,33 @@ _INDEX_HTML = """
       position: sticky;
       top: 0;
       height: 100vh;
-      padding: 18px;
+      padding: 18px 16px;
       border-right: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.56);
+      background: rgba(255, 255, 255, 0.66);
       backdrop-filter: blur(18px);
       overflow: auto;
     }
-    main { min-width: 0; padding: 18px 22px 34px; }
+    main { min-width: 0; padding: 18px 24px 36px; }
     .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 18px;
+      margin-bottom: 20px;
     }
     .logo {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-      background: linear-gradient(135deg, #3157d5, #13b5a6 62%, #f5b544);
-      box-shadow: 0 10px 24px rgba(49, 87, 213, 0.25);
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, var(--accent), var(--teal) 62%, #f2b84b);
+      box-shadow: 0 12px 26px rgba(47, 91, 216, 0.25);
+      position: relative;
+    }
+    .logo::after {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border: 1px solid rgba(255,255,255,0.72);
+      border-radius: 5px;
     }
     .brand strong { display: block; font-size: 16px; letter-spacing: 0; }
     .brand span { color: var(--muted); font-size: 12px; }
@@ -432,11 +489,19 @@ _INDEX_HTML = """
       padding: 9px 10px;
       margin: 2px 0;
       color: #344054;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      transition: background 140ms ease, color 140ms ease, transform 140ms ease;
     }
     .nav-item:hover, .nav-item.active {
-      background: rgba(49, 87, 213, 0.10);
+      background: rgba(47, 91, 216, 0.10);
       color: var(--accent);
     }
+    .nav-item:hover { transform: translateX(1px); }
+    .nav-item i, .top-button i { width: 16px; height: 16px; stroke-width: 2.2; }
+    .nav-text { min-width: 0; }
     .nav-item code {
       display: block;
       margin-top: 2px;
@@ -453,16 +518,28 @@ _INDEX_HTML = """
       align-items: center;
       gap: 10px;
       margin-bottom: 18px;
-      padding: 10px;
+      padding: 9px;
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 10px;
       background: var(--panel);
       backdrop-filter: blur(18px);
-      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+      box-shadow: var(--shadow-soft);
+    }
+    .toolbar-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid rgba(31, 41, 55, 0.08);
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.62);
     }
     .top-button {
-      border-radius: 8px;
-      padding: 8px 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 7px;
+      padding: 7px 9px;
       font-weight: 600;
       color: #344054;
     }
@@ -476,19 +553,19 @@ _INDEX_HTML = """
       color: var(--ink);
       outline: none;
     }
-    input:focus, select:focus { border-color: rgba(49, 87, 213, 0.55); box-shadow: 0 0 0 3px rgba(49, 87, 213, 0.10); }
-    #search { min-width: 220px; margin-left: auto; }
+    input:focus, select:focus { border-color: rgba(47, 91, 216, 0.55); box-shadow: 0 0 0 3px rgba(47, 91, 216, 0.10); }
+    #search { min-width: 260px; margin-left: auto; }
     .hero {
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 22px;
+      border-radius: 12px;
+      padding: 22px 24px;
       background:
-        linear-gradient(135deg, rgba(255,255,255,0.92), rgba(255,255,255,0.68)),
-        radial-gradient(circle at 100% 0%, rgba(49,87,213,0.18), transparent 34%);
+        linear-gradient(135deg, rgba(255,255,255,0.94), rgba(255,255,255,0.74)),
+        radial-gradient(circle at 100% 0%, rgba(47,91,216,0.14), transparent 32%);
       box-shadow: var(--shadow);
     }
     h1 { margin: 0; font-size: 28px; line-height: 1.18; letter-spacing: 0; }
-    h2 { margin: 24px 0 10px; font-size: 17px; letter-spacing: 0; }
+    h2 { margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }
     h3 { margin: 0 0 8px; font-size: 14px; letter-spacing: 0; }
     p { margin: 0; }
     .muted { color: var(--muted); }
@@ -496,29 +573,56 @@ _INDEX_HTML = """
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
     .card {
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 10px;
       padding: 14px;
       background: var(--panel-strong);
-      box-shadow: 0 10px 26px rgba(16, 24, 40, 0.06);
+      box-shadow: var(--shadow-soft);
     }
-    .card-button { width: 100%; transition: transform 140ms ease, border-color 140ms ease; }
-    .card-button:hover { transform: translateY(-1px); border-color: rgba(49, 87, 213, 0.45); }
+    .card-button { width: 100%; transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
+    .card-button:hover { transform: translateY(-1px); border-color: rgba(47, 91, 216, 0.42); box-shadow: 0 14px 30px rgba(17, 24, 39, 0.09); }
     .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-    .stat { min-width: 118px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: rgba(255,255,255,0.72); }
+    .stat { min-width: 118px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,0.78); }
     .stat strong { display: block; font-size: 20px; }
     .table-wrap {
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 10px;
       background: var(--panel-strong);
-      box-shadow: 0 10px 26px rgba(16, 24, 40, 0.05);
+      box-shadow: var(--shadow-soft);
     }
-    table { width: 100%; border-collapse: collapse; min-width: 760px; }
-    th, td { border-bottom: 1px solid rgba(102, 112, 133, 0.16); padding: 10px 12px; text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-size: 12px; font-weight: 700; background: rgba(248, 250, 252, 0.78); }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
+    table[data-table="topic-runs"], table[data-table="doc-runs"] { min-width: 1080px; }
+    table[data-table="docs"] { min-width: 720px; }
+    col.col-run { width: 1%; }
+    col.col-status { width: 1%; }
+    col.col-role { width: 1%; }
+    col.col-updated { width: 170px; }
+    col.col-moc { width: 220px; }
+    col.col-purpose { width: 28%; }
+    col.col-relation { width: 34%; }
+    col.col-result { width: 30%; }
+    col.col-note { width: 22%; }
+    col.col-doc { width: auto; }
+    th, td { border-bottom: 1px solid rgba(31, 41, 55, 0.10); padding: 11px 12px; text-align: left; vertical-align: top; }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(248, 250, 252, 0.96);
+      box-shadow: inset 0 -1px 0 rgba(31, 41, 55, 0.08);
+    }
+    td { overflow-wrap: anywhere; }
+    td[data-cell="run"], td[data-cell="status"], td[data-cell="role"], td[data-cell="updated"] { white-space: nowrap; }
+    td[data-cell="purpose"], td[data-cell="relation"], td[data-cell="result"], td[data-cell="note"] { line-height: 1.45; }
     tbody tr:hover { background: rgba(238, 244, 255, 0.62); }
     tbody tr:last-child td { border-bottom: 0; }
-    .link-button { color: var(--accent); font-weight: 700; }
+    .link-button { color: var(--accent); font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+    .link-button code, .badge { white-space: nowrap; }
     code {
       border: 1px solid rgba(102, 112, 133, 0.18);
       border-radius: 6px;
@@ -538,34 +642,93 @@ _INDEX_HTML = """
       background: #f2f4f7;
       color: #344054;
     }
+    .badge::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      border-radius: 999px;
+      background: currentColor;
+      opacity: 0.74;
+    }
     .status-running { color: var(--amber); background: #fff7ed; border-color: rgba(181, 71, 8, 0.20); }
     .status-finished { color: var(--green); background: #ecfdf3; border-color: rgba(6, 118, 71, 0.20); }
     .status-failed { color: var(--red); background: #fef3f2; border-color: rgba(180, 35, 24, 0.20); }
     .pill { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #fff; }
     .run-sections { display: grid; gap: 12px; margin-top: 16px; }
     .markdown {
-      max-width: 980px;
+      max-width: 1040px;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 18px;
+      border-radius: 10px;
+      padding: 18px 20px;
       background: var(--panel-strong);
-      box-shadow: 0 10px 26px rgba(16, 24, 40, 0.05);
+      box-shadow: var(--shadow-soft);
     }
     .markdown p { margin: 0 0 12px; }
-    .markdown h1, .markdown h2, .markdown h3 { margin: 18px 0 10px; }
-    .markdown pre { overflow: auto; background: #111827; color: #f9fafb; padding: 12px; border-radius: 10px; }
+    .markdown h1, .markdown h2, .markdown h3 { margin: 18px 0 10px; line-height: 1.25; }
+    .markdown pre { overflow: auto; background: #111827; color: #f9fafb; padding: 13px 14px; border-radius: 8px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07); }
+    .markdown blockquote { margin: 12px 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: rgba(237, 243, 255, 0.64); color: #344054; }
+    .markdown table { min-width: 0; table-layout: auto; }
     .metadata-list { margin: 0; padding-left: 18px; }
     .metadata-list li { margin: 4px 0; }
-    a { color: var(--accent); font-weight: 700; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    .wandb-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+    .wandb-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 8px;
+      padding: 8px 11px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--teal));
+      box-shadow: 0 10px 22px rgba(47, 91, 216, 0.18);
+    }
+    .wandb-button:disabled { opacity: 0.64; cursor: wait; }
+    .wandb-status { color: var(--muted); }
+    .wandb-group { margin-top: 16px; }
+    .wandb-chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 12px;
+    }
+    .wandb-chart-card {
+      border: 1px solid rgba(31, 41, 55, 0.10);
+      border-radius: 10px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .wandb-chart-title {
+      padding: 10px 12px 0;
+      color: #344054;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .wandb-chart {
+      min-height: 360px;
+      border: 1px solid rgba(31, 41, 55, 0.10);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .wandb-chart-grid .wandb-chart {
+      min-height: 280px;
+      border: 0;
+      border-radius: 0;
+    }
+    a { color: var(--accent); font-weight: 700; text-decoration: none; text-underline-offset: 3px; }
+    a:hover { color: var(--accent-strong); text-decoration: underline; }
     .empty {
       border: 1px dashed rgba(102, 112, 133, 0.35);
-      border-radius: 12px;
+      border-radius: 10px;
       padding: 18px;
       color: var(--muted);
       background: rgba(255, 255, 255, 0.56);
     }
     .error { color: var(--red); }
+    @media (prefers-reduced-motion: no-preference) {
+      .top-button, .link-button, a { transition: color 140ms ease, background 140ms ease, transform 140ms ease; }
+    }
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       aside { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -584,9 +747,9 @@ _INDEX_HTML = """
       </div>
       <div class="nav-section">
         <p class="label">Workspace</p>
-        <button class="nav-item" data-route="#/" onclick="navigate('#/')">MOC overview</button>
-        <button class="nav-item" data-route="#/runs" onclick="navigate('#/runs')">All runs</button>
-        <button class="nav-item" data-route="#/docs" onclick="navigate('#/docs')">All docs</button>
+        <button class="nav-item" data-route="#/" onclick="navigate('#/')"><i data-lucide="layout-dashboard"></i><span class="nav-text">MOC overview</span></button>
+        <button class="nav-item" data-route="#/runs" onclick="navigate('#/runs')"><i data-lucide="activity"></i><span class="nav-text">All runs</span></button>
+        <button class="nav-item" data-route="#/docs" onclick="navigate('#/docs')"><i data-lucide="file-text"></i><span class="nav-text">All docs</span></button>
       </div>
       <div class="nav-section">
         <p class="label">SQL MOCs</p>
@@ -595,10 +758,14 @@ _INDEX_HTML = """
     </aside>
     <main>
       <div class="toolbar">
-        <button id="backBtn" class="top-button" type="button">Back</button>
-        <button class="top-button" data-route="#/" onclick="navigate('#/')">MOCs</button>
-        <button class="top-button" data-route="#/runs" onclick="navigate('#/runs')">Runs</button>
-        <button class="top-button" data-route="#/docs" onclick="navigate('#/docs')">Docs</button>
+        <div class="toolbar-group">
+          <button id="backBtn" class="top-button" type="button"><i data-lucide="arrow-left"></i>Back</button>
+        </div>
+        <div class="toolbar-group">
+          <button class="top-button" data-route="#/" onclick="navigate('#/')"><i data-lucide="library"></i>MOCs</button>
+          <button class="top-button" data-route="#/runs" onclick="navigate('#/runs')"><i data-lucide="list-filter"></i>Runs</button>
+          <button class="top-button" data-route="#/docs" onclick="navigate('#/docs')"><i data-lucide="book-open"></i>Docs</button>
+        </div>
         <input id="search" placeholder="Search runs or docs">
         <select id="status"><option value="">Any status</option><option>running</option><option>finished</option><option>failed</option></select>
       </div>
@@ -606,7 +773,7 @@ _INDEX_HTML = """
     </main>
   </div>
   <script>
-    const state = { mocs: [], selectedMoc: null };
+    const state = { mocs: [], selectedMoc: null, wandbChartMode: 'combined', wandbChartData: null };
     const $ = (id) => document.getElementById(id);
     const route = () => window.location.hash || '#/';
 
@@ -636,6 +803,113 @@ _INDEX_HTML = """
       if (typeof value === 'string') return esc(value);
       return esc(JSON.stringify(value));
     }
+    function hasWandbUrl(meta) {
+      return Boolean(meta && meta.wandb_url);
+    }
+    function wandbPanel(r) {
+      if (!hasWandbUrl(r.metadata)) return '';
+      const id = esc(r.id);
+      state.wandbChartMode = 'combined';
+      state.wandbChartData = null;
+      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbModeToggle" class="top-button" type="button" onclick="toggleWandbChartMode()" disabled>Split metrics</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div></section>`;
+    }
+    async function loadWandbCharts(runId) {
+      const button = $('wandbFetch');
+      const status = $('wandbStatus');
+      const target = $('wandbCharts');
+      if (!window.Plotly) {
+        status.innerHTML = '<span class="error">Plotly is not available from the expnote server.</span>';
+        return;
+      }
+      button.disabled = true;
+      state.wandbChartData = null;
+      updateWandbModeToggle();
+      status.textContent = 'Fetching live W&B history...';
+      target.innerHTML = '';
+      try {
+        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/wandb');
+        if (!data.available) {
+          status.innerHTML = `<span class="error">${esc(data.reason)}: ${esc(data.message)}</span>`;
+          return;
+        }
+        state.wandbChartData = data;
+        renderWandbCharts(data);
+        updateWandbModeToggle();
+        status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows.`;
+      } catch (err) {
+        status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+    function toggleWandbChartMode() {
+      if (!state.wandbChartData) return;
+      state.wandbChartMode = state.wandbChartMode === 'combined' ? 'split' : 'combined';
+      renderWandbCharts(state.wandbChartData);
+      updateWandbModeToggle();
+    }
+    function updateWandbModeToggle() {
+      const button = $('wandbModeToggle');
+      if (!button) return;
+      button.disabled = !state.wandbChartData;
+      button.textContent = state.wandbChartMode === 'combined' ? 'Split metrics' : 'Combine group';
+    }
+    function renderWandbCharts(data) {
+      const target = $('wandbCharts');
+      const groups = data.groups || [];
+      if (!groups.length) {
+        target.innerHTML = empty('No numeric non-system W&B metrics were found.');
+        return;
+      }
+      if (state.wandbChartMode === 'split') {
+        renderSplitWandbCharts(target, groups);
+        return;
+      }
+      renderCombinedWandbCharts(target, groups);
+    }
+    function wandbTrace(chart) {
+      return {
+          x: chart.x || [],
+          y: chart.y || [],
+          mode: 'lines',
+          type: 'scatter',
+          name: chart.metric,
+          hovertemplate: '%{x}<br>%{y}<extra>%{fullData.name}</extra>'
+      };
+    }
+    function wandbLayout(title, showLegend) {
+      return {
+          margin: { l: 54, r: 18, t: 12, b: 42 },
+          title: title ? { text: title, font: { size: 13 } } : undefined,
+          xaxis: { title: '_step', gridcolor: 'rgba(31,41,55,0.10)', zeroline: false },
+          yaxis: { gridcolor: 'rgba(31,41,55,0.10)', zeroline: false },
+          showlegend: showLegend,
+          legend: { orientation: 'h', y: -0.22 },
+          paper_bgcolor: '#fff',
+          plot_bgcolor: '#fff'
+      };
+    }
+    function wandbPlotOptions() {
+      return {
+          responsive: true,
+          displaylogo: false
+      };
+    }
+    function renderCombinedWandbCharts(target, groups) {
+      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart" id="wandb-chart-combined-${groupIndex}"></div></div>`).join('');
+      groups.forEach((group, groupIndex) => {
+        const traces = (group.charts || []).map(chart => wandbTrace(chart));
+        Plotly.newPlot(`wandb-chart-combined-${groupIndex}`, traces, wandbLayout('', true), wandbPlotOptions());
+      });
+    }
+    function renderSplitWandbCharts(target, groups) {
+      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart-grid">${(group.charts || []).map((chart, chartIndex) => `<div class="wandb-chart-card"><div class="wandb-chart-title">${esc(chart.metric)}</div><div class="wandb-chart" id="wandb-chart-split-${groupIndex}-${chartIndex}"></div></div>`).join('')}</div></div>`).join('');
+      groups.forEach((group, groupIndex) => {
+        (group.charts || []).forEach((chart, chartIndex) => {
+          Plotly.newPlot(`wandb-chart-split-${groupIndex}-${chartIndex}`, [wandbTrace(chart)], wandbLayout('', false), wandbPlotOptions());
+        });
+      });
+    }
     function empty(label) {
       return `<div class="empty">${esc(label)}</div>`;
     }
@@ -657,8 +931,9 @@ _INDEX_HTML = """
       });
     }
     function renderNav() {
-      $('mocNav').innerHTML = state.mocs.map(m => `<button class="nav-item" data-route="#/moc/${encodeURIComponent(m.id)}" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')">${esc(m.title)}<code>${esc(m.id)}</code></button>`).join('') || empty('No MOCs yet');
+      $('mocNav').innerHTML = state.mocs.map(m => `<button class="nav-item" data-route="#/moc/${encodeURIComponent(m.id)}" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><i data-lucide="database"></i><span class="nav-text">${esc(m.title)}<code>${esc(m.id)}</code></span></button>`).join('') || empty('No MOCs yet');
       setActive();
+      refreshIcons();
     }
     function hero(title, subtitle, stats = '') {
       return `<div class="hero"><h1>${title}</h1><p class="muted">${subtitle}</p>${stats}</div>`;
@@ -699,20 +974,26 @@ _INDEX_HTML = """
     }
     function topicRunTable(rows) {
       if (!rows.length) return empty('No runs to display.');
-      return `<div class="table-wrap"><table data-table="topic-runs"><thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td>${statusBadge(r.status)}</td><td>${r.purpose_html || esc(r.purpose)}</td><td>${r.relation_html || esc(r.relation)}</td><td>${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
+      const cols = '<colgroup><col class="col-run"><col class="col-status"><col class="col-purpose"><col class="col-relation"><col class="col-result"></colgroup>';
+      return `<div class="table-wrap"><table data-table="topic-runs">${cols}<thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td data-cell="run"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="relation">${r.relation_html || esc(r.relation)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function docRunTable(rows) {
       if (!rows.length) return empty('No related runs linked to this document.');
-      return `<div class="table-wrap"><table data-table="doc-runs"><thead><tr><th>run</th><th>role</th><th>note</th><th>status</th><th>purpose</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td><td>${r.role_html || esc(r.role || '')}</td><td>${r.note_html || esc(r.note || '')}</td><td>${statusBadge(r.status)}</td><td>${r.purpose_html || esc(r.purpose)}</td><td>${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
+      const showRole = rows.some(r => String(r.role || '').trim());
+      const showNote = rows.some(r => String(r.note || '').trim());
+      const headers = ['<th>run</th>', showRole ? '<th>role</th>' : '', showNote ? '<th>note</th>' : '', '<th>status</th>', '<th>purpose</th>', '<th>result</th>'].join('');
+      const cols = ['<col class="col-run">', showRole ? '<col class="col-role">' : '', showNote ? '<col class="col-note">' : '', '<col class="col-status">', '<col class="col-purpose">', '<col class="col-result">'].join('');
+      const body = rows.map(r => `<tr><td data-cell="run"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td>${showRole ? `<td data-cell="role">${r.role_html || esc(r.role || '')}</td>` : ''}${showNote ? `<td data-cell="note">${r.note_html || esc(r.note || '')}</td>` : ''}<td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('');
+      return `<div class="table-wrap"><table data-table="doc-runs"><colgroup>${cols}</colgroup><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
     }
     function docTable(rows) {
       if (!rows.length) return empty('No analysis documents yet.');
-      return `<div class="table-wrap"><table data-table="docs"><thead><tr><th>doc</th><th>MOC</th><th>updated</th></tr></thead><tbody>${rows.map(d => `<tr><td><button class="link-button" onclick="navigate('#/doc/${encodeURIComponent(d.id)}')"><code>${esc(d.id)}</code></button><br>${esc(d.title)}</td><td>${esc(d.moc_title || '')}</td><td>${esc(d.updated_at || '')}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="docs"><colgroup><col class="col-doc"><col class="col-moc"><col class="col-updated"></colgroup><thead><tr><th>doc</th><th>MOC</th><th>updated</th></tr></thead><tbody>${rows.map(d => `<tr><td data-cell="doc"><button class="link-button" onclick="navigate('#/doc/${encodeURIComponent(d.id)}')"><code>${esc(d.id)}</code></button><br>${esc(d.title)}</td><td data-cell="moc">${esc(d.moc_title || '')}</td><td data-cell="updated">${esc(d.updated_at || '')}</td></tr>`).join('')}</tbody></table></div>`;
     }
     async function loadRun(id) {
       await ensureMocs();
       const r = await api('/api/runs/' + encodeURIComponent(id));
-      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section><section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
+      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
     }
     async function loadDoc(id) {
       await ensureMocs();
@@ -735,7 +1016,12 @@ _INDEX_HTML = """
         $('view').innerHTML = empty('Unknown route.');
       } catch (err) {
         $('view').innerHTML = `<div class="empty error">${esc(err.message || err)}</div>`;
+      } finally {
+        refreshIcons();
       }
+    }
+    function refreshIcons() {
+      if (window.lucide) window.lucide.createIcons();
     }
     $('backBtn').onclick = () => history.back();
     $('search').onchange = () => route() === '#/docs' ? loadDocs() : loadRuns();

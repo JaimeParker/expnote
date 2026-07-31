@@ -6,6 +6,11 @@ from typer.testing import CliRunner
 
 from expnote.cli import app as cli_app
 from expnote.db import transaction
+from expnote.wandb_live import (
+    WandbLiveError,
+    group_wandb_history,
+    parse_wandb_run_url,
+)
 from expnote.web import (
     _INDEX_HTML,
     _active_run_ids,
@@ -183,12 +188,26 @@ def test_web_index_disables_browser_cache(tmp_path):
 
 
 def test_web_index_has_routes_and_topic_table_without_metadata():
+    assert "https://unpkg.com/lucide" in _INDEX_HTML
+    assert "window.lucide.createIcons" in _INDEX_HTML
     assert "window.addEventListener('hashchange', renderRoute)" in _INDEX_HTML
     assert "history.back()" in _INDEX_HTML
     assert "#/topic/" in _INDEX_HTML
     assert "#/run/" in _INDEX_HTML
     assert "#/doc/" in _INDEX_HTML
+    assert "MOC overview" in _INDEX_HTML
+    assert "All runs" in _INDEX_HTML
+    assert "All docs" in _INDEX_HTML
+    assert 'data-lucide="layout-dashboard"' in _INDEX_HTML
+    assert 'data-lucide="arrow-left"' in _INDEX_HTML
     assert 'table data-table="topic-runs"' in _INDEX_HTML
+    assert '<col class="col-purpose">' in _INDEX_HTML
+    assert '<col class="col-relation">' in _INDEX_HTML
+    assert '<col class="col-result">' in _INDEX_HTML
+    assert 'data-cell="purpose"' in _INDEX_HTML
+    assert 'data-cell="relation"' in _INDEX_HTML
+    assert 'table-layout: auto' in _INDEX_HTML
+    assert "nth-child" not in _INDEX_HTML
     assert "<th>relation</th>" in _INDEX_HTML
     topic_table_start = _INDEX_HTML.index('table data-table="topic-runs"')
     topic_table_end = _INDEX_HTML.index("</table>", topic_table_start)
@@ -199,6 +218,12 @@ def test_web_index_has_routes_and_topic_table_without_metadata():
     assert "r.purpose_html" in _INDEX_HTML
     assert "r.relation_html" in _INDEX_HTML
     assert "r.result_html" in _INDEX_HTML
+    doc_run_func_start = _INDEX_HTML.index("function docRunTable")
+    doc_run_func_end = _INDEX_HTML.index("function docTable", doc_run_func_start)
+    assert "showRole" in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
+    assert "showNote" in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
+    assert '<col class="col-note">' in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
+    assert '<col class="col-role">' in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
     doc_run_table_start = _INDEX_HTML.index('table data-table="doc-runs"')
     doc_run_table_end = _INDEX_HTML.index("</table>", doc_run_table_start)
     assert "topic_title" not in _INDEX_HTML[doc_run_table_start:doc_run_table_end]
@@ -210,3 +235,167 @@ def test_web_index_formats_run_detail_as_reading_sections():
     assert '<ul class="metadata-list">' in _INDEX_HTML
     assert "key === 'wandb_url'" in _INDEX_HTML
     assert 'target="_blank" rel="noreferrer"' in _INDEX_HTML
+
+
+def test_wandb_run_url_parsing_accepts_run_urls():
+    ref = parse_wandb_run_url(
+        "https://wandb.ai/entity-name/project-name/runs/abc123?workspace=user"
+    )
+
+    assert ref.entity == "entity-name"
+    assert ref.project == "project-name"
+    assert ref.run_id == "abc123"
+    assert ref.path == "entity-name/project-name/abc123"
+
+
+def test_wandb_history_groups_numeric_non_system_metrics():
+    groups = group_wandb_history(
+        [
+            {
+                "_step": 1,
+                "_timestamp": 10,
+                "eval/return": 12.5,
+                "train/loss": 0.4,
+                "system/gpu.0.memory": 50,
+                "notes": "warmup",
+            },
+            {
+                "_step": 2,
+                "eval/return": 18.0,
+                "train/loss": 0.25,
+                "success_rate": 0.5,
+            },
+        ]
+    )
+
+    by_name = {group["name"]: group for group in groups}
+    assert set(by_name) == {"eval", "metrics", "train"}
+    assert by_name["eval"]["charts"][0]["metric"] == "eval/return"
+    assert by_name["eval"]["charts"][0]["x"] == [1.0, 2.0]
+    assert by_name["eval"]["charts"][0]["y"] == [12.5, 18.0]
+    assert by_name["metrics"]["charts"][0]["metric"] == "success_rate"
+    assert all(
+        chart["metric"] != "system/gpu.0.memory"
+        for group in groups
+        for chart in group["charts"]
+    )
+
+
+def test_web_wandb_endpoint_reports_missing_url(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response == {
+        "available": False,
+        "reason": "missing_wandb_url",
+        "message": "This run does not have metadata.wandb_url.",
+    }
+
+
+def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--root",
+                str(tmp_path),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(url: str, *, samples: int):
+        return {
+            "available": True,
+            "run_path": "entity/project/wandb123",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": []}],
+        }
+
+    monkeypatch.setattr("expnote.web.fetch_live_wandb_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response["available"] is True
+    assert response["samples"] == 1000
+    assert response["groups"][0]["name"] == "eval"
+
+
+def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--root",
+                str(tmp_path),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(url: str, *, samples: int):
+        raise WandbLiveError("wandb_api_error", "permission denied")
+
+    monkeypatch.setattr("expnote.web.fetch_live_wandb_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response == {
+        "available": False,
+        "reason": "wandb_api_error",
+        "message": "permission denied",
+    }
+
+
+def test_web_index_has_wandb_live_chart_controls():
+    assert '<script src="/assets/plotly.min.js"></script>' in _INDEX_HTML
+    assert "Fetch live W&B charts" in _INDEX_HTML
+    assert "Split metrics" in _INDEX_HTML
+    assert "Combine group" in _INDEX_HTML
+    assert "/api/runs/" in _INDEX_HTML
+    assert "/wandb" in _INDEX_HTML
+    assert "Plotly.newPlot" in _INDEX_HTML
+    assert "loadWandbCharts" in _INDEX_HTML
+    assert "state.wandbChartMode = 'combined'" in _INDEX_HTML
+    assert "state.wandbChartData = data" in _INDEX_HTML
+    assert "toggleWandbChartMode" in _INDEX_HTML
+    assert "renderCombinedWandbCharts" in _INDEX_HTML
+    assert "renderSplitWandbCharts" in _INDEX_HTML
+    assert "wandb-chart-grid" in _INDEX_HTML
+    assert "wandb-chart-card" in _INDEX_HTML
+    assert "wandb-chart-title" in _INDEX_HTML
+    assert "repeat(auto-fit, minmax(320px, 1fr))" in _INDEX_HTML
+    assert "wandb-chart-split-${groupIndex}-${chartIndex}" in _INDEX_HTML
+    assert "state.wandbChartData) return" in _INDEX_HTML
+    assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
