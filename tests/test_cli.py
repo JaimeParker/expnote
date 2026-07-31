@@ -113,6 +113,21 @@ def test_guide_agent_human_output_mentions_core_workflow():
     assert "expnote validate --json" in result.output
 
 
+def test_guide_agent_mentions_status_lookup_and_manual_status():
+    result = runner.invoke(app, ["guide", "agent"])
+
+    assert result.exit_code == 0, result.output
+    assert "expnote run status running --json" in result.output
+    assert "status is manual" in result.output
+
+    result = runner.invoke(app, ["guide", "agent", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert "run status running --json" in data["workflows"]["query_run"]
+    assert "manual" in data["common_pitfalls"]["status"]
+
+
 def test_guide_rejects_unknown_topic():
     result = runner.invoke(app, ["guide", "unknown", "--json"])
 
@@ -408,6 +423,110 @@ def test_init_add_query_and_soft_delete(tmp_path):
     result = runner.invoke(app, ["run", "list", "--root", str(tmp_path), "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
+
+
+def test_run_list_filters_by_status(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "running1", status="running")
+    _add_run(tmp_path, "finished1", status="finished")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "list",
+            "--root",
+            str(tmp_path),
+            "--status",
+            "running",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert [row["id"] for row in rows] == ["running1"]
+    assert rows[0]["status"] == "running"
+    assert "topic_title" in rows[0]
+    assert "metadata" in rows[0]
+
+
+def test_run_list_combines_topic_and_status_filters(tmp_path):
+    _init_with_topic(tmp_path, topic="Topic A")
+    result = runner.invoke(
+        app,
+        ["topic", "add", "Topic B", "--root", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    _add_run(tmp_path, "a-running", topic="Topic A", status="running")
+    _add_run(tmp_path, "a-finished", topic="Topic A", status="finished")
+    _add_run(tmp_path, "b-running", topic="Topic B", status="running")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "list",
+            "--root",
+            str(tmp_path),
+            "--topic",
+            "Topic A",
+            "--status",
+            "running",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["a-running"]
+
+
+def test_run_list_status_hides_soft_deleted_runs(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "active", status="running")
+    _add_run(tmp_path, "deleted", status="running")
+    result = runner.invoke(
+        app,
+        ["run", "delete", "deleted", "--root", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "list",
+            "--root",
+            str(tmp_path),
+            "--status",
+            "running",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["active"]
+
+
+def test_run_status_lists_matching_runs(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "running1", status="running")
+    _add_run(tmp_path, "finished1", status="finished")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "status",
+            "running",
+            "--root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["running1"]
 
 
 def test_duplicate_run_id_errors(tmp_path):

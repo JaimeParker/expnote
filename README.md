@@ -30,7 +30,7 @@ expnote topic add "260703-StackCube SAC reproduction" --json
 
 expnote run add \
   --topic "260703-StackCube SAC reproduction" \
-  --run-id lu8qk41s \
+  --run-id a7zf90k7 \
   --purpose "Reproduce seed=1 trajectory on current main" \
   --analysis "Initial observation notes" \
   --status running \
@@ -43,6 +43,9 @@ expnote sync markdown
 
 `expnote run create --id ...` is also accepted as an alias for
 `expnote run add --run-id ...`.
+
+When a training run is tracked by wandb, prefer using the wandb run id as the
+expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
 
 The same workflow without installing:
 
@@ -164,6 +167,20 @@ expnote run query \
   --where "status = 'finished' AND topic = 'StackCube ablations'" \
   --order-by started_at desc \
   --json
+```
+
+For direct status lookup:
+
+```bash
+expnote run status running --json
+expnote run list --status finished --json
+```
+
+`status` is a manual expnote field. When a training job finishes, update it
+explicitly:
+
+```bash
+expnote run update lu8qk41s --status finished
 ```
 
 To fetch one field when the run id is known:

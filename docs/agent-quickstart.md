@@ -42,7 +42,7 @@ expnote run add \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --topic "StackCube SAC" \
-  --run-id stackcube-sac-seed1 \
+  --run-id a7zf90k7 \
   --purpose "Train SAC on StackCube seed=1" \
   --relation "Baseline run" \
   --result "Training in progress" \
@@ -52,7 +52,7 @@ expnote run add \
   --meta-json seed=1 \
   --json
 
-expnote moc add stackcube-sac-seed1 \
+expnote moc add a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --moc-path "00 Inbox/Training MOC.md" \
@@ -65,6 +65,9 @@ expnote sync all \
   --json
 ```
 
+When a training run is tracked by wandb, prefer using the wandb run id as the
+expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
+
 Prefer `expnote sync all` when handing off a workspace with curated MOCs. It
 updates run notes, the auto index, and all registered curated MOC sections.
 `sync markdown` updates run notes and the auto index only.
@@ -74,12 +77,12 @@ updates run notes, the auto index, and all registered curated MOC sections.
 Do not grep generated Markdown for facts. Query SQLite through expnote:
 
 ```bash
-expnote run show stackcube-sac-seed1 \
+expnote run show a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --field purpose
 
-expnote run show stackcube-sac-seed1 \
+expnote run show a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --json
@@ -91,19 +94,30 @@ expnote run query \
   --order-by updated_at DESC \
   --json
 
-expnote run update stackcube-sac-seed1 \
+expnote run status running \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --json
+
+expnote run update a7zf90k7 \
+  --root "/path/to/obsidian/vault" \
+  --state-dir ~/.local/share/expnote/workspaces/example \
+  --status finished \
+  --json
+
+expnote run update a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --unset-meta seed \
   --json
 
-expnote run update stackcube-sac-seed1 \
+expnote run update a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --append-analysis "Reward plateaued after 300k steps." \
   --json
 
-expnote run update stackcube-sac-seed1 \
+expnote run update a7zf90k7 \
   --root "/path/to/obsidian/vault" \
   --state-dir ~/.local/share/expnote/workspaces/example \
   --metadata-json '{"algo":"sac","seed":1}' \
@@ -113,6 +127,10 @@ expnote run update stackcube-sac-seed1 \
 Use `--append-analysis` when adding observations to existing Analysis. It inserts
 one blank line between old and new text. Use `--analysis` only when replacing the
 whole Analysis field.
+
+Use `run status <status> --json` for direct status lookup before handoff.
+`status` is manual. If external checks show a run has completed, update SQLite
+with `run update <id> --status finished`.
 
 Use `--metadata-json '{...}'` to merge a whole metadata object. Use
 `--meta-json key=json` only for one typed key at a time.

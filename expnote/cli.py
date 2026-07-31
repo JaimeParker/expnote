@@ -79,6 +79,7 @@ _AGENT_GUIDE = {
         "query_run": [
             "run show <run_id> --json",
             "run show <run_id> --field purpose",
+            "run status running --json",
             "run query --where \"metadata.seed = 1\" --json",
             "run query --where \"status = 'running'\" --json",
         ],
@@ -98,6 +99,7 @@ _AGENT_GUIDE = {
         "run.show": "Read SQL-backed Purpose, Relation, Result, Metadata, Analysis",
         "run.update": "Update structured run fields and metadata",
         "run.query": "Query runs with restricted SQL-like filters and metadata keys",
+        "run.status": "List runs with a specific manual status",
         "moc.add": "Add a run to a managed MOC section table",
         "moc.add_topic": "Add all active topic runs to a managed MOC section",
         "moc.sections": "List registered sections for a curated MOC",
@@ -166,11 +168,18 @@ _AGENT_GUIDE = {
     },
     "common_pitfalls": {
         "run_create": "run create is supported as an alias for run add",
-        "run_id": "use --run-id or --id, not a positional id flag",
+        "run_id": (
+            "use --run-id or --id, not a positional id flag; prefer the wandb "
+            "run id when a run is tracked by wandb"
+        ),
         "topic_id": "use --topic-id when you have a topic id; use --topic for title",
         "metadata_json": (
             "use --metadata-json '{...}' for a whole object; "
             "--meta-json is key=json"
+        ),
+        "status": (
+            "status is manual; update it explicitly with "
+            "run update <id> --status finished"
         ),
         "curated_mocs": (
             "sync markdown does not update curated MOC tables; use sync all "
@@ -202,10 +211,12 @@ def _render_agent_guide() -> str:
             "",
             "Minimal workflow:",
             "init -> topic add -> run add -> moc add -> sync all",
+            "Prefer using the wandb run id as expnote run id when available.",
             "",
             "Read records from SQLite:",
             "expnote run show <run_id> --json",
             "expnote run show <run_id> --field purpose",
+            "expnote run status running --json",
             "expnote run query --where \"metadata.seed = 1\" --json",
             "expnote run query --where \"status = 'running'\" --json",
             "expnote run update <run_id> --append-analysis <text>",
@@ -222,6 +233,8 @@ def _render_agent_guide() -> str:
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
             "- Check managed MOC tables with expnote moc diff --json",
             "- Auto index defaults to state-dir/index.md, outside Obsidian",
+            "- status is manual; update completed runs with "
+            "expnote run update <id> --status finished",
             "",
             "Handoff checks:",
             "expnote validate --json",
@@ -542,6 +555,9 @@ def run_list(
     topic: Annotated[
         str | None, typer.Option(help="Filter by topic title.")
     ] = None,
+    status: Annotated[
+        str | None, typer.Option(help="Filter by run status.")
+    ] = None,
     include_deleted: Annotated[
         bool, typer.Option(help="Include soft-deleted rows.")
     ] = False,
@@ -549,6 +565,24 @@ def run_list(
 ) -> None:
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
+    rows = _list_runs(
+        root,
+        state_dir=state_dir,
+        topic=topic,
+        status=status,
+        include_deleted=include_deleted,
+    )
+    _emit(rows, json_output)
+
+
+def _list_runs(
+    root: Path,
+    *,
+    state_dir: Path | None,
+    topic: str | None = None,
+    status: str | None = None,
+    include_deleted: bool = False,
+) -> list[dict[str, object]]:
     params: list[object] = []
     clauses = []
     if not include_deleted:
@@ -556,9 +590,12 @@ def run_list(
     if topic is not None:
         clauses.append("topics.title = ?")
         params.append(topic)
+    if status is not None:
+        clauses.append("runs.status = ?")
+        params.append(status)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with transaction(root, state_dir=state_dir) as conn:
-        rows = [
+        return [
             row_to_dict(row)
             for row in conn.execute(
                 f"""
@@ -570,6 +607,27 @@ def run_list(
                 params,
             )
         ]
+
+
+@run_app.command("status")
+def run_status(
+    status: Annotated[str, typer.Argument(help="Run status to list.")],
+    root: RootOption = Path("."),
+    state_dir: StateDirOption = None,
+    topic: Annotated[
+        str | None, typer.Option(help="Filter by topic title.")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    root = root.resolve()
+    state_dir = state_dir.resolve() if state_dir is not None else None
+    rows = _list_runs(
+        root,
+        state_dir=state_dir,
+        topic=topic,
+        status=status,
+        include_deleted=False,
+    )
     _emit(rows, json_output)
 
 
