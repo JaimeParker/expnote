@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import webbrowser
 from pathlib import Path
 from typing import Annotated, Any
@@ -2067,6 +2069,13 @@ def web(
     open_browser: Annotated[
         bool, typer.Option("--open/--no-open", help="Open the web UI in a browser.")
     ] = True,
+    detach: Annotated[
+        bool,
+        typer.Option(
+            "--detach",
+            help="Start the web UI in the background and return immediately.",
+        ),
+    ] = False,
 ) -> None:
     """Start the read-only expnote web UI."""
     import uvicorn
@@ -2076,13 +2085,60 @@ def web(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    app_obj = create_app(root, state_dir=state_dir)
     url_host = "localhost" if host in {"127.0.0.1", "0.0.0.0"} else host
     url = f"http://{url_host}:{port}"
+    if detach and os.environ.get("EXPNOTE_WEB_DETACHED_CHILD") != "1":
+        pid = _spawn_detached_web(
+            workspace=workspace,
+            workspace_dir=state_dir,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+        )
+        typer.echo(f"expnote web started in background: {url} (pid {pid})")
+        return
+
+    app_obj = create_app(root, state_dir=state_dir)
     typer.echo(f"expnote web is read-only: {url}")
     if open_browser and os.environ.get("EXPNOTE_NO_BROWSER") != "1":
         webbrowser.open(url)
     uvicorn.run(app_obj, host=host, port=port, log_level="info")
+
+
+def _spawn_detached_web(
+    *,
+    workspace: str | None,
+    workspace_dir: Path,
+    host: str,
+    port: int,
+    open_browser: bool,
+) -> int:
+    cmd = [
+        sys.executable,
+        "-m",
+        "expnote.cli",
+        "web",
+        "--workspace-dir",
+        str(workspace_dir),
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    if workspace is not None:
+        cmd.extend(["--workspace", workspace])
+    cmd.append("--open" if open_browser else "--no-open")
+    env = dict(os.environ)
+    env["EXPNOTE_WEB_DETACHED_CHILD"] = "1"
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=env,
+    )
+    return int(process.pid)
 
 
 @import_app.command("rlgarden")

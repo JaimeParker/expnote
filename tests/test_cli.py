@@ -263,6 +263,59 @@ def test_web_only_workspace_rejects_markdown_projection(tmp_path):
     assert "no Obsidian projection configured" in result.output
 
 
+def test_web_detach_starts_background_process_and_returns(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    result = runner.invoke(app, ["init", "--workspace-dir", str(state_dir), "--json"])
+    assert result.exit_code == 0, result.output
+
+    calls = []
+
+    class FakeProcess:
+        pid = 12345
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr("expnote.cli.subprocess.Popen", fake_popen)
+
+    result = runner.invoke(
+        app,
+        [
+            "web",
+            "--workspace-dir",
+            str(state_dir),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8765",
+            "--no-open",
+            "--detach",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "expnote web started in background: http://localhost:8765 (pid 12345)" in (
+        result.output
+    )
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[1:4] == ["-m", "expnote.cli", "web"]
+    assert "--workspace-dir" in cmd
+    assert str(state_dir.resolve()) in cmd
+    assert "--host" in cmd
+    assert "0.0.0.0" in cmd
+    assert "--port" in cmd
+    assert "8765" in cmd
+    assert "--no-open" in cmd
+    assert "--detach" not in cmd
+    assert kwargs["stdin"] is not None
+    assert kwargs["stdout"] is not None
+    assert kwargs["stderr"] is not None
+    assert kwargs["start_new_session"] is True
+    assert kwargs["env"]["EXPNOTE_WEB_DETACHED_CHILD"] == "1"
+
+
 def test_init_records_default_and_custom_docs_dir(tmp_path):
     default_root = tmp_path / "default"
     result = runner.invoke(

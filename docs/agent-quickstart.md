@@ -88,6 +88,7 @@ For read-only browsing independent from Obsidian:
 
 ```bash
 expnote web --workspace example
+expnote web --workspace example --detach --no-open
 ```
 
 ## Query Records

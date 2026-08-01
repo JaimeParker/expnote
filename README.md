@@ -155,6 +155,12 @@ Start a local read-only web UI that reads directly from SQLite:
 expnote web --workspace example
 ```
 
+To start it in the background and return to the shell immediately:
+
+```bash
+expnote web --workspace example --detach --no-open
+```
+
 The web UI is independent from Obsidian. It shows SQL MOCs, topics, runs, run
 details, rendered Analysis, and MOC-level analysis documents. It defaults to
 `127.0.0.1`; pass `--host 0.0.0.0` only when you explicitly want LAN access.
