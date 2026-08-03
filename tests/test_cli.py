@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import tarfile
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -243,6 +245,286 @@ def test_workspace_registry_supports_active_workspace(tmp_path):
     result = runner.invoke(app, ["moc", "list", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)[0]["id"] == "default"
+
+
+def test_workspace_pack_and_unpack_rewrites_config_and_registers(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPNOTE_CONFIG_HOME", str(tmp_path / "config-home"))
+    source_root = tmp_path / "source-vault"
+    source_state = tmp_path / "source-state"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--workspace",
+            "source",
+            "--workspace-dir",
+            str(source_state),
+            "--obsidian-root",
+            str(source_root),
+            "--notes-dir",
+            "10 Projects/Baseline/runs",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        ["topic", "add", "topic", "--workspace", "source", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--workspace",
+            "source",
+            "--topic",
+            "topic",
+            "--run-id",
+            "packed-run",
+            "--status",
+            "finished",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    (source_state / "wandb-cache").mkdir()
+    (source_state / "wandb-cache" / "cached.json").write_text("{}", encoding="utf-8")
+
+    archive_path = tmp_path / "workspace.tar.gz"
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "pack",
+            str(archive_path),
+            "--workspace",
+            "source",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    pack_data = json.loads(result.output)
+    assert pack_data["archive_path"] == str(archive_path.resolve())
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = archive.getnames()
+        assert "expnote-pack.json" in names
+        assert "state/expnote.sqlite" in names
+        assert "state/events.jsonl" in names
+        assert "state/config.toml" in names
+        assert "state/wandb-cache/cached.json" in names
+
+    target_state = tmp_path / "target-state"
+    target_root = tmp_path / "target-vault"
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "target",
+            "--workspace-dir",
+            str(target_state),
+            "--obsidian-root",
+            str(target_root),
+            "--notes-dir",
+            "New Vault/runs",
+            "--docs-dir",
+            "New Vault/analyses",
+            "--index-path",
+            "new-index.md",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    unpack_data = json.loads(result.output)
+    assert unpack_data["workspace"] == "target"
+    assert unpack_data["workspace_dir"] == str(target_state.resolve())
+    assert unpack_data["obsidian_root"] == str(target_root.resolve())
+    config = (target_state / "config.toml").read_text(encoding="utf-8")
+    assert f'state_dir = "{target_state.resolve()}"' in config
+    assert f'obsidian_root = "{target_root.resolve()}"' in config
+    assert 'notes_dir = "New Vault/runs"' in config
+    assert 'docs_dir = "New Vault/analyses"' in config
+    assert 'index_path = "new-index.md"' in config
+    assert 'moc_path' not in config
+    assert (target_state / "wandb-cache" / "cached.json").exists()
+
+    result = runner.invoke(
+        app,
+        ["run", "list", "--workspace-dir", str(target_state), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["id"] for row in json.loads(result.output)] == ["packed-run"]
+
+    result = runner.invoke(app, ["workspace", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert {
+        "name": "target",
+        "workspace_dir": str(target_state.resolve()),
+        "active": True,
+    } in rows
+
+
+def test_workspace_unpack_no_obsidian_and_replace(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPNOTE_CONFIG_HOME", str(tmp_path / "config-home"))
+    source_root = tmp_path / "source-vault"
+    source_state = tmp_path / "source-state"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--workspace",
+            "source",
+            "--workspace-dir",
+            str(source_state),
+            "--obsidian-root",
+            str(source_root),
+            "--notes-dir",
+            "Project/runs",
+            "--moc-path",
+            "Project MOC.md",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    archive_path = tmp_path / "workspace.tar.gz"
+    result = runner.invoke(
+        app,
+        ["workspace", "pack", str(archive_path), "--workspace", "source"],
+    )
+    assert result.exit_code == 0, result.output
+
+    target_state = tmp_path / "target-state"
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "invalid",
+            "--workspace-dir",
+            str(tmp_path / "invalid-state"),
+            "--no-obsidian",
+            "--notes-dir",
+            "Project/runs",
+            "--json",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--no-obsidian cannot be combined" in result.output
+
+    moc_state = tmp_path / "moc-state"
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "moc-workspace",
+            "--workspace-dir",
+            str(moc_state),
+            "--obsidian-root",
+            str(tmp_path / "target-vault"),
+            "--moc-path",
+            "New MOC.md",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    config = (moc_state / "config.toml").read_text(encoding="utf-8")
+    assert 'moc_path = "New MOC.md"' in config
+    assert "index_path" not in config
+
+    target_state.mkdir()
+    (target_state / "old.txt").write_text("old", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "web-only",
+            "--workspace-dir",
+            str(target_state),
+            "--no-obsidian",
+            "--json",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Use --replace" in result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "web-only",
+            "--workspace-dir",
+            str(target_state),
+            "--no-obsidian",
+            "--replace",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    config = (target_state / "config.toml").read_text(encoding="utf-8")
+    assert 'state_dir = "' in config
+    assert "obsidian_root" not in config
+    assert "notes_dir" not in config
+    assert "docs_dir" not in config
+    assert "moc_path" not in config
+    assert 'index_path = "index.md"' in config
+    assert not (target_state / "old.txt").exists()
+
+    result = runner.invoke(
+        app, ["validate", "--workspace-dir", str(target_state), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        app, ["sync", "markdown", "--workspace-dir", str(target_state), "--json"]
+    )
+    assert result.exit_code != 0
+    assert "no Obsidian projection configured" in result.output
+
+
+def test_workspace_unpack_rejects_unsafe_archive_member(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPNOTE_CONFIG_HOME", str(tmp_path / "config-home"))
+    archive_path = tmp_path / "bad.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        manifest = b"{}"
+        info = tarfile.TarInfo("expnote-pack.json")
+        info.size = len(manifest)
+        archive.addfile(info, io.BytesIO(manifest))
+        bad = b"bad"
+        bad_info = tarfile.TarInfo("../bad")
+        bad_info.size = len(bad)
+        archive.addfile(bad_info, io.BytesIO(bad))
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "unpack",
+            str(archive_path),
+            "--workspace",
+            "bad",
+            "--workspace-dir",
+            str(tmp_path / "target"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "unsafe archive member path" in result.output
 
 
 def test_web_only_workspace_rejects_markdown_projection(tmp_path):

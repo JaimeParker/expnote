@@ -99,6 +99,25 @@ keep `--workspace-dir` outside the vault and store only generated Markdown under
 If `--docs-dir` is omitted, expnote writes analysis documents next to the run
 notes directory: `.../runs` becomes `.../analyses`.
 
+To move a workspace to another device, pack the state directory and unpack it
+with local paths for that device:
+
+```bash
+expnote workspace pack expnote-workspace.tar.gz --workspace mani-skill-training
+
+expnote workspace unpack expnote-workspace.tar.gz \
+  --workspace mani-skill-training \
+  --workspace-dir ~/.local/share/expnote/workspaces/mani-skill-training \
+  --obsidian-root "/path/to/local/vault" \
+  --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs" \
+  --index-path index.md
+```
+
+`pack` stores SQLite state, events, config, and cache from `workspace_dir`; it
+does not copy generated Obsidian Markdown. Run `expnote sync all` on the target
+device when you want to regenerate Markdown projections. For web-only use, pass
+`--no-obsidian` to `workspace unpack`.
+
 SQLite is the source of truth. Markdown is a projection for reading, linking, and
 searching. `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` are stored
 in SQLite and returned by `expnote run show <run_id> --json`.

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tarfile
+import tempfile
 import webbrowser
 from pathlib import Path
 from typing import Annotated, Any
@@ -14,6 +18,7 @@ import typer
 
 from expnote.adapters.rlgarden import load_config, run_fields_from_config
 from expnote.db import (
+    SCHEMA_VERSION,
     append_event,
     default_docs_dir,
     init_store,
@@ -121,6 +126,12 @@ _AGENT_GUIDE = {
             "doc add --doc-id <id> --moc-id <moc_id> --title <title>",
             "doc link <doc_id> <run_id>",
             "sync markdown",
+        ],
+        "transfer_workspace": [
+            "workspace pack <archive.tar.gz> --workspace <name>",
+            "workspace unpack <archive.tar.gz> --workspace <name> "
+            "--workspace-dir <dir>",
+            "sync all",
         ],
         "handoff": [
             "validate --json",
@@ -311,6 +322,9 @@ def _render_agent_guide() -> str:
             "--moc-path <path> --section <heading> --json",
             "expnote web --no-open",
             "expnote sync all --json",
+            "expnote workspace pack <archive.tar.gz> --workspace <name>",
+            "expnote workspace unpack <archive.tar.gz> --workspace <name> "
+            "--workspace-dir <dir> --obsidian-root <vault>",
             "",
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
@@ -498,6 +512,237 @@ def workspace_list(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     _emit(list_workspaces(), json_output)
+
+
+@workspace_app.command("pack")
+def workspace_pack(
+    archive_path: Annotated[Path, typer.Argument(help="Output .tar.gz path.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Pack a workspace state directory for transfer to another device."""
+    ctx = _workspace_context(workspace, workspace_dir)
+    state_dir = ctx.workspace_dir
+    archive_path = archive_path.expanduser().resolve()
+    if _is_relative_to(archive_path, state_dir):
+        raise typer.BadParameter("archive path cannot be inside workspace-dir")
+    if not (state_dir / "expnote.sqlite").exists():
+        raise typer.BadParameter(f"workspace database not found: {state_dir}")
+
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = _workspace_pack_manifest(ctx)
+    with tarfile.open(archive_path, "w:gz") as archive:
+        info = tarfile.TarInfo("expnote-pack.json")
+        payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode()
+        info.size = len(payload)
+        archive.addfile(info, fileobj=io.BytesIO(payload))
+        archive.add(state_dir, arcname="state")
+
+    _emit(
+        {
+            "archive_path": str(archive_path),
+            "workspace": ctx.name,
+            "workspace_dir": str(state_dir),
+            "format": manifest["format"],
+        },
+        json_output,
+    )
+
+
+@workspace_app.command("unpack")
+def workspace_unpack(
+    archive_path: Annotated[Path, typer.Argument(help="Input .tar.gz path.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    obsidian_root: ObsidianRootOption = None,
+    no_obsidian: Annotated[
+        bool,
+        typer.Option(
+            "--no-obsidian",
+            help="Remove Obsidian projection config for a web-only workspace.",
+        ),
+    ] = False,
+    notes_dir: Annotated[
+        str | None, typer.Option(help="Replacement run notes directory.")
+    ] = None,
+    docs_dir: Annotated[
+        str | None, typer.Option(help="Replacement analysis documents directory.")
+    ] = None,
+    index_path: Annotated[
+        str | None,
+        typer.Option(
+            "--index-path",
+            help="Replacement auto-index path relative to workspace-dir.",
+        ),
+    ] = None,
+    moc_path: Annotated[
+        str | None,
+        typer.Option(
+            "--moc-path",
+            help="Replacement legacy auto-index path relative to obsidian-root.",
+        ),
+    ] = None,
+    replace: Annotated[
+        bool,
+        typer.Option("--replace", help="Replace an existing target workspace-dir."),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Unpack a workspace archive and rewrite local path config."""
+    if workspace is None and workspace_dir is None:
+        raise typer.BadParameter("--workspace or --workspace-dir is required")
+    if no_obsidian and obsidian_root is not None:
+        raise typer.BadParameter("--no-obsidian and --obsidian-root cannot be combined")
+    has_obsidian_path_arg = any(
+        item is not None for item in [notes_dir, docs_dir, moc_path]
+    )
+    if no_obsidian and has_obsidian_path_arg:
+        raise typer.BadParameter(
+            "--no-obsidian cannot be combined with --notes-dir, "
+            "--docs-dir, or --moc-path"
+        )
+    if index_path is not None and moc_path is not None:
+        raise typer.BadParameter("--index-path and --moc-path cannot be combined")
+
+    if workspace_dir is not None:
+        target_dir = workspace_dir.expanduser().resolve()
+    else:
+        assert workspace is not None
+        target_dir = default_workspace_dir(workspace).resolve()
+    workspace_name = workspace or target_dir.name
+    if target_dir.exists() and any(target_dir.iterdir()):
+        if not replace:
+            raise typer.BadParameter(
+                f"target workspace-dir already exists: {target_dir}. Use --replace."
+            )
+        shutil.rmtree(target_dir)
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    archive_path = archive_path.expanduser().resolve()
+    with tempfile.TemporaryDirectory(prefix="expnote-unpack-") as tmp:
+        tmp_path = Path(tmp)
+        with tarfile.open(archive_path, "r:gz") as archive:
+            _validate_workspace_archive(archive)
+            archive.extractall(tmp_path, filter="data")
+        extracted_state = tmp_path / "state"
+        if not (extracted_state / "config.toml").exists():
+            raise typer.BadParameter("archive does not contain state/config.toml")
+        shutil.move(str(extracted_state), str(target_dir))
+
+    config_path = target_dir / "config.toml"
+    config = _read_simple_config(config_path)
+    config["state_dir"] = str(target_dir)
+    if no_obsidian:
+        for key in ["obsidian_root", "root", "notes_dir", "docs_dir", "moc_path"]:
+            config.pop(key, None)
+        config.setdefault("index_path", index_path or "index.md")
+    elif obsidian_root is not None:
+        config["obsidian_root"] = str(obsidian_root.expanduser().resolve())
+        config.pop("root", None)
+    if notes_dir is not None:
+        config["notes_dir"] = notes_dir
+        if docs_dir is None and "docs_dir" not in config:
+            config["docs_dir"] = default_docs_dir(notes_dir)
+    if docs_dir is not None:
+        config["docs_dir"] = docs_dir
+    if index_path is not None:
+        config["index_path"] = index_path
+        config.pop("moc_path", None)
+    if moc_path is not None:
+        config["moc_path"] = moc_path
+        config.pop("index_path", None)
+    _write_simple_config(config_path, config)
+
+    write_workspace_config(
+        workspace=workspace_name,
+        workspace_dir=target_dir,
+        set_active=True,
+    )
+    _emit(
+        {
+            "workspace": workspace_name,
+            "workspace_dir": str(target_dir),
+            "obsidian_root": config.get("obsidian_root"),
+            "notes_dir": config.get("notes_dir"),
+            "docs_dir": config.get("docs_dir"),
+            "index_path": config.get("index_path") or config.get("moc_path"),
+        },
+        json_output,
+    )
+
+
+def _workspace_pack_manifest(ctx: WorkspaceContext) -> dict[str, object]:
+    config = _read_simple_config(ctx.workspace_dir / "config.toml")
+    return {
+        "format": "expnote.workspace.v1",
+        "schema_version": SCHEMA_VERSION,
+        "workspace": ctx.name,
+        "workspace_dir": str(ctx.workspace_dir),
+        "obsidian_root": config.get("obsidian_root") or config.get("root"),
+        "created_at": now_iso(),
+    }
+
+
+def _validate_workspace_archive(archive: tarfile.TarFile) -> None:
+    names = {member.name for member in archive.getmembers()}
+    for member in archive.getmembers():
+        path = Path(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise typer.BadParameter(f"unsafe archive member path: {member.name}")
+        if member.name != "expnote-pack.json" and not (
+            member.name == "state" or member.name.startswith("state/")
+        ):
+            raise typer.BadParameter(f"unexpected archive member: {member.name}")
+        if member.issym() or member.islnk() or member.isdev():
+            raise typer.BadParameter(f"unsafe archive member type: {member.name}")
+    if "expnote-pack.json" not in names:
+        raise typer.BadParameter("archive does not contain expnote-pack.json")
+    if "state" not in names and not any(name.startswith("state/") for name in names):
+        raise typer.BadParameter("archive does not contain state/")
+
+
+def _read_simple_config(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    if not path.exists():
+        raise typer.BadParameter(f"config not found: {path}")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        data[key.strip()] = value.strip().strip('"')
+    return data
+
+
+def _write_simple_config(path: Path, data: dict[str, str]) -> None:
+    ordered_keys = [
+        "project",
+        "state_dir",
+        "obsidian_root",
+        "notes_dir",
+        "docs_dir",
+        "index_path",
+        "moc_path",
+    ]
+    keys = [key for key in ordered_keys if key in data]
+    keys.extend(sorted(key for key in data if key not in set(keys)))
+    path.write_text(
+        "\n".join(f'{key} = "{_toml_string(str(data[key]))}"' for key in keys) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _toml_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 @topic_app.command("add")

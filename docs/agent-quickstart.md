@@ -30,6 +30,8 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
   comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
 - Write clickable run references as `[[run_id]]` in Purpose, Relation, Result,
   Analysis, and doc bodies. Obsidian and the web UI both resolve that form.
+- Use `workspace pack` and `workspace unpack` to move SQLite state to another
+  device; regenerate Obsidian Markdown with `sync all` after unpacking.
 
 ## Minimal Workflow
 
