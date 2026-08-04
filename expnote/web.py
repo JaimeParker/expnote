@@ -57,6 +57,34 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 )
             ]
 
+    @app.get("/api/stats")
+    def api_stats() -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            by_status = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count FROM runs
+                    WHERE deleted_at IS NULL
+                    GROUP BY status
+                    ORDER BY count DESC
+                    """
+                )
+            ]
+            by_week = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT strftime('%Y-%W', started_at) AS week, COUNT(*) AS count
+                    FROM runs
+                    WHERE deleted_at IS NULL
+                    GROUP BY week
+                    ORDER BY week ASC
+                    """
+                )
+            ]
+            return {"by_status": by_status, "by_week": by_week}
+
     @app.get("/api/mocs/{moc_id}")
     def api_moc(moc_id: str) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
@@ -681,6 +709,10 @@ _INDEX_HTML = """
     .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
     .stat { min-width: 118px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,0.78); }
     .stat strong { display: block; font-size: 20px; }
+    .stat-bars { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; max-width: 480px; }
+    .stat-bar { display: grid; grid-template-columns: 64px 1fr 28px; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .stat-bar-track { background: var(--line); border-radius: 6px; height: 10px; overflow: hidden; }
+    .stat-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
     .table-wrap {
       overflow: auto;
       border: 1px solid var(--line);
@@ -1244,8 +1276,16 @@ _INDEX_HTML = """
     async function loadHome() {
       await ensureMocs();
       const cache = await api('/api/wandb/cache');
-      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div><div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
-      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>`;
+      const runStats = await api('/api/stats');
+      const statusStats = runStats.by_status.map(s => `<div class="stat"><span class="muted">${esc(s.status || 'unknown')}</span><strong>${s.count}</strong></div>`).join('');
+      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div>${statusStats}<div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
+      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}${weeklyRunBars(runStats.by_week)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>`;
+    }
+    function weeklyRunBars(byWeek) {
+      if (!byWeek || !byWeek.length) return '';
+      const maxCount = Math.max(...byWeek.map(w => w.count));
+      const rows = byWeek.map(w => `<div class="stat-bar"><span>${esc(w.week)}</span><span class="stat-bar-track"><span class="stat-bar-fill" style="width:${maxCount ? Math.round((w.count / maxCount) * 100) : 0}%"></span></span><span>${w.count}</span></div>`).join('');
+      return `<h2>New runs per week</h2><div class="stat-bars">${rows}</div>`;
     }
     async function clearWandbCache() {
       const cache = await api('/api/wandb/cache', { method: 'DELETE' });

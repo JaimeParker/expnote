@@ -151,6 +151,39 @@ def test_web_get_endpoints_work_with_readonly_database(tmp_path):
         db_path.chmod(0o644)
 
 
+def test_web_stats_endpoint_reports_status_and_weekly_counts(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--moc-id",
+                "baseline",
+                "--topic",
+                "CalQL",
+                "--run-id",
+                "wandb456",
+                "--status",
+                "finished",
+            ],
+        ).exit_code
+        == 0
+    )
+    app = create_app(tmp_path)
+
+    def route(path: str):
+        return next(item for item in app.routes if getattr(item, "path", None) == path)
+
+    data = route("/api/stats").endpoint()
+    by_status = {row["status"]: row["count"] for row in data["by_status"]}
+    assert by_status == {"running": 1, "finished": 1}
+    assert sum(row["count"] for row in data["by_week"]) == 2
+
+
 def test_web_markdown_renderer_escapes_raw_html():
     rendered = render_markdown("<script>alert(1)</script>\n\n**ok**")
 

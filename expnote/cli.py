@@ -37,6 +37,11 @@ from expnote.markdown import (
     sync_markdown,
     sync_moc_section,
 )
+from expnote.wandb_live import (
+    WandbLiveError,
+    fetch_wandb_run_state,
+    map_wandb_state_to_status,
+)
 from expnote.workspace import (
     WorkspaceContext,
     default_workspace_dir,
@@ -894,7 +899,13 @@ def run_add(
     ] = None,
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
-    purpose: Annotated[str, typer.Option(help="Short run purpose.")] = "",
+    run_from: Annotated[
+        str | None,
+        typer.Option(
+            "--from", help="Clone purpose/metadata/topic from an existing run."
+        ),
+    ] = None,
+    purpose: Annotated[str | None, typer.Option(help="Short run purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
     analysis: Annotated[str, typer.Option(help="Run analysis.")] = "",
@@ -919,6 +930,19 @@ def run_add(
         metadata = _merge_metadata_options(meta, meta_json, metadata_json)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+    if run_from is not None:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            source = conn.execute(
+                "SELECT * FROM runs WHERE id = ? AND deleted_at IS NULL", (run_from,)
+            ).fetchone()
+            if source is None:
+                raise typer.BadParameter(f"--from run not found: {run_from}")
+            source_data = row_to_dict(source)
+        if purpose is None:
+            purpose = source_data["purpose"]
+        if topic is None and topic_id is None:
+            topic_id = source_data["topic_id"]
+        metadata = {**source_data["metadata"], **metadata}
     data = _insert_run(
         root,
         state_dir=state_dir,
@@ -926,7 +950,7 @@ def run_add(
         topic=topic,
         topic_id=topic_id,
         moc_id=moc_id,
-        purpose=purpose,
+        purpose=purpose or "",
         relation=relation,
         result=result,
         analysis=analysis,
@@ -1266,6 +1290,148 @@ def run_query(
             )
         ]
     _emit(rows, json_output)
+
+
+@run_app.command("stats")
+def run_stats(
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    group_by: Annotated[
+        str, typer.Option("--group-by", help="Field or metadata.<key> to group by.")
+    ] = "status",
+    status: Annotated[str | None, typer.Option(help="Filter by run status.")] = None,
+    where: Annotated[
+        str, typer.Option(help="Restricted SQL-like WHERE expression.")
+    ] = "1 = 1",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    where_sql, where_params = _compile_run_where(where)
+    if status is not None:
+        where_sql = f"({where_sql}) AND runs.status = ?"
+        where_params.append(status)
+    group_expr = _compile_run_query_field(group_by)
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        rows = [
+            {"group": row["group_value"], "count": row["count"]}
+            for row in conn.execute(
+                f"""
+                SELECT COALESCE({group_expr}, '(unset)') AS group_value,
+                    COUNT(*) AS count
+                FROM runs
+                JOIN topics ON runs.topic_id = topics.id
+                JOIN mocs ON topics.moc_id = mocs.id
+                WHERE runs.deleted_at IS NULL AND ({where_sql})
+                GROUP BY group_value
+                ORDER BY count DESC, group_value ASC
+                """,
+                where_params,
+            )
+        ]
+    if json_output:
+        _emit(rows, True)
+    else:
+        _emit(_format_run_stats(group_by, rows), False)
+
+
+_RUN_DIFF_FIELDS = ["purpose", "relation", "result", "analysis", "status"]
+
+
+@run_app.command("diff")
+def run_diff_command(
+    run_id_a: Annotated[str, typer.Argument(help="First run id.")],
+    run_id_b: Annotated[str, typer.Argument(help="Second run id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        row_a = _run_row_or_error(conn, run_id_a)
+        row_b = _run_row_or_error(conn, run_id_b)
+    data_a = row_to_dict(row_a)
+    data_b = row_to_dict(row_b)
+    result = _diff_runs(run_id_a, data_a, run_id_b, data_b)
+    if json_output:
+        _emit(result, True)
+    else:
+        _emit(_format_run_diff(result), False)
+
+
+def _run_row_or_error(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM runs WHERE id = ? AND deleted_at IS NULL", (run_id,)
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"run not found: {run_id}")
+    return row
+
+
+def _diff_runs(
+    run_id_a: str,
+    data_a: dict[str, object],
+    run_id_b: str,
+    data_b: dict[str, object],
+) -> dict[str, object]:
+    fields = {}
+    for field in _RUN_DIFF_FIELDS:
+        value_a = data_a[field]
+        value_b = data_b[field]
+        fields[field] = {"a": value_a, "b": value_b, "changed": value_a != value_b}
+    meta_a = data_a["metadata"]
+    meta_b = data_b["metadata"]
+    keys = set(meta_a) | set(meta_b)
+    only_in_a = {k: meta_a[k] for k in keys if k in meta_a and k not in meta_b}
+    only_in_b = {k: meta_b[k] for k in keys if k in meta_b and k not in meta_a}
+    changed = {
+        k: {"a": meta_a[k], "b": meta_b[k]}
+        for k in keys
+        if k in meta_a and k in meta_b and meta_a[k] != meta_b[k]
+    }
+    same = {
+        k: meta_a[k]
+        for k in keys
+        if k in meta_a and k in meta_b and meta_a[k] == meta_b[k]
+    }
+    return {
+        "run_a": run_id_a,
+        "run_b": run_id_b,
+        "fields": fields,
+        "metadata": {
+            "only_in_a": only_in_a,
+            "only_in_b": only_in_b,
+            "changed": changed,
+            "same": same,
+        },
+    }
+
+
+def _format_run_diff(result: dict[str, object]) -> str:
+    lines = [f"Run A: {result['run_a']}", f"Run B: {result['run_b']}"]
+    fields = result["fields"]
+    changed_fields = {k: v for k, v in fields.items() if v["changed"]}
+    if changed_fields:
+        lines.append("Fields:")
+        for key, value in changed_fields.items():
+            lines.append(f"  {key}: {value['a']!r} -> {value['b']!r}")
+    else:
+        lines.append("Fields: identical")
+    metadata = result["metadata"]
+    if metadata["changed"] or metadata["only_in_a"] or metadata["only_in_b"]:
+        lines.append("Metadata:")
+        for key, value in metadata["changed"].items():
+            lines.append(f"  {key}: {value['a']!r} -> {value['b']!r}")
+        for key, value in metadata["only_in_a"].items():
+            lines.append(f"  {key}: {value!r} -> (unset)")
+        for key, value in metadata["only_in_b"].items():
+            lines.append(f"  {key}: (unset) -> {value!r}")
+    else:
+        lines.append("Metadata: identical")
+    return "\n".join(lines)
 
 
 @doc_app.command("add")
@@ -2236,6 +2402,77 @@ def sync_all_command(
     _emit(result, json_output)
 
 
+@sync_app.command("wandb-status")
+def sync_wandb_status_command(
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Write suggested status changes to SQLite."),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        candidates = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE deleted_at IS NULL AND metadata_json LIKE '%"wandb_url"%'
+                """
+            )
+        ]
+    mismatched = []
+    skipped = []
+    errors = []
+    for run in candidates:
+        wandb_url = run["metadata"].get("wandb_url")
+        if not wandb_url:
+            skipped.append({"run_id": run["id"], "reason": "no wandb_url"})
+            continue
+        try:
+            state = fetch_wandb_run_state(wandb_url)
+        except WandbLiveError as exc:
+            errors.append({"run_id": run["id"], "reason": exc.message})
+            continue
+        suggested = map_wandb_state_to_status(state)
+        if suggested != run["status"]:
+            mismatched.append(
+                {
+                    "run_id": run["id"],
+                    "local_status": run["status"],
+                    "wandb_status": state,
+                    "suggested_status": suggested,
+                }
+            )
+    updated = []
+    if apply and mismatched:
+        ts = now_iso()
+        with transaction(root, state_dir=state_dir) as conn:
+            for item in mismatched:
+                conn.execute(
+                    "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                    (item["suggested_status"], ts, item["run_id"]),
+                )
+                append_event(
+                    root,
+                    "run.update",
+                    {"id": item["run_id"], "status": item["suggested_status"]},
+                    state_dir=state_dir,
+                )
+                updated.append(item["run_id"])
+    result = {
+        "mismatched": mismatched,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    }
+    _emit(result, json_output)
+
+
 def _sync_moc_section_or_error(
     root: Path,
     state_dir: Path | None,
@@ -2860,6 +3097,16 @@ def _format_moc_diff(result: dict[str, object]) -> str:
     for key in ["missing", "stale", "expected", "observed"]:
         values = result[key]
         lines.append(f"{key}: {', '.join(values) if values else '-'}")
+    return "\n".join(lines)
+
+
+def _format_run_stats(group_by: str, rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return f"No runs match this query (grouped by {group_by})."
+    width = max(len(str(row["group"])) for row in rows)
+    lines = [f"{'group (' + group_by + ')':<{width}}  count"]
+    for row in rows:
+        lines.append(f"{str(row['group']):<{width}}  {row['count']}")
     return "\n".join(lines)
 
 

@@ -2952,3 +2952,318 @@ def test_run_query_rejects_unsupported_restricted_syntax(tmp_path):
             ],
         )
         assert result.exit_code != 0
+
+
+def test_run_stats_groups_by_status(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", status="running")
+    _add_run(tmp_path, "run2", status="running")
+    _add_run(tmp_path, "run3", status="finished")
+
+    result = runner.invoke(
+        app,
+        ["run", "stats", "--workspace-dir", str(tmp_path / ".expnote"), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    rows = {row["group"]: row["count"] for row in json.loads(result.output)}
+    assert rows == {"running": 2, "finished": 1}
+
+
+def test_run_stats_groups_by_metadata_key_with_unset_bucket(tmp_path):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "sac1", "--meta", "algo=sac",
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "sac2", "--meta", "algo=sac",
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "noalgo",
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "stats", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--group-by", "metadata.algo", "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    rows = {row["group"]: row["count"] for row in json.loads(result.output)}
+    assert rows == {"sac": 2, "(unset)": 1}
+
+
+def test_run_stats_rejects_unwhitelisted_group_by(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "stats", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--group-by", "unknown", "--json",
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_run_add_from_clones_purpose_and_metadata(tmp_path):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "source",
+            "--purpose", "Original purpose",
+            "--meta", "algo=sac", "--meta", "seed=1",
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--run-id", "clone", "--from", "source",
+            "--meta", "seed=2",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["purpose"] == "Original purpose"
+    assert data["metadata"] == {"algo": "sac", "seed": "2"}
+    assert data["topic_id"] is not None
+    assert data["status"] == "running"
+    assert data["relation"] == ""
+    assert data["result"] == ""
+
+
+def test_run_add_from_explicit_purpose_overrides_source(tmp_path):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "source",
+            "--purpose", "Original purpose",
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--run-id", "clone", "--from", "source",
+            "--purpose", "New purpose",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["purpose"] == "New purpose"
+
+
+def test_run_add_from_missing_source_fails(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--run-id", "clone", "--from", "missing",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+def test_run_diff_reports_field_and_metadata_differences(tmp_path):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run1",
+            "--purpose", "Same purpose", "--status", "running",
+            "--meta", "seed=1", "--meta", "only_a=x",
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run2",
+            "--purpose", "Same purpose", "--status", "finished",
+            "--meta", "seed=2", "--meta", "only_b=y",
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "diff", "run1", "run2",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["fields"]["purpose"]["changed"] is False
+    assert data["fields"]["status"] == {
+        "a": "running", "b": "finished", "changed": True
+    }
+    assert data["metadata"]["changed"] == {"seed": {"a": "1", "b": "2"}}
+    assert data["metadata"]["only_in_a"] == {"only_a": "x"}
+    assert data["metadata"]["only_in_b"] == {"only_b": "y"}
+
+    text_result = runner.invoke(
+        app,
+        ["run", "diff", "run1", "run2", "--workspace-dir", str(tmp_path / ".expnote")],
+    )
+    assert text_result.exit_code == 0, text_result.output
+    assert "status" in text_result.output
+    assert "purpose" not in text_result.output
+
+
+def test_run_diff_missing_run_fails(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "diff", "run1", "missing",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_sync_wandb_status_reports_without_writing_by_default(tmp_path, monkeypatch):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run1", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/run1",
+        ],
+    )
+    monkeypatch.setattr(
+        "expnote.cli.fetch_wandb_run_state", lambda url: "finished"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sync", "wandb-status",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["mismatched"] == [
+        {
+            "run_id": "run1",
+            "local_status": "running",
+            "wandb_status": "finished",
+            "suggested_status": "finished",
+        }
+    ]
+    assert data["updated"] == []
+
+    show_result = runner.invoke(
+        app,
+        [
+            "run", "show", "run1", "--field", "status",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert show_result.output.strip() == "running"
+
+
+def test_sync_wandb_status_apply_writes_and_logs_event(tmp_path, monkeypatch):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run1", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/run1",
+        ],
+    )
+    monkeypatch.setattr(
+        "expnote.cli.fetch_wandb_run_state", lambda url: "crashed"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sync", "wandb-status", "--apply",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["updated"] == ["run1"]
+
+    show_result = runner.invoke(
+        app,
+        [
+            "run", "show", "run1", "--field", "status",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert show_result.output.strip() == "failed"
+    events = [event["type"] for event in _events(tmp_path)]
+    assert events.count("run.update") >= 1
+
+
+def test_sync_wandb_status_reports_errors_without_aborting(tmp_path, monkeypatch):
+    _init_with_topic(tmp_path)
+    from expnote.wandb_live import WandbLiveError
+
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "bad", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/bad",
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "good", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/good",
+        ],
+    )
+
+    def fake_fetch(url):
+        if "bad" in url:
+            raise WandbLiveError("wandb_api_error", "boom")
+        return "finished"
+
+    monkeypatch.setattr("expnote.cli.fetch_wandb_run_state", fake_fetch)
+
+    result = runner.invoke(
+        app,
+        [
+            "sync", "wandb-status",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["errors"] == [{"run_id": "bad", "reason": "boom"}]
+    assert [row["run_id"] for row in data["mismatched"]] == ["good"]

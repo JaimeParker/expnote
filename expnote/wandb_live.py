@@ -84,6 +84,35 @@ def fetch_live_wandb_charts(url: str, *, samples: int = 1000) -> dict[str, Any]:
     }
 
 
+def fetch_wandb_run_state(url: str) -> str:
+    ref = parse_wandb_run_url(url)
+    try:
+        import wandb
+    except ImportError as exc:
+        raise WandbLiveError(
+            "wandb_not_installed",
+            "The wandb Python package is not installed in this environment.",
+        ) from exc
+
+    try:
+        return wandb.Api().run(ref.path).state
+    except Exception as exc:
+        raise WandbLiveError(
+            "wandb_api_error",
+            str(exc) or exc.__class__.__name__,
+        ) from exc
+
+
+def map_wandb_state_to_status(state: str) -> str:
+    if state == "finished":
+        return "finished"
+    if state in {"running", "preempting"}:
+        return "running"
+    if state in {"crashed", "failed", "killed"}:
+        return "failed"
+    return state
+
+
 def fetch_wandb_charts(
     url: str,
     *,
