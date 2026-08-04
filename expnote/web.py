@@ -956,11 +956,19 @@ _INDEX_HTML = """
     function wandbPanel(r) {
       if (!hasWandbUrl(r.metadata)) return '';
       const id = esc(r.id);
-      state.wandbChartMode = 'combined';
-      state.wandbChartData = null;
-      state.wandbCompareData = null;
-      state.wandbCompareMode = 'intersection';
       return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbModeToggle" class="top-button" type="button" onclick="toggleWandbChartMode()" disabled>Split metrics</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
+    }
+    function reviveWandbPanel() {
+      if (!state.wandbChartData || !hasWandbUrl(state.currentRun && state.currentRun.metadata)) return;
+      updateWandbModeToggle();
+      updateWandbCompareButton();
+      const data = state.wandbChartData;
+      $('wandbStatus').textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
+      if (state.wandbCompareData) {
+        renderWandbComparison();
+      } else {
+        renderWandbCharts(data);
+      }
     }
     async function loadWandbCharts(runId) {
       const button = $('wandbFetch');
@@ -1130,6 +1138,24 @@ _INDEX_HTML = """
       state.wandbCompareMode = state.wandbCompareMode === 'intersection' ? 'union' : 'intersection';
       renderWandbComparison();
     }
+    function closeWandbComparison() {
+      state.wandbCompareData = null;
+      $('wandbCompareResults').innerHTML = '';
+      if (state.wandbChartData) {
+        renderWandbCharts(state.wandbChartData);
+      }
+      updateWandbModeToggle();
+      updateWandbCompareButton();
+    }
+    function groupComparisonMetrics(metrics) {
+      const byGroup = new Map();
+      metrics.forEach((metric, index) => {
+        const key = metric.group;
+        if (!byGroup.has(key)) byGroup.set(key, []);
+        byGroup.get(key).push({ ...metric, index });
+      });
+      return Array.from(byGroup.keys()).sort().map(name => ({ name, items: byGroup.get(name) }));
+    }
     function renderWandbComparison() {
       const target = $('wandbCompareResults');
       const data = state.wandbCompareData || { runs: [], skipped: [], errors: [] };
@@ -1139,8 +1165,9 @@ _INDEX_HTML = """
         return;
       }
       const metrics = comparisonMetrics(runs, state.wandbCompareMode);
+      const metricGroups = groupComparisonMetrics(metrics);
       const toggleLabel = state.wandbCompareMode === 'intersection' ? 'Show all metrics' : 'Show common metrics';
-      target.innerHTML = `<div class="compare-panel"><div class="wandb-actions"><button class="top-button" type="button" onclick="toggleWandbCompareMetricMode()">${toggleLabel}</button><span class="compare-summary">${runs.length} runs, ${metrics.length} ${state.wandbCompareMode === 'intersection' ? 'common' : 'total'} metrics.</span></div>${compareMessages(data)}${metrics.map((metric, index) => `<div class="wandb-group"><h3>${esc(metric.group)}</h3><div class="wandb-chart-card"><div class="wandb-chart-title">${esc(metric.name)}</div><div class="wandb-chart" id="wandb-compare-chart-${index}"></div></div></div>`).join('') || empty('No metrics match the current comparison mode.')}</div>`;
+      target.innerHTML = `<div class="compare-panel"><div class="wandb-actions"><button class="top-button" type="button" onclick="closeWandbComparison()">Close comparison</button><button class="top-button" type="button" onclick="toggleWandbCompareMetricMode()">${toggleLabel}</button><span class="compare-summary">${runs.length} runs, ${metrics.length} ${state.wandbCompareMode === 'intersection' ? 'common' : 'total'} metrics.</span></div>${compareMessages(data)}${metricGroups.map(group => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart-grid">${group.items.map(metric => `<div class="wandb-chart-card"><div class="wandb-chart-title">${esc(metric.name)}</div><div class="wandb-chart" id="wandb-compare-chart-${metric.index}"></div></div>`).join('')}</div></div>`).join('') || empty('No metrics match the current comparison mode.')}</div>`;
       metrics.forEach((metric, index) => {
         const traces = runs.flatMap(run => {
           const chart = findRunChart(run, metric.name);
@@ -1275,8 +1302,16 @@ _INDEX_HTML = """
     async function loadRun(id) {
       await ensureMocs();
       const r = await api('/api/runs/' + encodeURIComponent(id));
+      const sameRun = Boolean(state.currentRun && state.currentRun.id === r.id);
+      if (!sameRun) {
+        state.wandbChartMode = 'combined';
+        state.wandbChartData = null;
+        state.wandbCompareData = null;
+        state.wandbCompareMode = 'intersection';
+      }
       state.currentRun = r;
       $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
+      if (sameRun) reviveWandbPanel();
     }
     async function loadDoc(id) {
       await ensureMocs();
