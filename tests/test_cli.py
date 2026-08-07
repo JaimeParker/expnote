@@ -731,7 +731,7 @@ def test_existing_schema_migrates_on_mutating_cli_use(tmp_path):
     ).fetchone()[0]
     conn.close()
     assert {row[0] for row in rows} == {"docs", "doc_runs"}
-    assert version == "4"
+    assert version == "5"
 
 
 def test_external_state_dir_supports_cli_workflow(tmp_path):
@@ -775,6 +775,7 @@ def test_external_state_dir_supports_cli_workflow(tmp_path):
         "artifacts": 0,
         "runs": 1,
         "topics": 1,
+        "benchmarks": 0,
     }
 
     events = [
@@ -3267,3 +3268,438 @@ def test_sync_wandb_status_reports_errors_without_aborting(tmp_path, monkeypatch
     data = json.loads(result.output)
     assert data["errors"] == [{"run_id": "bad", "reason": "boom"}]
     assert [row["run_id"] for row in data["mismatched"]] == ["good"]
+
+
+def _add_benchmark(
+    tmp_path: Path, benchmark_id: str = "bench1", title: str = "Bench"
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "add",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--benchmark-id", benchmark_id,
+            "--title", title,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def _add_benchmark_task(tmp_path: Path, benchmark_id: str, title: str) -> str:
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "task", "add", benchmark_id,
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--title", title,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)["id"]
+
+
+def _add_benchmark_algo(tmp_path: Path, benchmark_id: str, title: str) -> str:
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "algo", "add", benchmark_id,
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--title", title,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)["id"]
+
+
+def _add_finished_run(
+    tmp_path: Path, run_id: str, status: str = "finished", result_text: str = "ok"
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run", "add",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic",
+            "--run-id", run_id,
+            "--status", status,
+            "--result", result_text,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_benchmark_add_and_show(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path, "bench1", "Offline RL Benchmark")
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "show", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["id"] == "bench1"
+    assert data["title"] == "Offline RL Benchmark"
+    assert data["tasks"] == []
+    assert data["algos"] == []
+    assert data["cells"] == []
+
+
+def test_benchmark_task_and_algo_add_list_ordered_by_position(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_task(tmp_path, "bench1", "hopper")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_benchmark_algo(tmp_path, "bench1", "iql")
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "task", "list", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["title"] for row in json.loads(result.output)] == ["antmaze", "hopper"]
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "algo", "list", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["title"] for row in json.loads(result.output)] == ["calql", "iql"]
+
+
+def test_benchmark_task_add_rejects_duplicate_title(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "task", "add", "bench1",
+            "--title", "antmaze",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_benchmark_task_resolves_by_title_or_id_to_same_task(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    task_id = _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1", result_text="82% success")
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    cells = json.loads(result.output)["cells"]
+    assert cells[0]["task_id"] == task_id
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "unlink", "bench1",
+            "--task-id", task_id, "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["cells"] == []
+
+
+def test_benchmark_link_rejects_non_terminal_run(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1", status="running", result_text="")
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "terminal" in (result.output + str(result.exception))
+
+
+def test_benchmark_link_succeeds_with_finished_or_failed_run(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_task(tmp_path, "bench1", "hopper")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1", status="finished", result_text="82% success")
+    _add_finished_run(tmp_path, "run2", status="failed", result_text="diverged at 10k")
+
+    for run_id, task in [("run1", "antmaze"), ("run2", "hopper")]:
+        link = runner.invoke(
+            app,
+            [
+                "benchmark", "link", "bench1", run_id,
+                "--task", task, "--algo", "calql",
+                "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+            ],
+        )
+        assert link.exit_code == 0, link.output
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "matrix", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert len(data["cells"]) == 2
+    statuses = {c["run_id"]: c["status"] for c in data["cells"]}
+    assert statuses == {"run1": "finished", "run2": "failed"}
+
+
+def test_benchmark_link_replaces_run_on_relink(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1", result_text="result run1")
+    _add_finished_run(tmp_path, "run2", result_text="result run2")
+
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run2",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    cells = json.loads(result.output)["cells"]
+    assert len(cells) == 1
+    assert cells[0]["run_id"] == "run2"
+
+    conn = sqlite3.connect(tmp_path / ".expnote" / "expnote.sqlite")
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM benchmark_cells WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_benchmark_unlink_clears_cell(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1")
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "unlink", "bench1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["cells"] == []
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "matrix", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert json.loads(result.output)["cells"] == []
+
+
+def test_benchmark_matrix_text_and_json_output(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_task(tmp_path, "bench1", "hopper")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_benchmark_algo(tmp_path, "bench1", "iql")
+    _add_finished_run(tmp_path, "run1", result_text="82% success")
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "matrix", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "antmaze" in result.output
+    assert "hopper" in result.output
+    assert "calql" in result.output
+    assert "iql" in result.output
+    assert "run1" in result.output
+    assert "—" in result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "matrix", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert {t["title"] for t in data["tasks"]} == {"antmaze", "hopper"}
+    assert {a["title"] for a in data["algos"]} == {"calql", "iql"}
+    assert len(data["cells"]) == 1
+
+
+def test_benchmark_delete_cascades_to_tasks_algos_cells(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1")
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark", "delete", "bench1",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    conn = sqlite3.connect(tmp_path / ".expnote" / "expnote.sqlite")
+    try:
+        tasks = conn.execute(
+            "SELECT COUNT(*) FROM benchmark_tasks WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        algos = conn.execute(
+            "SELECT COUNT(*) FROM benchmark_algos WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        cells = conn.execute(
+            "SELECT COUNT(*) FROM benchmark_cells WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert (tasks, algos, cells) == (0, 0, 0)
+
+
+def test_benchmark_events_use_expected_type_names(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path)
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1")
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "benchmark", "unlink", "bench1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+
+    event_types = {event["type"] for event in _events(tmp_path)}
+    assert {
+        "benchmark.add",
+        "benchmark_task.add",
+        "benchmark_algo.add",
+        "benchmark.link",
+        "benchmark.unlink",
+    } <= event_types
+
+
+def test_sync_markdown_writes_benchmark_note(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_benchmark(tmp_path, "bench1", "Offline RL Benchmark")
+    _add_benchmark_task(tmp_path, "bench1", "antmaze")
+    _add_benchmark_algo(tmp_path, "bench1", "calql")
+    _add_finished_run(tmp_path, "run1", result_text="82% success")
+    runner.invoke(
+        app,
+        [
+            "benchmark", "link", "bench1", "run1",
+            "--task", "antmaze", "--algo", "calql",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        ["sync", "all", "--workspace-dir", str(tmp_path / ".expnote")],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["benchmark_notes"] == 1
+
+    notes_dir = tmp_path / "notes" / "runs"
+    benchmark_path = notes_dir / "bench1.md"
+    assert benchmark_path.exists()
+    text = benchmark_path.read_text(encoding="utf-8")
+    assert "antmaze" in text
+    assert "calql" in text
+    assert "[[run1]]" in text
+    assert "(finished)" not in text
+    assert "82% success" not in text

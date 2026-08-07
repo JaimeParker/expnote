@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -225,6 +225,49 @@ def migrate(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             deleted_at TEXT,
             UNIQUE(doc_id, run_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmarks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_tasks (
+            id TEXT PRIMARY KEY,
+            benchmark_id TEXT NOT NULL REFERENCES benchmarks(id),
+            title TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(benchmark_id, title)
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_algos (
+            id TEXT PRIMARY KEY,
+            benchmark_id TEXT NOT NULL REFERENCES benchmarks(id),
+            title TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(benchmark_id, title)
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_cells (
+            id TEXT PRIMARY KEY,
+            benchmark_id TEXT NOT NULL REFERENCES benchmarks(id),
+            task_id TEXT NOT NULL REFERENCES benchmark_tasks(id),
+            algo_id TEXT NOT NULL REFERENCES benchmark_algos(id),
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(benchmark_id, task_id, algo_id)
         );
         """
     )

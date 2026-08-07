@@ -323,6 +323,79 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             data["runs"] = _doc_runs(conn, doc_id, active_run_ids=active_run_ids)
             return data
 
+    @app.get("/api/benchmarks")
+    def api_benchmarks() -> list[dict[str, Any]]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            return [
+                row_to_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM benchmarks
+                    WHERE deleted_at IS NULL
+                    ORDER BY updated_at DESC, id DESC
+                    """
+                )
+            ]
+
+    @app.get("/api/benchmarks/{benchmark_id}")
+    def api_benchmark(benchmark_id: str) -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            row = conn.execute(
+                "SELECT * FROM benchmarks WHERE id = ? AND deleted_at IS NULL",
+                (benchmark_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Benchmark not found")
+            data = row_to_dict(row)
+            data["tasks"] = [
+                row_to_dict(task_row)
+                for task_row in conn.execute(
+                    """
+                    SELECT * FROM benchmark_tasks
+                    WHERE benchmark_id = ? AND deleted_at IS NULL
+                    ORDER BY position ASC, created_at ASC
+                    """,
+                    (benchmark_id,),
+                )
+            ]
+            data["algos"] = [
+                row_to_dict(algo_row)
+                for algo_row in conn.execute(
+                    """
+                    SELECT * FROM benchmark_algos
+                    WHERE benchmark_id = ? AND deleted_at IS NULL
+                    ORDER BY position ASC, created_at ASC
+                    """,
+                    (benchmark_id,),
+                )
+            ]
+            active_run_ids = _active_run_ids(conn)
+            data["cells"] = [
+                _render_doc_run_text_fields(row_to_dict(cell_row), active_run_ids)
+                for cell_row in conn.execute(
+                    """
+                    SELECT
+                        benchmark_cells.task_id,
+                        benchmark_cells.algo_id,
+                        benchmark_cells.run_id,
+                        runs.status,
+                        runs.result,
+                        runs.purpose,
+                        topics.title AS topic_title,
+                        mocs.title AS moc_title
+                    FROM benchmark_cells
+                    JOIN runs ON runs.id = benchmark_cells.run_id
+                    JOIN topics ON topics.id = runs.topic_id
+                    JOIN mocs ON mocs.id = topics.moc_id
+                    WHERE benchmark_cells.benchmark_id = ?
+                        AND benchmark_cells.deleted_at IS NULL
+                        AND runs.deleted_at IS NULL
+                    """,
+                    (benchmark_id,),
+                )
+            ]
+            return data
+
     return app
 
 
@@ -723,6 +796,8 @@ _INDEX_HTML = """
     table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
     table[data-table="topic-runs"], table[data-table="doc-runs"] { min-width: 1080px; }
     table[data-table="docs"] { min-width: 720px; }
+    table[data-table="benchmark-matrix"] { width: auto; }
+    table[data-table="benchmark-matrix"] th, table[data-table="benchmark-matrix"] td { white-space: nowrap; }
     col.col-run { width: 1%; }
     col.col-status { width: 1%; }
     col.col-role { width: 1%; }
@@ -923,6 +998,7 @@ _INDEX_HTML = """
         <button class="nav-item" data-route="#/" onclick="navigate('#/')"><i data-lucide="layout-dashboard"></i><span class="nav-text">MOC overview</span></button>
         <button class="nav-item" data-route="#/runs" onclick="navigate('#/runs')"><i data-lucide="activity"></i><span class="nav-text">All runs</span></button>
         <button class="nav-item" data-route="#/docs" onclick="navigate('#/docs')"><i data-lucide="file-text"></i><span class="nav-text">All docs</span></button>
+        <button class="nav-item" data-route="#/benchmarks" onclick="navigate('#/benchmarks')"><i data-lucide="table"></i><span class="nav-text">All benchmarks</span></button>
       </div>
       <div class="nav-section">
         <p class="label">SQL MOCs</p>
@@ -938,6 +1014,7 @@ _INDEX_HTML = """
           <button class="top-button" data-route="#/" onclick="navigate('#/')"><i data-lucide="library"></i>MOCs</button>
           <button class="top-button" data-route="#/runs" onclick="navigate('#/runs')"><i data-lucide="list-filter"></i>Runs</button>
           <button class="top-button" data-route="#/docs" onclick="navigate('#/docs')"><i data-lucide="book-open"></i>Docs</button>
+          <button class="top-button" data-route="#/benchmarks" onclick="navigate('#/benchmarks')"><i data-lucide="table"></i>Benchmarks</button>
         </div>
         <input id="search" placeholder="Search runs or docs">
         <select id="status"><option value="">Any status</option><option>running</option><option>finished</option><option>failed</option></select>
@@ -1277,9 +1354,11 @@ _INDEX_HTML = """
       await ensureMocs();
       const cache = await api('/api/wandb/cache');
       const runStats = await api('/api/stats');
+      const benchmarks = await api('/api/benchmarks');
       const statusStats = runStats.by_status.map(s => `<div class="stat"><span class="muted">${esc(s.status || 'unknown')}</span><strong>${s.count}</strong></div>`).join('');
-      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div>${statusStats}<div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
-      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}${weeklyRunBars(runStats.by_week)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>`;
+      const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div><div class="stat"><span class="muted">Benchmarks</span><strong>${benchmarks.length}</strong></div>${statusStats}<div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
+      const benchmarksSection = benchmarks.length ? `<h2>Benchmarks</h2><div class="grid">${benchmarks.map(b => `<button class="card card-button" onclick="navigate('#/benchmark/${encodeURIComponent(b.id)}')"><h3>${esc(b.title)}</h3><code>${esc(b.id)}</code><p class="muted">${esc(b.summary || 'No summary recorded.')}</p></button>`).join('')}</div>` : '';
+      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}${weeklyRunBars(runStats.by_week)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>${benchmarksSection}`;
     }
     function weeklyRunBars(byWeek) {
       if (!byWeek || !byWeek.length) return '';
@@ -1359,6 +1438,34 @@ _INDEX_HTML = """
       const body = d.body_html && d.body_html.trim() ? d.body_html : '<p class="muted">No document body recorded.</p>';
       $('view').innerHTML = `${hero(esc(d.title), `<code>${esc(d.id)}</code> ${esc(d.moc_title || '')}`)}<h2>Related Runs</h2>${docRunTable(d.runs || [])}<h2>Body</h2><div class="markdown">${body}</div>`;
     }
+    async function loadBenchmarks() {
+      const benchmarks = await api('/api/benchmarks');
+      $('view').innerHTML = `${hero('All benchmarks', 'Task x algo reproduction matrices with linked, conclusive runs.', `<div class="stats"><div class="stat"><span class="muted">Benchmarks</span><strong>${benchmarks.length}</strong></div></div>`)}${benchmarkTable(benchmarks)}`;
+    }
+    function benchmarkTable(rows) {
+      if (!rows.length) return empty('No benchmarks yet.');
+      return `<div class="table-wrap"><table data-table="benchmarks"><colgroup><col class="col-doc"><col class="col-updated"></colgroup><thead><tr><th>benchmark</th><th>updated</th></tr></thead><tbody>${rows.map(b => `<tr><td data-cell="doc"><button class="link-button" onclick="navigate('#/benchmark/${encodeURIComponent(b.id)}')"><code>${esc(b.id)}</code></button><br>${esc(b.title)}</td><td data-cell="updated">${esc(b.updated_at || '')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    async function loadBenchmark(id) {
+      const b = await api('/api/benchmarks/' + encodeURIComponent(id));
+      $('view').innerHTML = `${hero(esc(b.title), `<code>${esc(b.id)}</code>`)}${renderBenchmarkMatrix(b)}`;
+    }
+    function renderBenchmarkMatrix(b) {
+      const tasks = b.tasks || [], algos = b.algos || [];
+      if (!tasks.length || !algos.length) return empty('No tasks/algos recorded yet.');
+      const cellMap = {};
+      (b.cells || []).forEach(c => { cellMap[c.task_id + '::' + c.algo_id] = c; });
+      const header = '<th></th>' + algos.map(a => `<th>${esc(a.title)}</th>`).join('');
+      const rows = tasks.map(t => {
+        const cells = algos.map(a => {
+          const c = cellMap[t.id + '::' + a.id];
+          if (!c) return `<td data-cell="matrix"><span class="muted">—</span></td>`;
+          return `<td data-cell="matrix"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(c.run_id)}')"><code>${esc(c.run_id)}</code></button></td>`;
+        }).join('');
+        return `<tr><th data-cell="task">${esc(t.title)}</th>${cells}</tr>`;
+      }).join('');
+      return `<div class="table-wrap"><table data-table="benchmark-matrix"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
     async function renderRoute() {
       setActive();
       $('view').innerHTML = empty('Loading...');
@@ -1371,6 +1478,8 @@ _INDEX_HTML = """
         if (parts[0] === 'doc' && parts[1]) return await loadDoc(decodeURIComponent(parts[1]));
         if (parts[0] === 'runs') return await loadRuns();
         if (parts[0] === 'docs') return await loadDocs();
+        if (parts[0] === 'benchmark' && parts[1]) return await loadBenchmark(decodeURIComponent(parts[1]));
+        if (parts[0] === 'benchmarks') return await loadBenchmarks();
         $('view').innerHTML = empty('Unknown route.');
       } catch (err) {
         $('view').innerHTML = `<div class="empty error">${esc(err.message || err)}</div>`;
@@ -1382,7 +1491,12 @@ _INDEX_HTML = """
       if (window.lucide) window.lucide.createIcons();
     }
     $('backBtn').onclick = () => history.back();
-    $('search').onchange = () => route() === '#/docs' ? loadDocs() : loadRuns();
+    $('search').onchange = () => {
+      const r = route();
+      if (r === '#/docs') return loadDocs();
+      if (r === '#/benchmarks' || r.startsWith('#/benchmark/')) return;
+      return loadRuns();
+    };
     $('status').onchange = loadRuns;
     window.addEventListener('hashchange', renderRoute);
     window.addEventListener('popstate', renderRoute);

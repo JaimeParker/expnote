@@ -673,3 +673,122 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "wandb-compare-chart-${index}" in _INDEX_HTML
     assert "state.wandbChartData) return" in _INDEX_HTML
     assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
+
+
+def test_web_benchmark_endpoints_expose_matrix_data(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--moc-id",
+                "baseline",
+                "--topic",
+                "CalQL",
+                "--run-id",
+                "finalrun",
+                "--status",
+                "finished",
+                "--result",
+                "82% success",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "benchmark",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--benchmark-id",
+                "offline-rl",
+                "--title",
+                "Offline RL Benchmark",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "benchmark",
+                "task",
+                "add",
+                "offline-rl",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--title",
+                "antmaze",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "benchmark",
+                "algo",
+                "add",
+                "offline-rl",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--title",
+                "calql",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "benchmark",
+                "link",
+                "offline-rl",
+                "finalrun",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--task",
+                "antmaze",
+                "--algo",
+                "calql",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    app = create_app(tmp_path)
+
+    def route(path: str):
+        return next(item for item in app.routes if getattr(item, "path", None) == path)
+
+    benchmarks = route("/api/benchmarks").endpoint()
+    assert benchmarks[0]["id"] == "offline-rl"
+
+    detail = route("/api/benchmarks/{benchmark_id}").endpoint("offline-rl")
+    assert [t["title"] for t in detail["tasks"]] == ["antmaze"]
+    assert [a["title"] for a in detail["algos"]] == ["calql"]
+    assert len(detail["cells"]) == 1
+    cell = detail["cells"][0]
+    assert cell["run_id"] == "finalrun"
+    assert cell["status"] == "finished"
+    assert cell["result"] == "82% success"
+
+
+def test_web_index_has_benchmark_route_and_matrix_table():
+    assert "#/benchmark/" in _INDEX_HTML
+    assert "#/benchmarks" in _INDEX_HTML
+    assert "function renderBenchmarkMatrix" in _INDEX_HTML
+    assert 'table data-table="benchmark-matrix"' in _INDEX_HTML
+    assert "All benchmarks" in _INDEX_HTML
+    assert "api('/api/benchmarks')" in _INDEX_HTML
+    assert "<h2>Benchmarks</h2>" in _INDEX_HTML

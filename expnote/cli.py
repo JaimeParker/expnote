@@ -59,6 +59,9 @@ artifact_app = typer.Typer(help="Manage run artifacts.")
 doc_app = typer.Typer(help="Manage analysis documents.")
 moc_app = typer.Typer(help="Manage SQL MOC records.")
 moc_topic_app = typer.Typer(help="Manage topics inside a SQL MOC.")
+benchmark_app = typer.Typer(help="Manage benchmark tasks x algos matrices.")
+benchmark_task_app = typer.Typer(help="Manage tasks inside a benchmark.")
+benchmark_algo_app = typer.Typer(help="Manage algos inside a benchmark.")
 markdown_app = typer.Typer(help="Manage Markdown projections.")
 markdown_table_app = typer.Typer(help="Manage Markdown MOC section tables.")
 sync_app = typer.Typer(help="Sync projections.")
@@ -72,6 +75,9 @@ app.add_typer(artifact_app, name="artifact")
 app.add_typer(doc_app, name="doc")
 app.add_typer(moc_app, name="moc")
 moc_app.add_typer(moc_topic_app, name="topic")
+app.add_typer(benchmark_app, name="benchmark")
+benchmark_app.add_typer(benchmark_task_app, name="task")
+benchmark_app.add_typer(benchmark_algo_app, name="algo")
 app.add_typer(markdown_app, name="markdown")
 markdown_app.add_typer(markdown_table_app, name="table")
 app.add_typer(sync_app, name="sync")
@@ -2000,6 +2006,419 @@ def moc_topic_list(
     )
 
 
+@benchmark_app.command("add")
+def benchmark_add(
+    benchmark_id: Annotated[
+        str, typer.Option("--benchmark-id", help="Stable benchmark id.")
+    ],
+    title: Annotated[str, typer.Option("--title", help="Benchmark title.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    summary: Annotated[str, typer.Option(help="Short benchmark summary.")] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        conn.execute(
+            """
+            INSERT INTO benchmarks(id, title, summary, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (benchmark_id, title, summary, ts, ts),
+        )
+        row = conn.execute(
+            "SELECT * FROM benchmarks WHERE id = ?", (benchmark_id,)
+        ).fetchone()
+    data = row_to_dict(row)
+    append_event(root, "benchmark.add", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@benchmark_app.command("list")
+def benchmark_list(
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    include_deleted: Annotated[
+        bool, typer.Option(help="Include soft-deleted rows.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    where = "" if include_deleted else "WHERE deleted_at IS NULL"
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        rows = [
+            row_to_dict(row)
+            for row in conn.execute(
+                f"SELECT * FROM benchmarks {where} ORDER BY updated_at DESC, id ASC"
+            )
+        ]
+    _emit(rows, json_output)
+
+
+@benchmark_app.command("show")
+def benchmark_show(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        data = _benchmark_data(conn, benchmark_id)
+    _emit(data, json_output)
+
+
+@benchmark_app.command("update")
+def benchmark_update(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    title: Annotated[str | None, typer.Option("--title", help="New title.")] = None,
+    summary: Annotated[str | None, typer.Option(help="New summary.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        if title is not None:
+            conn.execute(
+                "UPDATE benchmarks SET title = ?, updated_at = ? WHERE id = ?",
+                (title, ts, benchmark_id),
+            )
+        if summary is not None:
+            conn.execute(
+                "UPDATE benchmarks SET summary = ?, updated_at = ? WHERE id = ?",
+                (summary, ts, benchmark_id),
+            )
+        row = conn.execute(
+            "SELECT * FROM benchmarks WHERE id = ?", (benchmark_id,)
+        ).fetchone()
+    data = row_to_dict(row)
+    append_event(root, "benchmark.update", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@benchmark_app.command("delete")
+def benchmark_delete(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        conn.execute(
+            "UPDATE benchmarks SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, benchmark_id),
+        )
+        conn.execute(
+            """
+            UPDATE benchmark_tasks SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, benchmark_id),
+        )
+        conn.execute(
+            """
+            UPDATE benchmark_algos SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, benchmark_id),
+        )
+        conn.execute(
+            """
+            UPDATE benchmark_cells SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, benchmark_id),
+        )
+    payload = {"id": benchmark_id, "deleted_at": ts}
+    append_event(root, "benchmark.delete", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@benchmark_task_app.command("add")
+def benchmark_task_add(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    title: Annotated[str, typer.Option("--title", help="Task title.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    task_id = new_id("benchtask")
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        position = _next_benchmark_task_position(conn, benchmark_id)
+        conn.execute(
+            """
+            INSERT INTO benchmark_tasks(
+                id, benchmark_id, title, position, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, benchmark_id, title, position, ts, ts),
+        )
+    payload = {
+        "id": task_id,
+        "benchmark_id": benchmark_id,
+        "title": title,
+        "position": position,
+    }
+    append_event(root, "benchmark_task.add", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@benchmark_task_app.command("list")
+def benchmark_task_list(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        rows = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM benchmark_tasks
+                WHERE benchmark_id = ? AND deleted_at IS NULL
+                ORDER BY position ASC, created_at ASC
+                """,
+                (benchmark_id,),
+            )
+        ]
+    _emit(rows, json_output)
+
+
+@benchmark_task_app.command("delete")
+def benchmark_task_delete(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    title: Annotated[str | None, typer.Option("--title")] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        tid = _resolve_benchmark_task_id(conn, benchmark_id, title, task_id)
+        conn.execute(
+            "UPDATE benchmark_tasks SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, tid),
+        )
+        conn.execute(
+            """
+            UPDATE benchmark_cells SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND task_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, benchmark_id, tid),
+        )
+    payload = {"id": tid, "benchmark_id": benchmark_id, "deleted_at": ts}
+    append_event(root, "benchmark_task.delete", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@benchmark_algo_app.command("add")
+def benchmark_algo_add(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    title: Annotated[str, typer.Option("--title", help="Algo title.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    algo_id = new_id("benchalgo")
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        position = _next_benchmark_algo_position(conn, benchmark_id)
+        conn.execute(
+            """
+            INSERT INTO benchmark_algos(
+                id, benchmark_id, title, position, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (algo_id, benchmark_id, title, position, ts, ts),
+        )
+    payload = {
+        "id": algo_id,
+        "benchmark_id": benchmark_id,
+        "title": title,
+        "position": position,
+    }
+    append_event(root, "benchmark_algo.add", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@benchmark_algo_app.command("list")
+def benchmark_algo_list(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        rows = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM benchmark_algos
+                WHERE benchmark_id = ? AND deleted_at IS NULL
+                ORDER BY position ASC, created_at ASC
+                """,
+                (benchmark_id,),
+            )
+        ]
+    _emit(rows, json_output)
+
+
+@benchmark_algo_app.command("delete")
+def benchmark_algo_delete(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    title: Annotated[str | None, typer.Option("--title")] = None,
+    algo_id: Annotated[str | None, typer.Option("--algo-id")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        aid = _resolve_benchmark_algo_id(conn, benchmark_id, title, algo_id)
+        conn.execute(
+            "UPDATE benchmark_algos SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, aid),
+        )
+        conn.execute(
+            """
+            UPDATE benchmark_cells SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND algo_id = ? AND deleted_at IS NULL
+            """,
+            (ts, ts, benchmark_id, aid),
+        )
+    payload = {"id": aid, "benchmark_id": benchmark_id, "deleted_at": ts}
+    append_event(root, "benchmark_algo.delete", payload, state_dir=state_dir)
+    _emit(payload, json_output)
+
+
+@benchmark_app.command("link")
+def benchmark_link(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    task: Annotated[str | None, typer.Option("--task", help="Task title.")] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    algo: Annotated[str | None, typer.Option("--algo", help="Algo title.")] = None,
+    algo_id: Annotated[str | None, typer.Option("--algo-id")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    data = _insert_benchmark_cell(
+        root,
+        state_dir=state_dir,
+        benchmark_id=benchmark_id,
+        run_id=run_id,
+        task=task,
+        task_id=task_id,
+        algo=algo,
+        algo_id=algo_id,
+    )
+    _emit(data, json_output)
+
+
+@benchmark_app.command("unlink")
+def benchmark_unlink(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    task: Annotated[str | None, typer.Option("--task", help="Task title.")] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    algo: Annotated[str | None, typer.Option("--algo", help="Algo title.")] = None,
+    algo_id: Annotated[str | None, typer.Option("--algo-id")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        tid = _resolve_benchmark_task_id(conn, benchmark_id, task, task_id)
+        aid = _resolve_benchmark_algo_id(conn, benchmark_id, algo, algo_id)
+        conn.execute(
+            """
+            UPDATE benchmark_cells SET deleted_at = ?, updated_at = ?
+            WHERE benchmark_id = ? AND task_id = ? AND algo_id = ?
+            """,
+            (ts, ts, benchmark_id, tid, aid),
+        )
+        data = _benchmark_data(conn, benchmark_id)
+    append_event(
+        root,
+        "benchmark.unlink",
+        {"benchmark_id": benchmark_id, "task_id": tid, "algo_id": aid},
+        state_dir=state_dir,
+    )
+    _emit(data, json_output)
+
+
+@benchmark_app.command("matrix")
+def benchmark_matrix_command(
+    benchmark_id: Annotated[str, typer.Argument(help="Benchmark id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        data = _benchmark_data(conn, benchmark_id)
+    if json_output:
+        _emit(data, True)
+    else:
+        _emit(_format_benchmark_matrix(data), False)
+
+
 @markdown_table_app.command("add")
 def moc_add(
     run_id: Annotated[str, typer.Argument(help="Run id.")],
@@ -2532,6 +2951,7 @@ def validate(
             "topics": _count_active(conn, "topics"),
             "runs": _count_active(conn, "runs"),
             "artifacts": _count_active(conn, "artifacts"),
+            "benchmarks": _count_active(conn, "benchmarks"),
         }
     conflicts = (
         projection_conflicts(root, state_dir=state_dir)
@@ -2944,6 +3364,210 @@ def _next_doc_run_position(conn: sqlite3.Connection, doc_id: str) -> int:
     return int(row[0])
 
 
+_BENCHMARK_LINKABLE_STATUSES = {"finished", "failed"}
+
+
+def _require_benchmark_row(conn: sqlite3.Connection, benchmark_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM benchmarks WHERE id = ? AND deleted_at IS NULL",
+        (benchmark_id,),
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"benchmark not found: {benchmark_id}")
+    return row
+
+
+def _benchmark_data(conn: sqlite3.Connection, benchmark_id: str) -> dict[str, object]:
+    data = row_to_dict(_require_benchmark_row(conn, benchmark_id))
+    data["tasks"] = [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT * FROM benchmark_tasks
+            WHERE benchmark_id = ? AND deleted_at IS NULL
+            ORDER BY position ASC, created_at ASC
+            """,
+            (benchmark_id,),
+        )
+    ]
+    data["algos"] = [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT * FROM benchmark_algos
+            WHERE benchmark_id = ? AND deleted_at IS NULL
+            ORDER BY position ASC, created_at ASC
+            """,
+            (benchmark_id,),
+        )
+    ]
+    data["cells"] = [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT
+                benchmark_cells.task_id,
+                benchmark_cells.algo_id,
+                benchmark_cells.run_id,
+                runs.status,
+                runs.result
+            FROM benchmark_cells
+            JOIN runs ON runs.id = benchmark_cells.run_id
+            WHERE benchmark_cells.benchmark_id = ?
+                AND benchmark_cells.deleted_at IS NULL
+                AND runs.deleted_at IS NULL
+            """,
+            (benchmark_id,),
+        )
+    ]
+    return data
+
+
+def _next_benchmark_task_position(conn: sqlite3.Connection, benchmark_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(position), 0) + 1
+        FROM benchmark_tasks
+        WHERE benchmark_id = ? AND deleted_at IS NULL
+        """,
+        (benchmark_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _next_benchmark_algo_position(conn: sqlite3.Connection, benchmark_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(position), 0) + 1
+        FROM benchmark_algos
+        WHERE benchmark_id = ? AND deleted_at IS NULL
+        """,
+        (benchmark_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _resolve_benchmark_task_id(
+    conn: sqlite3.Connection,
+    benchmark_id: str,
+    task: str | None,
+    task_id: str | None,
+) -> str:
+    if task is not None and task_id is not None:
+        raise typer.BadParameter("--task and --task-id cannot be used together")
+    if task is None and task_id is None:
+        raise typer.BadParameter("--task or --task-id is required")
+    if task_id is not None:
+        row = conn.execute(
+            """
+            SELECT id FROM benchmark_tasks
+            WHERE id = ? AND benchmark_id = ? AND deleted_at IS NULL
+            """,
+            (task_id, benchmark_id),
+        ).fetchone()
+        if row is None:
+            raise typer.BadParameter(f"task not found: {task_id}")
+        return str(row["id"])
+    row = conn.execute(
+        """
+        SELECT id FROM benchmark_tasks
+        WHERE benchmark_id = ? AND title = ? AND deleted_at IS NULL
+        """,
+        (benchmark_id, task),
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"task not found: {task}")
+    return str(row["id"])
+
+
+def _resolve_benchmark_algo_id(
+    conn: sqlite3.Connection,
+    benchmark_id: str,
+    algo: str | None,
+    algo_id: str | None,
+) -> str:
+    if algo is not None and algo_id is not None:
+        raise typer.BadParameter("--algo and --algo-id cannot be used together")
+    if algo is None and algo_id is None:
+        raise typer.BadParameter("--algo or --algo-id is required")
+    if algo_id is not None:
+        row = conn.execute(
+            """
+            SELECT id FROM benchmark_algos
+            WHERE id = ? AND benchmark_id = ? AND deleted_at IS NULL
+            """,
+            (algo_id, benchmark_id),
+        ).fetchone()
+        if row is None:
+            raise typer.BadParameter(f"algo not found: {algo_id}")
+        return str(row["id"])
+    row = conn.execute(
+        """
+        SELECT id FROM benchmark_algos
+        WHERE benchmark_id = ? AND title = ? AND deleted_at IS NULL
+        """,
+        (benchmark_id, algo),
+    ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"algo not found: {algo}")
+    return str(row["id"])
+
+
+def _insert_benchmark_cell(
+    root: Path,
+    *,
+    state_dir: Path | None,
+    benchmark_id: str,
+    run_id: str,
+    task: str | None,
+    task_id: str | None,
+    algo: str | None,
+    algo_id: str | None,
+) -> dict[str, object]:
+    ts = now_iso()
+    with transaction(root, state_dir=state_dir) as conn:
+        _require_benchmark_row(conn, benchmark_id)
+        tid = _resolve_benchmark_task_id(conn, benchmark_id, task, task_id)
+        aid = _resolve_benchmark_algo_id(conn, benchmark_id, algo, algo_id)
+        run = conn.execute(
+            "SELECT id, status FROM runs WHERE id = ? AND deleted_at IS NULL",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise typer.BadParameter(f"run not found: {run_id}")
+        if run["status"] not in _BENCHMARK_LINKABLE_STATUSES:
+            raise typer.BadParameter(
+                f"run {run_id} is not in a terminal state (status={run['status']!r}); "
+                "only finished/failed runs can be linked into a benchmark cell"
+            )
+        conn.execute(
+            """
+            INSERT INTO benchmark_cells(
+                id, benchmark_id, task_id, algo_id, run_id, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(benchmark_id, task_id, algo_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                updated_at = excluded.updated_at,
+                deleted_at = NULL
+            """,
+            (new_id("benchcell"), benchmark_id, tid, aid, run_id, ts, ts),
+        )
+        data = _benchmark_data(conn, benchmark_id)
+    append_event(
+        root,
+        "benchmark.link",
+        {
+            "benchmark_id": benchmark_id,
+            "task_id": tid,
+            "algo_id": aid,
+            "run_id": run_id,
+        },
+        state_dir=state_dir,
+    )
+    return data
+
+
 def _normalize_doc_run_positions(
     conn: sqlite3.Connection,
     doc_id: str,
@@ -3108,6 +3732,27 @@ def _format_run_stats(group_by: str, rows: list[dict[str, object]]) -> str:
     for row in rows:
         lines.append(f"{str(row['group']):<{width}}  {row['count']}")
     return "\n".join(lines)
+
+
+def _format_benchmark_matrix(data: dict[str, object]) -> str:
+    tasks = data.get("tasks") or []
+    algos = data.get("algos") or []
+    if not tasks or not algos:
+        return "No tasks/algos recorded for this benchmark."
+    cells = {
+        (cell["task_id"], cell["algo_id"]): cell for cell in data.get("cells") or []
+    }
+    rows = [[""] + [str(algo["title"]) for algo in algos]]
+    for task in tasks:
+        row = [str(task["title"])]
+        for algo in algos:
+            cell = cells.get((task["id"], algo["id"]))
+            row.append("—" if cell is None else str(cell["run_id"]))
+        rows.append(row)
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    return "\n".join(
+        "  ".join(f"{cell:<{widths[i]}}" for i, cell in enumerate(row)) for row in rows
+    )
 
 
 def _count_active(conn: sqlite3.Connection, table: str) -> int:

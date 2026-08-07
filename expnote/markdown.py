@@ -85,6 +85,58 @@ def sync_markdown(
             for run in runs:
                 run["related_docs"] = related_docs_by_run.get(str(run["id"]), [])
         active_run_ids = _active_run_ids(conn)
+        benchmarks = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM benchmarks
+                WHERE deleted_at IS NULL
+                ORDER BY updated_at DESC, id DESC
+                """
+            )
+        ]
+        for benchmark in benchmarks:
+            benchmark["tasks"] = [
+                row_to_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM benchmark_tasks
+                    WHERE benchmark_id = ? AND deleted_at IS NULL
+                    ORDER BY position ASC, created_at ASC
+                    """,
+                    (benchmark["id"],),
+                )
+            ]
+            benchmark["algos"] = [
+                row_to_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM benchmark_algos
+                    WHERE benchmark_id = ? AND deleted_at IS NULL
+                    ORDER BY position ASC, created_at ASC
+                    """,
+                    (benchmark["id"],),
+                )
+            ]
+            benchmark["cells"] = [
+                row_to_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT
+                        benchmark_cells.task_id,
+                        benchmark_cells.algo_id,
+                        benchmark_cells.run_id,
+                        runs.status,
+                        runs.result
+                    FROM benchmark_cells
+                    JOIN runs ON runs.id = benchmark_cells.run_id
+                    WHERE benchmark_cells.benchmark_id = ?
+                        AND benchmark_cells.deleted_at IS NULL
+                        AND runs.deleted_at IS NULL
+                    """,
+                    (benchmark["id"],),
+                )
+            ]
 
     moc_content = _render_moc(topics, runs_by_topic, active_run_ids)
     _write_managed_file(index_path, moc_content)
@@ -130,8 +182,17 @@ def sync_markdown(
             pulled_docs += 1
         written_docs += 1
 
+    written_benchmarks = 0
+    for benchmark in benchmarks:
+        benchmark_path = notes_dir / f"{_safe_filename(benchmark['id'])}.md"
+        _write_managed_file(
+            benchmark_path, _render_benchmark_note(benchmark)
+        )
+        written_benchmarks += 1
+
     return {
         "index": str(index_path),
+        "benchmark_notes": written_benchmarks,
         "moc": str(index_path),
         "run_notes": written_runs,
         "doc_notes": written_docs,
@@ -297,6 +358,40 @@ def _render_doc_runs_table(rows: list[dict[str, Any]], active_run_ids: set[str])
             + " |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _render_benchmark_note(benchmark: dict[str, Any]) -> str:
+    tasks = benchmark.get("tasks", [])
+    algos = benchmark.get("algos", [])
+    cell_lookup = {
+        (cell["task_id"], cell["algo_id"]): cell for cell in benchmark.get("cells", [])
+    }
+    lines = [
+        f"# {benchmark['title']}",
+        "",
+        f"- id: `{benchmark['id']}`",
+        f"- updated_at: `{benchmark['updated_at']}`",
+        "",
+    ]
+    if benchmark["summary"]:
+        lines.extend([benchmark["summary"], ""])
+    lines.extend(["## Matrix", ""])
+    if not tasks or not algos:
+        lines.append("_No tasks/algos recorded yet._")
+        return "\n".join(lines).rstrip() + "\n"
+    header = ["task"] + [str(algo["title"]) for algo in algos]
+    lines.append("| " + " | ".join(_cell(value) for value in header) + " |")
+    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+    for task in tasks:
+        row = [_cell(str(task["title"]))]
+        for algo in algos:
+            cell = cell_lookup.get((task["id"], algo["id"]))
+            if cell is None:
+                row.append("—")
+                continue
+            row.append(_cell(f"[[{cell['run_id']}]]"))
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def sync_moc_section(
