@@ -26,8 +26,11 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
 - `--obsidian-root` is optional and only controls Markdown projection output.
 - Edit `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` through CLI
   commands, except human-authored Obsidian Analysis imports.
-- Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
-  comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
+- `Result` is a one-line headline metric only — final return/reward, success
+  rate, or the equivalent terminal number (e.g. "82% success (avg of 5
+  seeds)", "return -120 at 1M steps"). No comparisons, causes, or next steps.
+  Put interpretation, diagnosis, comparisons, and reasoning in run `Analysis`
+  or cross-run `doc` records.
 - Write clickable run references as `[[run_id]]` in Purpose, Relation, Result,
   Analysis, and doc bodies. Obsidian and the web UI both resolve that form.
 - Use `workspace pack` and `workspace unpack` to move SQLite state to another

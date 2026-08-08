@@ -261,8 +261,10 @@ _AGENT_GUIDE = {
             "run update <id> --status finished"
         ),
         "result": (
-            "keep Result concise and outcome-only; put analysis in run "
-            "Analysis or cross-run docs"
+            "Result is a one-line headline metric only (return, success "
+            "rate, final score); no comparisons or causes; put "
+            "interpretation, diagnosis, and comparisons in run Analysis or "
+            "cross-run docs"
         ),
         "documents": (
             "doc body is stored in SQLite; use sync markdown --pull-docs "
@@ -345,8 +347,9 @@ def _render_agent_guide() -> str:
             "- Auto index defaults to workspace-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
             "expnote run update <id> --status finished",
-            "- Keep Result concise and outcome-only; put interpretation, "
-            "diagnosis, and comparisons in Analysis or docs",
+            "- Result is a one-line headline metric only (return, success "
+            "rate, final score); no comparisons or causes; put "
+            "interpretation, diagnosis, and comparisons in Analysis or docs",
             "",
             "Handoff checks:",
             "expnote validate --json",

@@ -325,8 +325,10 @@ Agent contract:
 - Treat non-zero exit status as command failure.
 - Do not edit generated Markdown directly except Analysis inside
   `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
-- Keep `Result` concise and outcome-only. Put interpretation, diagnosis,
-  comparisons, and reasoning in run `Analysis` or cross-run `doc` records.
+- `Result` is a one-line headline metric only — final return/reward, success
+  rate, or the equivalent terminal number. No comparisons, causes, or next
+  steps. Put interpretation, diagnosis, comparisons, and reasoning in run
+  `Analysis` or cross-run `doc` records.
 - Refer to runs as `[[run_id]]` inside Purpose, Relation, Result, Analysis, and
   doc bodies when the reference should be clickable in both Obsidian and web.
 - Use `expnote markdown table diff --json` before trusting a manually edited
