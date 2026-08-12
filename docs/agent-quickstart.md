@@ -145,6 +145,11 @@ Use `--append-analysis` when adding observations to existing Analysis. It insert
 one blank line between old and new text. Use `--analysis` only when replacing the
 whole Analysis field.
 
+Use `--analysis-file <path>` / `--append-analysis-file <path>` to read long
+analysis text from a file instead of an inline string, avoiding shell
+substitution like `--analysis "$(cat notes.md)"`. Pass `-` to read from stdin,
+e.g. `expnote run update <run_id> --append-analysis-file - < notes.md`.
+
 When one run refers to another run, prefer `[[run_id]]` in SQL text fields. The
 web UI also links bare active run ids when safe, but `[[run_id]]` is the least
 ambiguous form for agents and remains clickable in Obsidian.
@@ -188,6 +193,10 @@ expnote doc show stackcube-seed-summary \
   --workspace example \
   --json
 ```
+
+Use `--body-file <path>` / `--append-body-file <path>` to read a long document
+body from a file instead of an inline string, or `-` for stdin, e.g.
+`expnote doc update stackcube-seed-summary --append-body-file - < notes.md`.
 
 If plain sync refuses to overwrite a changed document body, use
 `sync markdown --pull-docs` to import the Obsidian body into SQLite. Use

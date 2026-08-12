@@ -162,6 +162,16 @@ expnote doc show calql-baseline-summary --json
 expnote sync markdown
 ```
 
+`--body-file`/`--append-body-file` (and the `run` equivalents
+`--analysis-file`/`--append-analysis-file`) accept a file path or `-` for
+stdin, avoiding shell substitution like `--body "$(cat notes.md)"`:
+
+```bash
+expnote doc update calql-baseline-summary \
+  --append-body-file notes.md \
+  --json
+```
+
 If a document body is edited in Obsidian, plain `expnote sync markdown` refuses
 to overwrite it. Use `--pull-docs` to import the Obsidian body into SQLite, or
 `--force` to restore the SQLite version.
@@ -297,6 +307,9 @@ Analysis. expnote inserts one blank line between the old and new text:
 ```bash
 expnote run update lu8qk41s --append-analysis "Reward plateaued after 300k steps."
 ```
+
+Use `--analysis-file`/`--append-analysis-file` to read long analysis text from
+a file or `-` for stdin instead of an inline string.
 
 When one SQL text field refers to another run, prefer `[[run_id]]`. Obsidian
 renders that as a note link, and the web UI renders it as a run-detail link. The

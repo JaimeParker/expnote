@@ -917,7 +917,13 @@ def run_add(
     purpose: Annotated[str | None, typer.Option(help="Short run purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
-    analysis: Annotated[str, typer.Option(help="Run analysis.")] = "",
+    analysis: Annotated[str | None, typer.Option(help="Run analysis.")] = None,
+    analysis_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--analysis-file", help="Read analysis from a file, or - for stdin."
+        ),
+    ] = None,
     status: Annotated[str, typer.Option(help="Run status.")] = "running",
     meta: Annotated[
         list[str] | None, typer.Option("--meta", help="Metadata key=value.")
@@ -935,6 +941,7 @@ def run_add(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
+    analysis = _resolve_text_option(analysis, analysis_file, "--analysis")
     try:
         metadata = _merge_metadata_options(meta, meta_json, metadata_json)
     except ValueError as exc:
@@ -962,7 +969,7 @@ def run_add(
         purpose=purpose or "",
         relation=relation,
         result=result,
-        analysis=analysis,
+        analysis=analysis or "",
         status=status,
         metadata=metadata,
     )
@@ -1161,11 +1168,24 @@ def run_update(
     relation: Annotated[str | None, typer.Option(help="New relation.")] = None,
     result: Annotated[str | None, typer.Option(help="New result.")] = None,
     analysis: Annotated[str | None, typer.Option(help="New analysis.")] = None,
+    analysis_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--analysis-file", help="Read new analysis from a file, or - for stdin."
+        ),
+    ] = None,
     append_analysis: Annotated[
         str | None,
         typer.Option(
             "--append-analysis",
             help="Append to Analysis, separated from existing text by one blank line.",
+        ),
+    ] = None,
+    append_analysis_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--append-analysis-file",
+            help="Read text to append to Analysis from a file, or - for stdin.",
         ),
     ] = None,
     status: Annotated[str | None, typer.Option(help="New status.")] = None,
@@ -1189,10 +1209,16 @@ def run_update(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    if analysis is not None and append_analysis is not None:
+    if (analysis is not None or analysis_file is not None) and (
+        append_analysis is not None or append_analysis_file is not None
+    ):
         raise typer.BadParameter(
             "--analysis and --append-analysis cannot be used together"
         )
+    analysis = _resolve_text_option(analysis, analysis_file, "--analysis")
+    append_analysis = _resolve_text_option(
+        append_analysis, append_analysis_file, "--append-analysis"
+    )
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -1450,7 +1476,11 @@ def doc_add(
     title: Annotated[str, typer.Option("--title", help="Document title.")],
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
-    body: Annotated[str, typer.Option("--body", help="Document body.")] = "",
+    body: Annotated[str | None, typer.Option("--body", help="Document body.")] = None,
+    body_file: Annotated[
+        Path | None,
+        typer.Option("--body-file", help="Read body from a file, or - for stdin."),
+    ] = None,
     run_ids: Annotated[
         list[str] | None,
         typer.Option("--run-id", help="Related run id. Can be used repeatedly."),
@@ -1460,6 +1490,7 @@ def doc_add(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
+    body = _resolve_text_option(body, body_file, "--body")
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         _moc_id_exists(conn, moc_id)
@@ -1470,7 +1501,7 @@ def doc_add(
             )
             VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
-            (doc_id, moc_id, title, body, "{}", ts, ts),
+            (doc_id, moc_id, title, body or "", "{}", ts, ts),
         )
         seen_run_ids: set[str] = set()
         position = 1
@@ -1547,11 +1578,22 @@ def doc_update(
     workspace_dir: WorkspaceDirOption = None,
     title: Annotated[str | None, typer.Option(help="New document title.")] = None,
     body: Annotated[str | None, typer.Option("--body", help="New body.")] = None,
+    body_file: Annotated[
+        Path | None,
+        typer.Option("--body-file", help="Read new body from a file, or - for stdin."),
+    ] = None,
     append_body: Annotated[
         str | None,
         typer.Option(
             "--append-body",
             help="Append to body, separated from existing text by one blank line.",
+        ),
+    ] = None,
+    append_body_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--append-body-file",
+            help="Read text to append to body from a file, or - for stdin.",
         ),
     ] = None,
     meta: Annotated[
@@ -1574,8 +1616,12 @@ def doc_update(
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    if body is not None and append_body is not None:
+    if (body is not None or body_file is not None) and (
+        append_body is not None or append_body_file is not None
+    ):
         raise typer.BadParameter("--body and --append-body cannot be used together")
+    body = _resolve_text_option(body, body_file, "--body")
+    append_body = _resolve_text_option(append_body, append_body_file, "--append-body")
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         row = _require_doc_row(conn, doc_id)
@@ -3143,6 +3189,30 @@ def _run_show_field(data: dict[str, object], field: str) -> object:
         fields = ", ".join(sorted(_RUN_SHOW_FIELDS))
         raise typer.BadParameter(f"supported fields: {fields}")
     return data[field]
+
+
+def _resolve_text_option(
+    value: str | None,
+    file_value: Path | None,
+    flag: str,
+) -> str | None:
+    """Resolve an inline string option against its `--<flag>-file` counterpart.
+
+    `flag` is the canonical flag, e.g. "--body" (file flag is "--body-file").
+    Returns None if neither was given, so callers can distinguish unset vs "".
+    """
+    if value is not None and file_value is not None:
+        raise typer.BadParameter(f"{flag} and {flag}-file cannot be used together")
+    if file_value is None:
+        return value
+    if str(file_value) == "-":
+        content = sys.stdin.read()
+    else:
+        try:
+            content = file_value.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise typer.BadParameter(f"could not read {flag}-file: {exc}") from exc
+    return content.rstrip("\n")
 
 
 def _merge_metadata_options(

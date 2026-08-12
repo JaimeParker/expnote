@@ -1175,6 +1175,313 @@ def test_doc_crud_and_run_links(tmp_path):
     assert json.loads(result.output) == []
 
 
+def test_doc_add_reads_body_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    body_path = tmp_path / "body.md"
+    body_path.write_text("Body from a file.\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--doc-id",
+            "filedoc",
+            "--moc-id",
+            "default",
+            "--title",
+            "File-backed doc",
+            "--body-file",
+            str(body_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "Body from a file."
+
+
+def test_doc_add_reads_body_from_stdin(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--doc-id",
+            "stdindoc",
+            "--moc-id",
+            "default",
+            "--title",
+            "Stdin-backed doc",
+            "--body-file",
+            "-",
+            "--json",
+        ],
+        input="Body from stdin.\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "Body from stdin."
+
+
+def test_doc_add_body_file_strips_trailing_newlines(tmp_path):
+    _init_with_topic(tmp_path)
+    body_path = tmp_path / "body.md"
+    body_path.write_text("line one\nline two\n\n\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--doc-id",
+            "trimdoc",
+            "--moc-id",
+            "default",
+            "--title",
+            "Trimmed doc",
+            "--body-file",
+            str(body_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "line one\nline two"
+
+
+def test_doc_add_rejects_body_and_body_file(tmp_path):
+    _init_with_topic(tmp_path)
+    body_path = tmp_path / "body.md"
+    body_path.write_text("from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--doc-id",
+            "conflictdoc",
+            "--moc-id",
+            "default",
+            "--title",
+            "Conflict doc",
+            "--body",
+            "inline",
+            "--body-file",
+            str(body_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--body and --body-file cannot be used together" in result.output
+
+
+def test_doc_add_body_file_missing_path(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--doc-id",
+            "missingdoc",
+            "--moc-id",
+            "default",
+            "--title",
+            "Missing file doc",
+            "--body-file",
+            str(tmp_path / "nonexistent.md"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "could not read --body-file" in result.output
+
+
+def test_doc_update_reads_body_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    assert (
+        runner.invoke(
+            app,
+            [
+                "doc",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--doc-id",
+                "updatedoc",
+                "--moc-id",
+                "default",
+                "--title",
+                "Update doc",
+                "--body",
+                "original",
+            ],
+        ).exit_code
+        == 0
+    )
+    body_path = tmp_path / "new_body.md"
+    body_path.write_text("Replaced from file.\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "update",
+            "updatedoc",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--body-file",
+            str(body_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "Replaced from file."
+
+
+def test_doc_update_appends_body_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    assert (
+        runner.invoke(
+            app,
+            [
+                "doc",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--doc-id",
+                "appenddoc",
+                "--moc-id",
+                "default",
+                "--title",
+                "Append doc",
+                "--body",
+                "existing",
+            ],
+        ).exit_code
+        == 0
+    )
+    append_path = tmp_path / "append.md"
+    append_path.write_text("appended from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "update",
+            "appenddoc",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--append-body-file",
+            str(append_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["body"] == "existing\n\nappended from file"
+
+
+def test_doc_update_rejects_body_and_body_file(tmp_path):
+    _init_with_topic(tmp_path)
+    assert (
+        runner.invoke(
+            app,
+            [
+                "doc",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--doc-id",
+                "conflictupdatedoc",
+                "--moc-id",
+                "default",
+                "--title",
+                "Conflict update doc",
+            ],
+        ).exit_code
+        == 0
+    )
+    body_path = tmp_path / "body.md"
+    body_path.write_text("from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "update",
+            "conflictupdatedoc",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--body",
+            "inline",
+            "--body-file",
+            str(body_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--body and --body-file cannot be used together" in result.output
+
+
+def test_doc_update_rejects_body_file_and_append_body(tmp_path):
+    _init_with_topic(tmp_path)
+    assert (
+        runner.invoke(
+            app,
+            [
+                "doc",
+                "add",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--doc-id",
+                "crossconflictdoc",
+                "--moc-id",
+                "default",
+                "--title",
+                "Cross conflict doc",
+            ],
+        ).exit_code
+        == 0
+    )
+    body_path = tmp_path / "body.md"
+    body_path.write_text("from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doc",
+            "update",
+            "crossconflictdoc",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--body-file",
+            str(body_path),
+            "--append-body",
+            "extra",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--body and --append-body cannot be used together" in result.output
+
+
 def test_sql_moc_crud_and_moc_scoped_topics(tmp_path):
     assert (
         runner.invoke(
@@ -1581,6 +1888,186 @@ def test_run_update_rejects_analysis_replace_and_append(tmp_path):
             str(tmp_path / ".expnote"),
             "--analysis",
             "replacement",
+            "--append-analysis",
+            "extra",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--analysis and --append-analysis cannot be used together" in result.output
+
+
+def test_run_add_reads_analysis_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    analysis_path = tmp_path / "analysis.md"
+    analysis_path.write_text("Analysis from a file.\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--topic",
+            "topic",
+            "--run-id",
+            "filerun",
+            "--purpose",
+            "purpose filerun",
+            "--analysis-file",
+            str(analysis_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == "Analysis from a file."
+
+
+def test_run_add_reads_analysis_from_stdin(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--topic",
+            "topic",
+            "--run-id",
+            "stdinrun",
+            "--purpose",
+            "purpose stdinrun",
+            "--analysis-file",
+            "-",
+            "--json",
+        ],
+        input="Analysis from stdin.\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == "Analysis from stdin."
+
+
+def test_run_add_analysis_file_missing_path(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "add",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--topic",
+            "topic",
+            "--run-id",
+            "missingrun",
+            "--purpose",
+            "purpose missingrun",
+            "--analysis-file",
+            str(tmp_path / "nonexistent.md"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "could not read --analysis-file" in result.output
+
+
+def test_run_update_reads_analysis_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="original")
+    analysis_path = tmp_path / "analysis.md"
+    analysis_path.write_text("Replaced from file.\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--analysis-file",
+            str(analysis_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == "Replaced from file."
+
+
+def test_run_update_appends_analysis_from_file(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="first observation")
+    append_path = tmp_path / "append.md"
+    append_path.write_text("second observation", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--append-analysis-file",
+            str(append_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["analysis"] == (
+        "first observation\n\nsecond observation"
+    )
+
+
+def test_run_update_rejects_analysis_and_analysis_file(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="original")
+    analysis_path = tmp_path / "analysis.md"
+    analysis_path.write_text("from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--analysis",
+            "inline",
+            "--analysis-file",
+            str(analysis_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--analysis and --analysis-file cannot be used together" in result.output
+
+
+def test_run_update_rejects_analysis_file_and_append_analysis(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1", analysis="original")
+    analysis_path = tmp_path / "analysis.md"
+    analysis_path.write_text("from file", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "update",
+            "run1",
+            "--workspace-dir",
+            str(tmp_path / ".expnote"),
+            "--analysis-file",
+            str(analysis_path),
             "--append-analysis",
             "extra",
         ],
