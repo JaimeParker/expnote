@@ -770,6 +770,7 @@ _INDEX_HTML = """
     .muted { color: var(--muted); }
     .subtle { color: var(--subtle); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+    .grid-stack { grid-template-columns: 1fr; }
     .card {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -1376,7 +1377,7 @@ _INDEX_HTML = """
       state.selectedMoc = id;
       const moc = await api('/api/mocs/' + encodeURIComponent(id));
       const stats = `<div class="stats"><div class="stat"><span class="muted">Topics</span><strong>${moc.topics.length}</strong></div><div class="stat"><span class="muted">Docs</span><strong>${moc.docs.length}</strong></div></div>`;
-      $('view').innerHTML = `${hero(esc(moc.title), `<code>${esc(moc.id)}</code> ${esc(moc.summary || '')}`, stats)}<h2>Topics</h2><div class="grid">${moc.topics.map(t => `<button class="card card-button" onclick="navigate('#/topic/${encodeURIComponent(t.id)}')"><h3>${esc(t.title)}</h3><p class="muted">${esc(t.summary || 'No summary recorded.')}</p></button>`).join('') || empty('No topics in this MOC.')}</div><h2>Docs</h2>${docTable(moc.docs)}`;
+      $('view').innerHTML = `${hero(esc(moc.title), `<code>${esc(moc.id)}</code> ${esc(moc.summary || '')}`, stats)}<h2>Topics</h2><div class="grid grid-stack">${moc.topics.map(t => `<button class="card card-button" onclick="navigate('#/topic/${encodeURIComponent(t.id)}')"><h3>${esc(t.title)}</h3><p class="muted">${esc(t.summary || 'No summary recorded.')}</p></button>`).join('') || empty('No topics in this MOC.')}</div><h2>Docs</h2>${docTable(moc.docs)}`;
     }
     async function loadTopic(id) {
       await ensureMocs();
