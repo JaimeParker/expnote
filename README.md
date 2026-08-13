@@ -344,6 +344,9 @@ Agent contract:
   `Analysis` or cross-run `doc` records.
 - Refer to runs as `[[run_id]]` inside Purpose, Relation, Result, Analysis, and
   doc bodies when the reference should be clickable in both Obsidian and web.
+- Run `expnote guide agent --json` and read the `run_record_template` key
+  for a full example of a finished record with good Purpose, Relation,
+  Result, Analysis, and Metadata content, plus a short checklist.
 - Use `expnote markdown table diff --json` before trusting a manually edited
   MOC table.
 - Run `expnote sync all` after structured updates if Markdown and curated MOCs

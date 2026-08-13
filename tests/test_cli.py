@@ -147,6 +147,42 @@ def test_guide_agent_mentions_status_lookup_and_manual_status():
     assert "manual" in data["common_pitfalls"]["status"]
 
 
+def test_guide_agent_json_includes_run_record_template():
+    result = runner.invoke(app, ["guide", "agent", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    template = data["run_record_template"]["example"]
+    assert template["run_id"] == "a7zf90k7"
+    assert template["result"] == "78% success at 1M steps"
+    assert "[[k2m9p3qw]]" in template["relation"]
+    assert template["metadata"]["seed"] == 1
+    assert template["status"] == "finished"
+    checklist = data["run_record_template"]["checklist"]
+    assert any("Metadata captures every hyperparameter" in item for item in checklist)
+
+
+def test_guide_agent_human_output_includes_run_record_template():
+    result = runner.invoke(app, ["guide", "agent"])
+
+    assert result.exit_code == 0, result.output
+    assert "Good run record template (run_id a7zf90k7):" in result.output
+    assert "78% success at 1M steps" in result.output
+    assert "[[k2m9p3qw]]" in result.output
+    assert "Run record checklist:" in result.output
+
+
+def test_guide_agent_run_record_checklist_is_synced_between_json_and_text():
+    json_result = runner.invoke(app, ["guide", "agent", "--json"])
+    text_result = runner.invoke(app, ["guide", "agent"])
+
+    assert json_result.exit_code == 0, json_result.output
+    assert text_result.exit_code == 0, text_result.output
+    data = json.loads(json_result.output)
+    for item in data["run_record_template"]["checklist"]:
+        assert item in text_result.output
+
+
 def test_guide_rejects_unknown_topic():
     result = runner.invoke(app, ["guide", "unknown", "--json"])
 

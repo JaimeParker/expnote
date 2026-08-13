@@ -33,6 +33,9 @@ PYTHONPATH=. python -m expnote.cli guide agent --json
   or cross-run `doc` records.
 - Write clickable run references as `[[run_id]]` in Purpose, Relation, Result,
   Analysis, and doc bodies. Obsidian and the web UI both resolve that form.
+- See `run_record_template` in `expnote guide agent --json` (or "Good Run
+  Record Template" below) for a full example of a finished record with
+  good Purpose, Relation, Result, Analysis, and Metadata content.
 - Use `workspace pack` and `workspace unpack` to move SQLite state to another
   device; regenerate Obsidian Markdown with `sync all` after unpacking.
 
@@ -95,6 +98,42 @@ For read-only browsing independent from Obsidian:
 expnote web --workspace example
 expnote web --workspace example --detach --no-open
 ```
+
+## Good Run Record Template
+
+The Minimal Workflow above leaves `a7zf90k7` in progress. Once a run
+finishes, update it with the same field discipline used everywhere else in
+this guide — Result stays a one-line headline metric, everything else moves
+to Analysis:
+
+```bash
+expnote run update a7zf90k7 \
+  --workspace example \
+  --status finished \
+  --result "78% success at 1M steps" \
+  --append-analysis "Success rate plateaued at 78% after roughly 700k steps; critic loss stabilized after 300k steps with no divergence, so this baseline is stable enough to compare against. [[k2m9p3qw]] (higher actor LR) converges faster but reaches a similar final success rate, so LR is not the current bottleneck. Next: rerun at 2M steps with image observations to confirm 78% is a real plateau and not an early stop." \
+  --meta-json total_steps=1000000 \
+  --json
+```
+
+What makes each field good here:
+
+- Purpose (`Train SAC on StackCube seed=1`) states the specific
+  configuration under test, not just "training run".
+- Relation (`Baseline for [[k2m9p3qw]] (higher actor-LR ablation on the
+  same env)`) links related runs with `[[run_id]]` so this run's place in
+  a comparison chain is discoverable.
+- Result is one line: the terminal headline metric only, no comparisons
+  or causes.
+- Analysis carries interpretation, diagnosis, comparisons via
+  `[[run_id]]`, and next steps; that content never belongs in Result.
+- Metadata captures every hyperparameter needed to reproduce the run as
+  typed key/values, not embedded in prose fields.
+- status is set explicitly to `finished` or `failed` when the run
+  concludes; `running` is not a resting state for reported results.
+
+Agents that cannot read repository files can get this same template from
+`expnote guide agent --json` under the `run_record_template` key.
 
 ## Query Records
 

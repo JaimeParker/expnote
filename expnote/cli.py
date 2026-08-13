@@ -275,6 +275,69 @@ _AGENT_GUIDE = {
             "sync all or markdown table sync/add/add-topic"
         ),
     },
+    "run_record_template": {
+        "description": (
+            "One finished run record showing good Purpose, Relation, "
+            "Result, Analysis, and Metadata content; use this shape, not "
+            "the in-progress placeholders shown in README or "
+            "agent-quickstart"
+        ),
+        "example": {
+            "run_id": "a7zf90k7",
+            "purpose": "Train SAC on StackCube seed=1",
+            "relation": (
+                "Baseline for [[k2m9p3qw]] (higher actor-LR ablation "
+                "on the same env)"
+            ),
+            "result": "78% success at 1M steps",
+            "analysis": (
+                "Success rate plateaued at 78% after roughly 700k "
+                "steps; critic loss stabilized after 300k steps with "
+                "no divergence, so this baseline is stable enough to "
+                "compare against. [[k2m9p3qw]] (higher actor LR) "
+                "converges faster but reaches a similar final success "
+                "rate, so LR is not the current bottleneck. Next: "
+                "rerun at 2M steps with image observations to confirm "
+                "78% is a real plateau and not an early stop."
+            ),
+            "metadata": {
+                "algo": "sac",
+                "env_id": "StackCube-v1",
+                "seed": 1,
+                "total_steps": 1000000,
+            },
+            "status": "finished",
+        },
+        "checklist": [
+            (
+                "Purpose states the specific configuration or "
+                "hypothesis under test, not just 'training run'"
+            ),
+            (
+                "Relation links related runs with [[run_id]] so this "
+                "run's place in a comparison chain is discoverable"
+            ),
+            (
+                "Result is one line: the terminal headline metric "
+                "only, no comparisons or causes"
+            ),
+            (
+                "Analysis carries interpretation, diagnosis, "
+                "comparisons via [[run_id]], and next steps; that "
+                "content never belongs in Result"
+            ),
+            (
+                "Metadata captures every hyperparameter needed to "
+                "reproduce the run as typed key/values, not embedded "
+                "in prose fields"
+            ),
+            (
+                "status is set explicitly to finished or failed when "
+                "the run concludes; running is not a resting state "
+                "for reported results"
+            ),
+        ],
+    },
 }
 
 
@@ -354,7 +417,26 @@ def _render_agent_guide() -> str:
             "Handoff checks:",
             "expnote validate --json",
             "expnote markdown table diff --moc-path <path> --section <heading> --json",
+            "",
+            "Good run record template (run_id a7zf90k7):",
+            "- Purpose: Train SAC on StackCube seed=1",
+            "- Relation: Baseline for [[k2m9p3qw]] (higher actor-LR "
+            "ablation on the same env)",
+            "- Result: 78% success at 1M steps",
+            "- Analysis: Success rate plateaued at 78% after roughly "
+            "700k steps; critic loss stabilized after 300k steps with "
+            "no divergence, so this baseline is stable enough to "
+            "compare against. [[k2m9p3qw]] (higher actor LR) converges "
+            "faster but reaches a similar final success rate, so LR is "
+            "not the current bottleneck. Next: rerun at 2M steps with "
+            "image observations to confirm 78% is a real plateau and "
+            "not an early stop.",
+            "- Metadata: algo=sac, env_id=StackCube-v1, seed=1, "
+            "total_steps=1000000",
+            "- status: finished",
+            "Run record checklist:",
         ]
+        + [f"- {item}" for item in _AGENT_GUIDE["run_record_template"]["checklist"]]
     )
 
 
