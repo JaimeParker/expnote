@@ -3190,16 +3190,31 @@ def import_rlgarden(
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
     result: Annotated[str, typer.Option(help="Result summary.")] = "",
     analysis: Annotated[str, typer.Option(help="Initial analysis.")] = "",
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Override the run id (e.g. the wandb run id)."),
+    ] = None,
+    wandb_url: Annotated[
+        str | None,
+        typer.Option(
+            "--wandb-url", help="wandb run URL; stored as metadata.wandb_url."
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
-    fields = run_fields_from_config(load_config(config_path))
+    try:
+        fields = run_fields_from_config(load_config(config_path))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if wandb_url is not None:
+        fields["metadata"]["wandb_url"] = wandb_url
     data = _insert_run(
         root,
         state_dir=state_dir,
-        run_id=fields["run_id"],
+        run_id=run_id if run_id is not None else fields["run_id"],
         topic=topic,
         moc_id=moc_id,
         purpose=purpose if purpose is not None else fields["purpose"],

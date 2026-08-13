@@ -10,15 +10,25 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def run_fields_from_config(config: dict[str, Any]) -> dict[str, Any]:
-    args = config.get("args", {})
-    run_id = str(config.get("run_name") or args.get("exp_name") or "")
+    if config.get("schema_version") != 3:
+        raise ValueError(
+            "unsupported rl-garden config schema "
+            f"(schema_version={config.get('schema_version')!r}, expected 3)"
+        )
+
+    inputs = config.get("inputs", {})
+    derived = config.get("derived", {})
+    selection = config.get("selection", {})
+    run_id = str(derived.get("run_name") or inputs.get("exp_name") or "")
     if not run_id:
-        raise ValueError("rl-garden config has no run_name or args.exp_name")
+        raise ValueError(
+            "rl-garden config has no derived.run_name or inputs.exp_name"
+        )
 
     metadata = {
         "adapter": "rlgarden",
-        "training_phase": str(config.get("training_phase", "")),
-        "algorithm": str(config.get("algorithm", "")),
+        "training_phase": str(selection.get("training_phase", "")),
+        "algorithm": str(selection.get("algorithm", "")),
     }
     for key in [
         "env_id",
@@ -27,13 +37,14 @@ def run_fields_from_config(config: dict[str, Any]) -> dict[str, Any]:
         "control_mode",
         "seed",
         "log_dir",
-        "total_timesteps",
         "num_offline_steps",
-        "offline_dataset_path",
+        "num_online_steps",
+        "offline_dataset",
         "wandb_project",
         "wandb_group",
+        "wandb_entity",
     ]:
-        value = args.get(key)
+        value = inputs.get(key)
         if value is not None:
             metadata[key] = str(value)
 
