@@ -795,13 +795,13 @@ _INDEX_HTML = """
       box-shadow: var(--shadow-soft);
     }
     table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
-    table[data-table="topic-runs"], table[data-table="doc-runs"] { min-width: 1080px; }
+    table[data-table="topic-runs"], table[data-table="doc-runs"] { min-width: 1080px; table-layout: fixed; }
     table[data-table="docs"] { min-width: 720px; }
     table[data-table="benchmark-matrix"] { width: auto; }
     table[data-table="benchmark-matrix"] th, table[data-table="benchmark-matrix"] td { white-space: nowrap; }
-    col.col-run { width: 1%; }
-    col.col-status { width: 1%; }
-    col.col-role { width: 1%; }
+    col.col-run { width: 190px; }
+    col.col-status { width: 100px; }
+    col.col-role { width: 90px; }
     col.col-updated { width: 170px; }
     col.col-moc { width: 220px; }
     col.col-purpose { width: 28%; }
@@ -823,7 +823,9 @@ _INDEX_HTML = """
       box-shadow: inset 0 -1px 0 rgba(31, 41, 55, 0.08);
     }
     td { overflow-wrap: anywhere; }
-    td[data-cell="run"], td[data-cell="status"], td[data-cell="role"], td[data-cell="updated"] { white-space: nowrap; }
+    td[data-cell="status"], td[data-cell="role"], td[data-cell="updated"] { white-space: nowrap; }
+    td[data-cell="run"] .link-button { max-width: 100%; white-space: normal; }
+    td[data-cell="run"] .link-button code { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
     td[data-cell="purpose"], td[data-cell="relation"], td[data-cell="result"], td[data-cell="note"] { line-height: 1.45; }
     tbody tr:hover { background: rgba(238, 244, 255, 0.62); }
     tbody tr:last-child td { border-bottom: 0; }
