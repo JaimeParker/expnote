@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from expnote.db import readonly_transaction, row_to_dict
 from expnote.links import render_html_run_links
+from expnote.tensorboard_live import TensorboardLiveError, fetch_tensorboard_charts
 from expnote.wandb_live import (
     WandbLiveError,
     clear_wandb_cache,
@@ -211,6 +212,36 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 samples=1000,
             )
         except WandbLiveError as exc:
+            return {
+                "available": False,
+                "reason": exc.reason,
+                "message": exc.message,
+            }
+
+    @app.get("/api/runs/{run_id}/tensorboard")
+    def api_run_tensorboard(run_id: str) -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            row = conn.execute(
+                """
+                SELECT id, status, metadata_json
+                FROM runs
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Run not found")
+            data = row_to_dict(row)
+        path = (data.get("metadata") or {}).get("tensorboard_dir")
+        if not path:
+            return {
+                "available": False,
+                "reason": "missing_tensorboard_dir",
+                "message": "This run does not have metadata.tensorboard_dir.",
+            }
+        try:
+            return fetch_tensorboard_charts(str(path), samples=1000)
+        except TensorboardLiveError as exc:
             return {
                 "available": False,
                 "reason": exc.reason,
@@ -1026,7 +1057,7 @@ _INDEX_HTML = """
     </main>
   </div>
   <script>
-    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartMode: 'combined', wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection' };
+    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartMode: 'combined', wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection', tensorboardChartMode: 'combined', tensorboardChartData: null };
     const $ = (id) => document.getElementById(id);
     const route = () => window.location.hash || '#/';
 
@@ -1058,6 +1089,9 @@ _INDEX_HTML = """
     }
     function hasWandbUrl(meta) {
       return Boolean(meta && meta.wandb_url);
+    }
+    function hasTensorboardDir(meta) {
+      return Boolean(meta && meta.tensorboard_dir);
     }
     function formatBytes(bytes) {
       const value = Number(bytes || 0);
@@ -1145,12 +1179,78 @@ _INDEX_HTML = """
         return;
       }
       if (state.wandbChartMode === 'split') {
-        renderSplitWandbCharts(target, groups);
+        renderSplitMetricCharts(target, groups, 'wandb');
         return;
       }
-      renderCombinedWandbCharts(target, groups);
+      renderCombinedMetricCharts(target, groups, 'wandb');
     }
-    function wandbTrace(chart) {
+    function tensorboardPanel(r) {
+      if (!hasTensorboardDir(r.metadata)) return '';
+      const id = esc(r.id);
+      return `<section class="markdown" id="tensorboard-panel"><h2>TensorBoard Charts</h2><div class="wandb-actions"><button id="tensorboardFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadTensorboardCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch TensorBoard charts</button><button id="tensorboardModeToggle" class="top-button" type="button" onclick="toggleTensorboardChartMode()" disabled>Split metrics</button><span id="tensorboardStatus" class="wandb-status">Uses metadata.tensorboard_dir and reads local event files; does not write to SQL.</span></div><div id="tensorboardCharts"></div></section>`;
+    }
+    function reviveTensorboardPanel() {
+      if (!state.tensorboardChartData || !hasTensorboardDir(state.currentRun && state.currentRun.metadata)) return;
+      updateTensorboardModeToggle();
+      const data = state.tensorboardChartData;
+      $('tensorboardStatus').textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
+      renderTensorboardCharts(data);
+    }
+    async function loadTensorboardCharts(runId) {
+      const button = $('tensorboardFetch');
+      const status = $('tensorboardStatus');
+      const target = $('tensorboardCharts');
+      if (!window.Plotly) {
+        status.innerHTML = '<span class="error">Plotly is not available from the expnote server.</span>';
+        return;
+      }
+      button.disabled = true;
+      state.tensorboardChartData = null;
+      updateTensorboardModeToggle();
+      status.textContent = 'Reading local TensorBoard logs...';
+      target.innerHTML = '';
+      try {
+        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/tensorboard');
+        if (!data.available) {
+          status.innerHTML = `<span class="error">${esc(data.reason)}: ${esc(data.message)}</span>`;
+          return;
+        }
+        state.tensorboardChartData = data;
+        renderTensorboardCharts(data);
+        updateTensorboardModeToggle();
+        status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
+      } catch (err) {
+        status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+    function toggleTensorboardChartMode() {
+      if (!state.tensorboardChartData) return;
+      state.tensorboardChartMode = state.tensorboardChartMode === 'combined' ? 'split' : 'combined';
+      renderTensorboardCharts(state.tensorboardChartData);
+      updateTensorboardModeToggle();
+    }
+    function updateTensorboardModeToggle() {
+      const button = $('tensorboardModeToggle');
+      if (!button) return;
+      button.disabled = !state.tensorboardChartData;
+      button.textContent = state.tensorboardChartMode === 'combined' ? 'Split metrics' : 'Combine group';
+    }
+    function renderTensorboardCharts(data) {
+      const target = $('tensorboardCharts');
+      const groups = data.groups || [];
+      if (!groups.length) {
+        target.innerHTML = empty('No numeric metrics were found in this TensorBoard log.');
+        return;
+      }
+      if (state.tensorboardChartMode === 'split') {
+        renderSplitMetricCharts(target, groups, 'tensorboard');
+        return;
+      }
+      renderCombinedMetricCharts(target, groups, 'tensorboard');
+    }
+    function metricTrace(chart) {
       return {
           x: chart.x || [],
           y: chart.y || [],
@@ -1160,7 +1260,7 @@ _INDEX_HTML = """
           hovertemplate: '%{x}<br>%{y}<extra>%{fullData.name}</extra>'
       };
     }
-    function wandbLayout(title, showLegend) {
+    function metricLayout(title, showLegend) {
       return {
           margin: { l: 54, r: 18, t: 12, b: 42 },
           title: title ? { text: title, font: { size: 13 } } : undefined,
@@ -1172,24 +1272,24 @@ _INDEX_HTML = """
           plot_bgcolor: '#fff'
       };
     }
-    function wandbPlotOptions() {
+    function metricPlotOptions() {
       return {
           responsive: true,
           displaylogo: false
       };
     }
-    function renderCombinedWandbCharts(target, groups) {
-      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart" id="wandb-chart-combined-${groupIndex}"></div></div>`).join('');
+    function renderCombinedMetricCharts(target, groups, idPrefix) {
+      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart" id="${idPrefix}-chart-combined-${groupIndex}"></div></div>`).join('');
       groups.forEach((group, groupIndex) => {
-        const traces = (group.charts || []).map(chart => wandbTrace(chart));
-        Plotly.newPlot(`wandb-chart-combined-${groupIndex}`, traces, wandbLayout('', true), wandbPlotOptions());
+        const traces = (group.charts || []).map(chart => metricTrace(chart));
+        Plotly.newPlot(`${idPrefix}-chart-combined-${groupIndex}`, traces, metricLayout('', true), metricPlotOptions());
       });
     }
-    function renderSplitWandbCharts(target, groups) {
-      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart-grid">${(group.charts || []).map((chart, chartIndex) => `<div class="wandb-chart-card"><div class="wandb-chart-title">${esc(chart.metric)}</div><div class="wandb-chart" id="wandb-chart-split-${groupIndex}-${chartIndex}"></div></div>`).join('')}</div></div>`).join('');
+    function renderSplitMetricCharts(target, groups, idPrefix) {
+      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart-grid">${(group.charts || []).map((chart, chartIndex) => `<div class="wandb-chart-card"><div class="wandb-chart-title">${esc(chart.metric)}</div><div class="wandb-chart" id="${idPrefix}-chart-split-${groupIndex}-${chartIndex}"></div></div>`).join('')}</div></div>`).join('');
       groups.forEach((group, groupIndex) => {
         (group.charts || []).forEach((chart, chartIndex) => {
-          Plotly.newPlot(`wandb-chart-split-${groupIndex}-${chartIndex}`, [wandbTrace(chart)], wandbLayout('', false), wandbPlotOptions());
+          Plotly.newPlot(`${idPrefix}-chart-split-${groupIndex}-${chartIndex}`, [metricTrace(chart)], metricLayout('', false), metricPlotOptions());
         });
       });
     }
@@ -1284,12 +1384,12 @@ _INDEX_HTML = """
         const traces = runs.flatMap(run => {
           const chart = findRunChart(run, metric.name);
           if (!chart) return [];
-          const trace = wandbTrace(chart);
+          const trace = metricTrace(chart);
           trace.name = run.id;
           trace.line = { color: colorForRun(run.id), width: 2 };
           return [trace];
         });
-        Plotly.newPlot(`wandb-compare-chart-${index}`, traces, wandbLayout('', true), wandbPlotOptions());
+        Plotly.newPlot(`wandb-compare-chart-${index}`, traces, metricLayout('', true), metricPlotOptions());
       });
     }
     function compareMessages(data) {
@@ -1406,7 +1506,7 @@ _INDEX_HTML = """
     function topicRunTable(rows) {
       if (!rows.length) return empty('No runs to display.');
       const cols = '<colgroup><col class="col-run"><col class="col-status"><col class="col-purpose"><col class="col-relation"><col class="col-result"></colgroup>';
-      return `<div class="table-wrap"><table data-table="topic-runs">${cols}<thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td data-cell="run"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="relation">${r.relation_html || esc(r.relation)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="topic-runs">${cols}<thead><tr><th>run</th><th>status</th><th>purpose</th><th>relation</th><th>result</th></tr></thead><tbody>${rows.map(r => `<tr><td data-cell="run"><button class="link-button" title="${esc(idForRun(r))}" onclick="navigate('#/run/${encodeURIComponent(idForRun(r))}')"><code>${esc(idForRun(r))}</code></button></td><td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="relation">${r.relation_html || esc(r.relation)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function docRunTable(rows) {
       if (!rows.length) return empty('No related runs linked to this document.');
@@ -1414,7 +1514,7 @@ _INDEX_HTML = """
       const showNote = rows.some(r => String(r.note || '').trim());
       const headers = ['<th>run</th>', showRole ? '<th>role</th>' : '', showNote ? '<th>note</th>' : '', '<th>status</th>', '<th>purpose</th>', '<th>result</th>'].join('');
       const cols = ['<col class="col-run">', showRole ? '<col class="col-role">' : '', showNote ? '<col class="col-note">' : '', '<col class="col-status">', '<col class="col-purpose">', '<col class="col-result">'].join('');
-      const body = rows.map(r => `<tr><td data-cell="run"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td>${showRole ? `<td data-cell="role">${r.role_html || esc(r.role || '')}</td>` : ''}${showNote ? `<td data-cell="note">${r.note_html || esc(r.note || '')}</td>` : ''}<td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('');
+      const body = rows.map(r => `<tr><td data-cell="run"><button class="link-button" title="${esc(r.run_id)}" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td>${showRole ? `<td data-cell="role">${r.role_html || esc(r.role || '')}</td>` : ''}${showNote ? `<td data-cell="note">${r.note_html || esc(r.note || '')}</td>` : ''}<td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('');
       return `<div class="table-wrap"><table data-table="doc-runs"><colgroup>${cols}</colgroup><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
     }
     function docTable(rows) {
@@ -1430,10 +1530,15 @@ _INDEX_HTML = """
         state.wandbChartData = null;
         state.wandbCompareData = null;
         state.wandbCompareMode = 'intersection';
+        state.tensorboardChartMode = 'combined';
+        state.tensorboardChartData = null;
       }
       state.currentRun = r;
-      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
-      if (sameRun) reviveWandbPanel();
+      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}${tensorboardPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
+      if (sameRun) {
+        reviveWandbPanel();
+        reviveTensorboardPanel();
+      }
     }
     async function loadDoc(id) {
       await ensureMocs();

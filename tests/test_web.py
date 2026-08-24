@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from expnote.cli import app as cli_app
 from expnote.db import transaction
+from expnote.tensorboard_live import (
+    TensorboardLiveError,
+    fetch_tensorboard_charts,
+    group_tensorboard_scalars,
+)
 from expnote.wandb_live import (
     WandbLiveError,
     fetch_wandb_charts,
@@ -660,8 +666,8 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "toggleWandbCompareMetricMode" in _INDEX_HTML
     assert "comparisonMetrics" in _INDEX_HTML
     assert "colorForRun" in _INDEX_HTML
-    assert "renderCombinedWandbCharts" in _INDEX_HTML
-    assert "renderSplitWandbCharts" in _INDEX_HTML
+    assert "renderCombinedMetricCharts" in _INDEX_HTML
+    assert "renderSplitMetricCharts" in _INDEX_HTML
     assert "wandb-chart-grid" in _INDEX_HTML
     assert "modal-backdrop" in _INDEX_HTML
     assert "checkbox" in _INDEX_HTML
@@ -669,7 +675,7 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "wandb-chart-card" in _INDEX_HTML
     assert "wandb-chart-title" in _INDEX_HTML
     assert "repeat(auto-fit, minmax(320px, 1fr))" in _INDEX_HTML
-    assert "wandb-chart-split-${groupIndex}-${chartIndex}" in _INDEX_HTML
+    assert "${idPrefix}-chart-split-${groupIndex}-${chartIndex}" in _INDEX_HTML
     assert "wandb-compare-chart-${index}" in _INDEX_HTML
     assert "state.wandbChartData) return" in _INDEX_HTML
     assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
@@ -792,3 +798,175 @@ def test_web_index_has_benchmark_route_and_matrix_table():
     assert "All benchmarks" in _INDEX_HTML
     assert "api('/api/benchmarks')" in _INDEX_HTML
     assert "<h2>Benchmarks</h2>" in _INDEX_HTML
+
+
+def test_web_index_has_tensorboard_panel():
+    assert "tensorboard-panel" in _INDEX_HTML
+    assert "function tensorboardPanel" in _INDEX_HTML
+    assert "function renderTensorboardCharts" in _INDEX_HTML
+    assert "hasTensorboardDir" in _INDEX_HTML
+
+
+def test_tensorboard_scalars_group_by_tag_prefix_single_run():
+    groups = group_tensorboard_scalars(
+        [
+            {"run": ".", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "losses/actor_loss", "step": 1, "value": 0.5},
+            {"run": ".", "tag": "q/predicted_q", "step": 0, "value": 2.0},
+        ]
+    )
+
+    by_name = {group["name"]: group for group in groups}
+    assert set(by_name) == {"losses", "q"}
+    assert by_name["losses"]["charts"][0]["metric"] == "losses/actor_loss"
+    assert by_name["losses"]["charts"][0]["x"] == [0.0, 1.0]
+    assert by_name["losses"]["charts"][0]["y"] == [1.0, 0.5]
+
+
+def test_tensorboard_scalars_disambiguate_multiple_runs():
+    groups = group_tensorboard_scalars(
+        [
+            {"run": "offline", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": "online", "tag": "losses/actor_loss", "step": 0, "value": 1.2},
+        ]
+    )
+
+    metrics = {chart["metric"] for group in groups for chart in group["charts"]}
+    assert metrics == {"offline: losses/actor_loss", "online: losses/actor_loss"}
+
+
+def test_web_tensorboard_endpoint_reports_missing_dir(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response == {
+        "available": False,
+        "reason": "missing_tensorboard_dir",
+        "message": "This run does not have metadata.tensorboard_dir.",
+    }
+
+
+def test_web_tensorboard_endpoint_returns_live_charts(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(path: str, *, samples: int):
+        return {
+            "available": True,
+            "source": path,
+            "samples": samples,
+            "groups": [{"name": "losses", "charts": []}],
+        }
+
+    monkeypatch.setattr("expnote.web.fetch_tensorboard_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response["available"] is True
+    assert response["source"] == "/logs/wandb123"
+    assert response["samples"] == 1000
+    assert response["groups"][0]["name"] == "losses"
+
+
+def test_web_tensorboard_endpoint_returns_read_error(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(path: str, *, samples: int):
+        raise TensorboardLiveError("path_not_found", "no such directory")
+
+    monkeypatch.setattr("expnote.web.fetch_tensorboard_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123")
+
+    assert response == {
+        "available": False,
+        "reason": "path_not_found",
+        "message": "no such directory",
+    }
+
+
+def test_fetch_tensorboard_charts_reads_real_event_files(tmp_path):
+    tb = pytest.importorskip("tensorboard")
+    from tensorboard.compat.proto.event_pb2 import Event
+    from tensorboard.compat.proto.summary_pb2 import Summary
+    from tensorboard.summary.writer.event_file_writer import EventFileWriter
+
+    del tb  # only used to trigger the importorskip
+
+    def write_scalars(logdir: Path, tag: str, points: list[tuple[int, float]]) -> None:
+        logdir.mkdir(parents=True, exist_ok=True)
+        writer = EventFileWriter(str(logdir))
+        for step, value in points:
+            summary = Summary(value=[Summary.Value(tag=tag, simple_value=value)])
+            writer.add_event(Event(summary=summary, step=step))
+        writer.close()
+
+    logdir = tmp_path / "tb-logs"
+    write_scalars(logdir, "losses/actor_loss", [(0, 1.0), (1, 0.5)])
+
+    data = fetch_tensorboard_charts(str(logdir), samples=1000)
+
+    assert data["available"] is True
+    assert data["groups"] == [
+        {
+            "name": "losses",
+            "charts": [
+                {"metric": "losses/actor_loss", "x": [0.0, 1.0], "y": [1.0, 0.5]}
+            ],
+        }
+    ]
+
+
+def test_fetch_tensorboard_charts_reports_missing_path(tmp_path):
+    with pytest.raises(TensorboardLiveError) as excinfo:
+        fetch_tensorboard_charts(str(tmp_path / "missing"), samples=1000)
+
+    assert excinfo.value.reason == "path_not_found"

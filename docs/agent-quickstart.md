@@ -99,6 +99,38 @@ expnote web --workspace example
 expnote web --workspace example --detach --no-open
 ```
 
+## TensorBoard Charts in the Web UI
+
+If a run's metrics only exist as local TensorBoard event files (no wandb),
+point `metadata.tensorboard_dir` at that logdir so the run page can chart
+them:
+
+```bash
+expnote run update a7zf90k7 \
+  --workspace example \
+  --meta tensorboard_dir=/path/to/logdir \
+  --json
+```
+
+- `tensorboard_dir` must be a path readable from the machine running
+  `expnote web` (not a remote/relative path) — a local mount or synced copy
+  if the logs were written on a different host.
+- Accepts either a flat directory (event files directly inside it) or a
+  directory with per-phase subdirectories (e.g. `offline/`, `online/`),
+  matching however the training job's `SummaryWriter`(s) were laid out.
+- Opening the run in `expnote web` shows a "TensorBoard Charts" panel (only
+  when `tensorboard_dir` is set) with a "Fetch TensorBoard charts" button;
+  it re-reads the event files from disk on each fetch (no caching, unlike
+  the wandb panel).
+- This mirrors the existing `metadata.wandb_url` chart panel; a run can have
+  both set and both panels render independently.
+- Requires the `tensorboard` Python package in the environment running
+  `expnote web` (optional dependency, same pattern as `wandb`); if it's
+  missing, fetching reports `tensorboard_not_installed` instead of failing
+  silently.
+- Remove the field with `expnote run update a7zf90k7 --workspace example
+  --unset-meta tensorboard_dir` if the logdir moves or is deleted.
+
 ## Good Run Record Template
 
 The Minimal Workflow above leaves `a7zf90k7` in progress. Once a run
