@@ -152,13 +152,13 @@ Initial cross-run comparison.
 <!-- expnote:managed:end -->
 ```
 
-Human run-note edits should stay inside `expnote:analysis` markers. Human
-analysis-document edits should stay inside `expnote:doc-body` markers. Import
-those edits back into SQLite with:
+Human run-note edits should stay inside `expnote:analysis` markers and can be
+imported back into SQLite with:
 
 ```bash
 expnote sync markdown \
   --workspace robot-learning \
-  --pull-analysis \
-  --pull-docs
+  --pull-analysis
 ```
+
+Document body edits should be made with `expnote doc update --body-file`.

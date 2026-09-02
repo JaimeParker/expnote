@@ -12,8 +12,13 @@ class TensorboardLiveError(RuntimeError):
         self.message = message
 
 
-def _read_tensorboard_scalars(path: str, *, samples: int) -> list[dict[str, Any]]:
-    log_dir = Path(path)
+def _read_tensorboard_scalars(
+    path: str,
+    *,
+    samples: int,
+    run_id: str | None = None,
+) -> list[dict[str, Any]]:
+    log_dir = _resolve_tensorboard_dir(path, run_id=run_id)
     if not log_dir.is_dir():
         raise TensorboardLiveError(
             "path_not_found",
@@ -64,6 +69,8 @@ def group_tensorboard_scalars(entries: list[dict[str, Any]]) -> list[dict[str, A
         if value is None:
             continue
         tag = str(entry["tag"])
+        if tag.startswith("hparam/"):
+            continue
         label = f"{entry['run']}: {tag}" if multi_run else tag
         metric = series.setdefault(label, {"x": [], "y": [], "tag": tag})
         metric["x"].append(float(entry["step"]))
@@ -72,6 +79,8 @@ def group_tensorboard_scalars(entries: list[dict[str, Any]]) -> list[dict[str, A
     grouped: dict[str, list[dict[str, Any]]] = {}
     for label in sorted(series):
         values = series[label]
+        if len(values["x"]) < 2 or len(values["y"]) < 2:
+            continue
         group_name = _metric_group(str(values["tag"]))
         grouped.setdefault(group_name, []).append(
             {
@@ -87,15 +96,30 @@ def group_tensorboard_scalars(entries: list[dict[str, Any]]) -> list[dict[str, A
     ]
 
 
-def fetch_tensorboard_charts(path: str, *, samples: int = 1000) -> dict[str, Any]:
-    entries = _read_tensorboard_scalars(path, samples=samples)
+def fetch_tensorboard_charts(
+    path: str,
+    *,
+    samples: int = 0,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    source = _resolve_tensorboard_dir(path, run_id=run_id)
+    entries = _read_tensorboard_scalars(str(source), samples=samples)
     groups = group_tensorboard_scalars(entries)
     return {
         "available": True,
-        "source": path,
+        "source": str(source),
         "samples": samples,
         "groups": groups,
     }
+
+
+def _resolve_tensorboard_dir(path: str, *, run_id: str | None) -> Path:
+    root = Path(path)
+    if run_id:
+        child = root / run_id
+        if child.is_dir():
+            return child
+    return root
 
 
 def _metric_group(tag: str) -> str:

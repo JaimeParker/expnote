@@ -118,10 +118,17 @@ expnote run update a7zf90k7 \
 - Accepts either a flat directory (event files directly inside it) or a
   directory with per-phase subdirectories (e.g. `offline/`, `online/`),
   matching however the training job's `SummaryWriter`(s) were laid out.
+- If `tensorboard_dir` points at a batch root and it contains a child
+  directory named exactly like the expnote run id, the run page reads that
+  child directory instead of expanding every run in the batch.
 - Opening the run in `expnote web` shows a "TensorBoard Charts" panel (only
   when `tensorboard_dir` is set) with a "Fetch TensorBoard charts" button;
-  it re-reads the event files from disk on each fetch (no caching, unlike
-  the wandb panel).
+  it re-reads all scalar points from disk on each fetch (no caching, unlike
+  the wandb panel). For very large logs, the Web API also accepts an explicit
+  scalar cap, e.g. `/api/runs/<run_id>/tensorboard?samples=50000`; `samples=0`
+  means no scalar sampling limit.
+- Run chart panels show split metric charts only. `hparam/*` TensorBoard
+  scalars and single-point scalars are not rendered as curves.
 - This mirrors the existing `metadata.wandb_url` chart panel; a run can have
   both set and both panels render independently.
 - Requires the `tensorboard` Python package in the environment running
@@ -270,14 +277,73 @@ body from a file instead of an inline string, or `-` for stdin, e.g.
 `expnote doc update stackcube-seed-summary --append-body-file - < notes.md`.
 
 If plain sync refuses to overwrite a changed document body, use
-`sync markdown --pull-docs` to import the Obsidian body into SQLite. Use
-`--force` only when SQLite should overwrite Obsidian document body edits.
+`expnote doc update <doc_id> --body-file <path>` to update SQLite. Use `--force`
+only when SQLite should overwrite Obsidian document body edits.
+
+Doc bodies can include Web-only chart placeholders:
+
+```markdown
+The main run plateaus after 300k steps.
+
+{{ chart:eval_return }}
+
+The ablation converges faster but reaches the same final success rate.
+```
+
+For agent-authored charts, place data and `charts.json` under
+`<workspace-dir>/doc-assets/<doc_id>/` (usually `.expnote/doc-assets/<doc_id>/`).
+Prefer declarative CSV/NPZ series charts. If the workspace already has a CSV
+like:
+
+```csv
+step,eval/return,eval/success_rate
+1,10,0.1
+2,20,0.2
+3,30,0.3
+```
+
+then put it at:
+
+```text
+.expnote/doc-assets/stackcube-seed-summary/metrics.csv
+```
+
+and write:
+
+```json
+[
+  {
+    "id": "eval_return",
+    "title": "Eval Return",
+    "type": "series",
+    "source": "metrics.csv",
+    "x": "step",
+    "y": ["eval/return"],
+    "max_points": 2000
+  }
+]
+```
+
+Then add the chart placeholder to the doc body:
+
+```bash
+expnote doc update stackcube-seed-summary \
+  --workspace example \
+  --append-body "{{ chart:eval_return }}" \
+  --json
+```
+
+The chart renders in `expnote web`. Obsidian keeps `{{ chart:eval_return }}` as
+plain text and does not receive chart assets.
+
+Use `type: "python"` only for advanced charts. The script runs from the doc
+asset directory in the Web UI and must write both `png` and `plotly` outputs.
 
 ## Obsidian Analysis Imports
 
-Generated Markdown is managed by expnote. The only Obsidian-editable area is the
-run note content inside `expnote:analysis` markers and the document body inside
-`expnote:doc-body` markers.
+Generated Markdown is managed by expnote. The only Obsidian-editable area that
+can be imported back is run note content inside `expnote:analysis` markers.
+Document body changes must be written through `expnote doc update`.
 
 If plain sync refuses to overwrite a changed Analysis section:
 

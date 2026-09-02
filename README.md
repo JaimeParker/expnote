@@ -173,8 +173,69 @@ expnote doc update calql-baseline-summary \
 ```
 
 If a document body is edited in Obsidian, plain `expnote sync markdown` refuses
-to overwrite it. Use `--pull-docs` to import the Obsidian body into SQLite, or
-`--force` to restore the SQLite version.
+to overwrite it. Use `expnote doc update <doc_id> --body-file <path>` to update
+SQLite, or `--force` to restore the SQLite version.
+
+Doc bodies can reference Web-only charts with placeholders:
+
+```markdown
+Seed 1 converges faster early on.
+
+{{ chart:eval_return }}
+
+The later plateau suggests the bottleneck is not sample count.
+```
+
+Put chart data and configuration in the workspace state directory:
+
+```text
+<workspace-dir>/doc-assets/<doc_id>/
+  charts.json
+  metrics.csv
+  plot.py
+  curve.png
+  curve.plotly.json
+```
+
+For the default local workspace layout, `<workspace-dir>` is usually `.expnote`.
+Agents should copy or write data files there, write `charts.json`, then add a
+matching `{{ chart:<chart_id> }}` placeholder with `expnote doc update`.
+
+For simple CSV/NPZ series charts, use `charts.json`:
+
+```json
+[
+  {
+    "id": "eval_return",
+    "title": "Eval Return",
+    "type": "series",
+    "source": "metrics.csv",
+    "x": "step",
+    "y": ["eval/return", "eval/success_rate"],
+    "max_points": 2000
+  }
+]
+```
+
+For advanced charts, use a Python chart. The Web UI runs the script on demand
+from the doc asset directory and expects both a static image and Plotly JSON:
+
+```json
+[
+  {
+    "id": "custom_curve",
+    "title": "Custom Curve",
+    "type": "python",
+    "script": "plot.py",
+    "png": "custom_curve.png",
+    "plotly": "custom_curve.plotly.json",
+    "timeout_seconds": 60
+  }
+]
+```
+
+Obsidian projections keep `{{ chart:id }}` as text. Chart files are not copied
+to Obsidian, and Markdown sync does not execute Python.
 
 ## Read-only web UI
 
@@ -337,7 +398,7 @@ Agent contract:
   follow-up commands.
 - Treat non-zero exit status as command failure.
 - Do not edit generated Markdown directly except Analysis inside
-  `expnote:analysis` markers and document body inside `expnote:doc-body` markers.
+  `expnote:analysis` markers. Update document bodies with `expnote doc update`.
 - `Result` is a one-line headline metric only — final return/reward, success
   rate, or the equivalent terminal number. No comparisons, causes, or next
   steps. Put interpretation, diagnosis, comparisons, and reasoning in run

@@ -642,11 +642,12 @@ def test_markdown_sync_rejects_changed_doc_body_without_policy(tmp_path):
     )
 
     assert result.exit_code != 0
-    assert "--pull-docs" in result.output
+    assert "doc update" in result.output
+    assert "--body-file" in result.output
     assert "--force" in result.output
 
 
-def test_markdown_sync_pull_docs_updates_sql(tmp_path):
+def test_markdown_sync_pull_docs_is_rejected(tmp_path):
     _setup_workspace(tmp_path, notes_dir="Project/runs", moc_path="Project/MOC.md")
     _add_run(tmp_path)
     _add_doc(tmp_path, body="SQL body")
@@ -670,7 +671,10 @@ def test_markdown_sync_pull_docs_updates_sql(tmp_path):
             "--pull-docs",
         ],
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0
+    assert "Document body imports are no longer supported" in result.output
+    assert "doc update" in result.output
+    assert "--body-file" in result.output
 
     result = runner.invoke(
         app,
@@ -684,7 +688,7 @@ def test_markdown_sync_pull_docs_updates_sql(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["body"] == "Human body"
+    assert json.loads(result.output)["body"] == "SQL body"
 
 
 def test_markdown_sync_force_overwrites_changed_doc_body(tmp_path):

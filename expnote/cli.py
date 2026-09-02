@@ -56,7 +56,7 @@ topic_app = typer.Typer(help="Manage experiment topics.")
 run_app = typer.Typer(help="Manage experiment runs.")
 relation_app = typer.Typer(help="Manage run relations.")
 artifact_app = typer.Typer(help="Manage run artifacts.")
-doc_app = typer.Typer(help="Manage analysis documents.")
+doc_app = typer.Typer(help="Manage analysis documents and Web-only doc charts.")
 moc_app = typer.Typer(help="Manage SQL MOC records.")
 moc_topic_app = typer.Typer(help="Manage topics inside a SQL MOC.")
 benchmark_app = typer.Typer(help="Manage benchmark tasks x algos matrices.")
@@ -131,11 +131,13 @@ _AGENT_GUIDE = {
         "analysis_import": [
             "sync markdown",
             "sync markdown --pull-analysis",
-            "sync markdown --pull-docs",
+            "doc update <doc_id> --body-file <path>",
         ],
         "create_doc": [
             "doc add --doc-id <id> --moc-id <moc_id> --title <title>",
             "doc link <doc_id> <run_id>",
+            "write .expnote/doc-assets/<doc_id>/charts.json when charts are needed",
+            "add {{ chart:<chart_id> }} placeholders to doc body",
             "sync markdown",
         ],
         "transfer_workspace": [
@@ -160,7 +162,7 @@ _AGENT_GUIDE = {
         "doc.add": "Create a SQL-backed cross-run analysis document",
         "doc.show": "Read a SQL-backed analysis document and related runs",
         "doc.list": "List SQL-backed analysis documents",
-        "doc.update": "Update document title, body, and metadata",
+        "doc.update": "Update document title, body, metadata, and chart placeholders",
         "doc.link": "Attach a run to a document",
         "doc.unlink": "Detach a run from a document",
         "doc.delete": "Soft-delete an analysis document",
@@ -175,7 +177,7 @@ _AGENT_GUIDE = {
         "sync.markdown": "Render SQLite records into Markdown",
         "sync.all": "Render run notes, analysis documents, auto index, and MOCs",
         "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
-        "sync.markdown.pull_docs": "Import Obsidian document body into SQLite",
+        "sync.markdown.pull_docs": "Deprecated; document body imports are disabled",
         "validate": "Check active record counts before handoff",
     },
     "conflict_policy": {
@@ -183,7 +185,7 @@ _AGENT_GUIDE = {
             "Edit Purpose, Relation, Result, Metadata through CLI only"
         ),
         "analysis": "Obsidian edits require sync markdown --pull-analysis",
-        "documents": "Obsidian document body edits require sync markdown --pull-docs",
+        "documents": "Document body edits must be written through doc update",
         "moc_tables": (
             "Managed Markdown MOC tables should be repaired with markdown table sync"
         ),
@@ -231,6 +233,14 @@ _AGENT_GUIDE = {
         "append_doc_body": (
             "expnote doc update <id> --workspace <name> --append-body <text> --json"
         ),
+        "doc_chart_csv": (
+            "mkdir -p <workspace-dir>/doc-assets/<doc_id>; place metrics.csv and "
+            "charts.json there; add {{ chart:<chart_id> }} to the doc body"
+        ),
+        "doc_chart_placeholder": (
+            "expnote doc update <doc_id> --workspace <name> "
+            "--append-body '{{ chart:eval_return }}'"
+        ),
         "moc_diff": (
             "expnote markdown table diff --workspace <name> "
             "--moc-path <moc.md> --section <heading> --json"
@@ -267,13 +277,96 @@ _AGENT_GUIDE = {
             "cross-run docs"
         ),
         "documents": (
-            "doc body is stored in SQLite; use sync markdown --pull-docs "
-            "to import Obsidian body edits"
+            "doc body is stored in SQLite; use doc update --body-file "
+            "instead of editing Obsidian projections"
+        ),
+        "doc_charts": (
+            "charts are Web-only; Obsidian keeps {{ chart:id }} text. "
+            "Put data and charts.json under workspace-dir/doc-assets/<doc_id>."
+        ),
+        "run_charts": (
+            "expnote web shows W&B and TensorBoard run charts as split metrics "
+            "only; TensorBoard hparam/* and single-point scalars are skipped."
         ),
         "curated_mocs": (
             "sync markdown does not update curated Markdown tables; use "
             "sync all or markdown table sync/add/add-topic"
         ),
+    },
+    "doc_charts": {
+        "description": (
+            "Agent-friendly Web charts for doc bodies. SQLite stores the text; "
+            "chart data and manifest files live in workspace-dir/doc-assets/<doc_id>."
+        ),
+        "workflow": [
+            "Create or update the doc body with a {{ chart:<chart_id> }} placeholder",
+            "Create workspace-dir/doc-assets/<doc_id>/",
+            "Place CSV or NPZ data files in that directory",
+            "Write charts.json as a JSON array",
+            "Open expnote web and view the doc; Obsidian shows placeholder text only",
+        ],
+        "series_chart": {
+            "file": "workspace-dir/doc-assets/<doc_id>/charts.json",
+            "example": [
+                {
+                    "id": "eval_return",
+                    "title": "Eval Return",
+                    "type": "series",
+                    "source": "metrics.csv",
+                    "x": "step",
+                    "y": ["eval/return", "eval/success_rate"],
+                    "max_points": 2000,
+                }
+            ],
+            "notes": [
+                "source is relative to the doc asset directory",
+                "CSV uses column names; NPZ uses array keys",
+                "x and y values must be numeric",
+                "large series are downsampled; max_points defaults to 2000",
+            ],
+        },
+        "python_chart": {
+            "example": [
+                {
+                    "id": "custom_curve",
+                    "title": "Custom Curve",
+                    "type": "python",
+                    "script": "plot.py",
+                    "png": "custom_curve.png",
+                    "plotly": "custom_curve.plotly.json",
+                    "timeout_seconds": 60,
+                }
+            ],
+            "notes": [
+                "Use only when declarative CSV/NPZ charts are not enough",
+                "The Web UI runs script from the doc asset directory on demand",
+                "The script must write both png and plotly JSON outputs",
+                "Existing outputs are reused until the Web refresh button is used",
+            ],
+        },
+    },
+    "run_charts": {
+        "description": (
+            "Run pages can display W&B and local TensorBoard scalar charts in "
+            "expnote web. Charts are read on demand and shown as split metrics."
+        ),
+        "tensorboard": {
+            "metadata": "metadata.tensorboard_dir",
+            "notes": [
+                "The path must be readable from the machine running expnote web",
+                "If tensorboard_dir/<run_id> exists, the run page reads that child",
+                "samples=0 means read all scalar points",
+                "hparam/* and single-point scalars are skipped",
+            ],
+        },
+        "wandb": {
+            "metadata": "metadata.wandb_url",
+            "notes": [
+                "Prefer using the wandb run id as the expnote run id",
+                "Finished W&B run charts may be cached",
+                "Run pages show split metric charts only",
+            ],
+        },
     },
     "run_record_template": {
         "description": (
@@ -392,6 +485,24 @@ def _render_agent_guide() -> str:
             "--title <title> --run-id <run_id> --body <text> --json",
             "expnote doc update <doc_id> --append-body <text> --json",
             "",
+            "Doc chart workflow:",
+            "1. Put data in <workspace-dir>/doc-assets/<doc_id>/, e.g. metrics.csv",
+            "2. Write <workspace-dir>/doc-assets/<doc_id>/charts.json",
+            "3. Add {{ chart:<chart_id> }} to the doc body with doc update",
+            "4. View the chart in expnote web; Obsidian keeps placeholder text",
+            "Minimal charts.json for CSV/NPZ:",
+            '[{"id":"eval_return","title":"Eval Return","type":"series",'
+            '"source":"metrics.csv","x":"step",'
+            '"y":["eval/return"],"max_points":2000}]',
+            "Advanced Python charts use type=python and must write both png "
+            "and plotly JSON outputs.",
+            "",
+            "Run chart workflow:",
+            "Set metadata.wandb_url or metadata.tensorboard_dir on a run.",
+            "expnote web shows W&B/TensorBoard run charts as split metrics only.",
+            "If tensorboard_dir/<run_id> exists, that child logdir is used.",
+            "TensorBoard hparam/* and single-point scalars are skipped.",
+            "",
             "MOC workflow:",
             "expnote markdown table sections --moc-path <path> --json",
             "expnote markdown table add-topic --topic <topic> "
@@ -405,7 +516,7 @@ def _render_agent_guide() -> str:
             "Obsidian conflict policy:",
             "- Edit Purpose, Relation, Result, Metadata through CLI only",
             "- Import Obsidian Analysis with sync markdown --pull-analysis",
-            "- Import Obsidian doc body with sync markdown --pull-docs",
+            "- Update document body through expnote doc update --body-file",
             "- Check managed Markdown tables with expnote markdown table diff --json",
             "- Auto index defaults to workspace-dir/index.md, outside Obsidian",
             "- status is manual; update completed runs with "
@@ -1558,10 +1669,25 @@ def doc_add(
     title: Annotated[str, typer.Option("--title", help="Document title.")],
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
-    body: Annotated[str | None, typer.Option("--body", help="Document body.")] = None,
+    body: Annotated[
+        str | None,
+        typer.Option(
+            "--body",
+            help=(
+                "Document Markdown body. Use {{ chart:id }} for Web-only "
+                "doc charts defined in workspace-dir/doc-assets/<doc_id>/charts.json."
+            ),
+        ),
+    ] = None,
     body_file: Annotated[
         Path | None,
-        typer.Option("--body-file", help="Read body from a file, or - for stdin."),
+        typer.Option(
+            "--body-file",
+            help=(
+                "Read body from a file, or - for stdin. Body may include "
+                "{{ chart:id }} placeholders."
+            ),
+        ),
     ] = None,
     run_ids: Annotated[
         list[str] | None,
@@ -1659,23 +1785,44 @@ def doc_update(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
     title: Annotated[str | None, typer.Option(help="New document title.")] = None,
-    body: Annotated[str | None, typer.Option("--body", help="New body.")] = None,
+    body: Annotated[
+        str | None,
+        typer.Option(
+            "--body",
+            help=(
+                "New Markdown body. Use {{ chart:id }} for Web-only doc charts "
+                "defined in workspace-dir/doc-assets/<doc_id>/charts.json."
+            ),
+        ),
+    ] = None,
     body_file: Annotated[
         Path | None,
-        typer.Option("--body-file", help="Read new body from a file, or - for stdin."),
+        typer.Option(
+            "--body-file",
+            help=(
+                "Read new body from a file, or - for stdin. Body may include "
+                "{{ chart:id }} placeholders."
+            ),
+        ),
     ] = None,
     append_body: Annotated[
         str | None,
         typer.Option(
             "--append-body",
-            help="Append to body, separated from existing text by one blank line.",
+            help=(
+                "Append to body, separated from existing text by one blank line. "
+                "May include {{ chart:id }} placeholders."
+            ),
         ),
     ] = None,
     append_body_file: Annotated[
         Path | None,
         typer.Option(
             "--append-body-file",
-            help="Read text to append to body from a file, or - for stdin.",
+            help=(
+                "Read text to append to body from a file, or - for stdin. "
+                "May include {{ chart:id }} placeholders."
+            ),
         ),
     ] = None,
     meta: Annotated[
@@ -2874,7 +3021,11 @@ def sync_markdown_command(
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
     pull_docs: Annotated[
-        bool, typer.Option("--pull-docs", help="Import document body first.")
+        bool,
+        typer.Option(
+            "--pull-docs",
+            help="Deprecated; document body imports are disabled.",
+        ),
     ] = False,
     force: Annotated[
         bool,
@@ -2882,6 +3033,7 @@ def sync_markdown_command(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    _reject_pull_docs(pull_docs)
     ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
     root = ctx.root
     state_dir = ctx.workspace_dir
@@ -2916,7 +3068,11 @@ def sync_all_command(
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
     pull_docs: Annotated[
-        bool, typer.Option("--pull-docs", help="Import document body first.")
+        bool,
+        typer.Option(
+            "--pull-docs",
+            help="Deprecated; document body imports are disabled.",
+        ),
     ] = False,
     force: Annotated[
         bool,
@@ -2924,6 +3080,7 @@ def sync_all_command(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    _reject_pull_docs(pull_docs)
     ctx = _workspace_context(workspace, workspace_dir, require_obsidian=True)
     root = ctx.root
     state_dir = ctx.workspace_dir
@@ -3042,6 +3199,15 @@ def _preflight_moc_section_target(root: Path, moc_path: str) -> None:
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _reject_pull_docs(pull_docs: bool) -> None:
+    if pull_docs:
+        raise typer.BadParameter(
+            "Document body imports are no longer supported. "
+            "Use doc update --body-file to update SQLite, "
+            "or pass --force to overwrite the Markdown projection."
+        )
+
+
 @markdown_app.command("sync")
 def markdown_sync_command(
     workspace: WorkspaceOption = None,
@@ -3050,7 +3216,11 @@ def markdown_sync_command(
         bool, typer.Option("--pull-analysis", help="Import run note Analysis first.")
     ] = False,
     pull_docs: Annotated[
-        bool, typer.Option("--pull-docs", help="Import document body first.")
+        bool,
+        typer.Option(
+            "--pull-docs",
+            help="Deprecated; document body imports are disabled.",
+        ),
     ] = False,
     force: Annotated[
         bool,
@@ -3058,6 +3228,7 @@ def markdown_sync_command(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    _reject_pull_docs(pull_docs)
     sync_markdown_command(
         workspace=workspace,
         workspace_dir=workspace_dir,

@@ -117,7 +117,10 @@ def test_guide_agent_json_is_machine_readable():
     assert "markdown.table.add_topic" in data["commands"]
     assert "markdown table diff" in json.dumps(data)
     assert "doc.add" in data["commands"]
-    assert "sync markdown --pull-docs" in json.dumps(data)
+    assert "doc update <doc_id> --body-file <path>" in json.dumps(data)
+    assert "sync markdown --pull-docs" not in json.dumps(data)
+    assert data["doc_charts"]["series_chart"]["example"][0]["source"] == "metrics.csv"
+    assert "workspace-dir/doc-assets/<doc_id>" in json.dumps(data)
 
 
 def test_guide_agent_human_output_mentions_core_workflow():
@@ -129,7 +132,24 @@ def test_guide_agent_human_output_mentions_core_workflow():
     assert "init -> moc add -> topic add --moc-id -> run add" in result.output
     assert "expnote markdown table sections" in result.output
     assert "expnote doc show <doc_id> --json" in result.output
+    assert "Doc chart workflow" in result.output
+    assert "{{ chart:<chart_id> }}" in result.output
+    assert "charts.json" in result.output
     assert "expnote validate --json" in result.output
+
+
+def test_doc_help_mentions_chart_placeholders():
+    result = runner.invoke(app, ["doc", "add", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "{{ chart:id }}" in result.output
+    assert "doc-assets" in result.output
+
+    result = runner.invoke(app, ["doc", "update", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "{{ chart:id }}" in result.output
+    assert "doc-assets" in result.output
 
 
 def test_guide_agent_mentions_status_lookup_and_manual_status():

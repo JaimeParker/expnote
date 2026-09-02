@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import html
+import re
 import sqlite3
 from pathlib import Path
 from typing import Annotated, Any
 
 import markdown as markdown_lib
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from expnote.db import readonly_transaction, row_to_dict
+from expnote.doc_charts import (
+    DocChartError,
+    chart_summary,
+    doc_chart_context,
+    render_chart,
+    resolve_asset,
+)
 from expnote.links import render_html_run_links
 from expnote.tensorboard_live import TensorboardLiveError, fetch_tensorboard_charts
 from expnote.wandb_live import (
@@ -26,7 +34,8 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="expnote", docs_url=None, redoc_url=None)
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
-    cache_dir = (state_dir or root / ".expnote") / "wandb-cache"
+    state_root = state_dir or root / ".expnote"
+    cache_dir = state_root / "wandb-cache"
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -219,7 +228,10 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             }
 
     @app.get("/api/runs/{run_id}/tensorboard")
-    def api_run_tensorboard(run_id: str) -> dict[str, Any]:
+    def api_run_tensorboard(
+        run_id: str,
+        samples: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
@@ -240,7 +252,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "message": "This run does not have metadata.tensorboard_dir.",
             }
         try:
-            return fetch_tensorboard_charts(str(path), samples=1000)
+            return fetch_tensorboard_charts(str(path), samples=samples, run_id=run_id)
         except TensorboardLiveError as exc:
             return {
                 "available": False,
@@ -348,11 +360,41 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Doc not found")
             active_run_ids = _active_run_ids(conn)
             data = row_to_dict(row)
-            data["body_html"] = render_markdown(
+            data["body_html"] = render_doc_markdown(
                 str(data.get("body") or ""), active_run_ids
             )
             data["runs"] = _doc_runs(conn, doc_id, active_run_ids=active_run_ids)
             return data
+
+    @app.get("/api/docs/{doc_id}/charts")
+    def api_doc_charts(doc_id: str) -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            _require_doc(conn, doc_id)
+        return chart_summary(doc_chart_context(state_root, doc_id))
+
+    @app.get("/api/docs/{doc_id}/charts/{chart_id}")
+    def api_doc_chart(doc_id: str, chart_id: str) -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            _require_doc(conn, doc_id)
+        return render_chart(doc_chart_context(state_root, doc_id), chart_id)
+
+    @app.post("/api/docs/{doc_id}/charts/{chart_id}/refresh")
+    def api_refresh_doc_chart(doc_id: str, chart_id: str) -> dict[str, Any]:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            _require_doc(conn, doc_id)
+        return render_chart(doc_chart_context(state_root, doc_id), chart_id, refresh=True)
+
+    @app.get("/api/docs/{doc_id}/assets/{asset_path:path}")
+    def api_doc_asset(doc_id: str, asset_path: str) -> FileResponse:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            _require_doc(conn, doc_id)
+        try:
+            path = resolve_asset(doc_chart_context(state_root, doc_id), asset_path)
+        except DocChartError as exc:
+            raise HTTPException(status_code=400, detail=exc.message) from exc
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="asset not found")
+        return FileResponse(path)
 
     @app.get("/api/benchmarks")
     def api_benchmarks() -> list[dict[str, Any]]:
@@ -440,6 +482,32 @@ def render_markdown(text: str, active_run_ids: set[str] | None = None) -> str:
     )
 
 
+_CHART_PLACEHOLDER_RE = re.compile(r"\{\{\s*chart:([A-Za-z0-9_.-]+)\s*\}\}")
+
+
+def render_doc_markdown(text: str, active_run_ids: set[str] | None = None) -> str:
+    parts: list[str] = []
+    pos = 0
+    for match in _CHART_PLACEHOLDER_RE.finditer(text):
+        if match.start() > pos:
+            rendered = render_markdown(text[pos : match.start()], active_run_ids)
+            if rendered:
+                parts.append(rendered)
+        chart_id = html.escape(match.group(1), quote=True)
+        parts.append(
+            f'<section class="doc-chart" data-chart-id="{chart_id}">'
+            f'<div class="doc-chart-title"><code>{chart_id}</code></div>'
+            '<div class="doc-chart-body">Loading chart...</div>'
+            "</section>"
+        )
+        pos = match.end()
+    if pos < len(text):
+        rendered = render_markdown(text[pos:], active_run_ids)
+        if rendered:
+            parts.append(rendered)
+    return "\n".join(parts)
+
+
 def render_inline_text(text: str, active_run_ids: set[str] | None = None) -> str:
     escaped = html.escape(text or "")
     linked = render_html_run_links(escaped, active_run_ids or set())
@@ -452,6 +520,14 @@ def _require_moc(conn: sqlite3.Connection, moc_id: str) -> None:
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="MOC not found")
+
+
+def _require_doc(conn: sqlite3.Connection, doc_id: str) -> None:
+    row = conn.execute(
+        "SELECT id FROM docs WHERE id = ? AND deleted_at IS NULL", (doc_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Doc not found")
 
 
 def _topics(conn: sqlite3.Connection, moc_id: str) -> list[dict[str, Any]]:
@@ -826,7 +902,8 @@ _INDEX_HTML = """
       box-shadow: var(--shadow-soft);
     }
     table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
-    table[data-table="topic-runs"], table[data-table="doc-runs"] { min-width: 1080px; table-layout: fixed; }
+    table[data-table="topic-runs"] { min-width: 1080px; table-layout: fixed; }
+    table[data-table="doc-runs"] { min-width: 100%; table-layout: auto; }
     table[data-table="docs"] { min-width: 720px; }
     table[data-table="benchmark-matrix"] { width: auto; }
     table[data-table="benchmark-matrix"] th, table[data-table="benchmark-matrix"] td { white-space: nowrap; }
@@ -955,6 +1032,36 @@ _INDEX_HTML = """
       border: 0;
       border-radius: 0;
     }
+    .doc-chart {
+      margin: 18px 0;
+      border: 1px solid rgba(31, 41, 55, 0.10);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .doc-chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(31, 41, 55, 0.10);
+    }
+    .doc-chart-title {
+      color: #344054;
+      font-size: 13px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .doc-chart-body { min-height: 220px; padding: 12px; }
+    .doc-chart-plot { min-height: 360px; }
+    .doc-chart-image {
+      max-width: 100%;
+      height: auto;
+      border: 1px solid rgba(31, 41, 55, 0.10);
+      border-radius: 6px;
+    }
+    .doc-chart-error { color: var(--red); white-space: pre-wrap; }
     .compare-panel { margin-top: 18px; }
     .compare-summary { margin: 0 0 10px; color: var(--muted); }
     .modal-backdrop {
@@ -1057,7 +1164,7 @@ _INDEX_HTML = """
     </main>
   </div>
   <script>
-    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartMode: 'combined', wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection', tensorboardChartMode: 'combined', tensorboardChartData: null };
+    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection', tensorboardChartData: null };
     const $ = (id) => document.getElementById(id);
     const route = () => window.location.hash || '#/';
 
@@ -1102,11 +1209,10 @@ _INDEX_HTML = """
     function wandbPanel(r) {
       if (!hasWandbUrl(r.metadata)) return '';
       const id = esc(r.id);
-      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbModeToggle" class="top-button" type="button" onclick="toggleWandbChartMode()" disabled>Split metrics</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
+      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
     }
     function reviveWandbPanel() {
       if (!state.wandbChartData || !hasWandbUrl(state.currentRun && state.currentRun.metadata)) return;
-      updateWandbModeToggle();
       updateWandbCompareButton();
       const data = state.wandbChartData;
       $('wandbStatus').textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
@@ -1127,7 +1233,6 @@ _INDEX_HTML = """
       button.disabled = true;
       state.wandbChartData = null;
       state.wandbCompareData = null;
-      updateWandbModeToggle();
       updateWandbCompareButton();
       status.textContent = 'Fetching live W&B history...';
       target.innerHTML = '';
@@ -1140,7 +1245,6 @@ _INDEX_HTML = """
         }
         state.wandbChartData = data;
         renderWandbCharts(data);
-        updateWandbModeToggle();
         updateWandbCompareButton();
         status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
       } catch (err) {
@@ -1149,25 +1253,10 @@ _INDEX_HTML = """
         button.disabled = false;
       }
     }
-    function toggleWandbChartMode() {
-      if (!state.wandbChartData) return;
-      state.wandbChartMode = state.wandbChartMode === 'combined' ? 'split' : 'combined';
-      state.wandbCompareData = null;
-      $('wandbCompareResults').innerHTML = '';
-      renderWandbCharts(state.wandbChartData);
-      updateWandbModeToggle();
-      updateWandbCompareButton();
-    }
-    function updateWandbModeToggle() {
-      const button = $('wandbModeToggle');
-      if (!button) return;
-      button.disabled = !state.wandbChartData;
-      button.textContent = state.wandbChartMode === 'combined' ? 'Split metrics' : 'Combine group';
-    }
     function updateWandbCompareButton() {
       const button = $('wandbCompare');
       if (!button) return;
-      const visible = Boolean(state.wandbChartData && state.wandbChartMode === 'split');
+      const visible = Boolean(state.wandbChartData);
       button.hidden = !visible;
       button.disabled = !visible;
     }
@@ -1178,20 +1267,15 @@ _INDEX_HTML = """
         target.innerHTML = empty('No numeric non-system W&B metrics were found.');
         return;
       }
-      if (state.wandbChartMode === 'split') {
-        renderSplitMetricCharts(target, groups, 'wandb');
-        return;
-      }
-      renderCombinedMetricCharts(target, groups, 'wandb');
+      renderSplitMetricCharts(target, groups, 'wandb');
     }
     function tensorboardPanel(r) {
       if (!hasTensorboardDir(r.metadata)) return '';
       const id = esc(r.id);
-      return `<section class="markdown" id="tensorboard-panel"><h2>TensorBoard Charts</h2><div class="wandb-actions"><button id="tensorboardFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadTensorboardCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch TensorBoard charts</button><button id="tensorboardModeToggle" class="top-button" type="button" onclick="toggleTensorboardChartMode()" disabled>Split metrics</button><span id="tensorboardStatus" class="wandb-status">Uses metadata.tensorboard_dir and reads local event files; does not write to SQL.</span></div><div id="tensorboardCharts"></div></section>`;
+      return `<section class="markdown" id="tensorboard-panel"><h2>TensorBoard Charts</h2><div class="wandb-actions"><button id="tensorboardFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadTensorboardCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch TensorBoard charts</button><span id="tensorboardStatus" class="wandb-status">Uses metadata.tensorboard_dir and reads local event files; does not write to SQL.</span></div><div id="tensorboardCharts"></div></section>`;
     }
     function reviveTensorboardPanel() {
       if (!state.tensorboardChartData || !hasTensorboardDir(state.currentRun && state.currentRun.metadata)) return;
-      updateTensorboardModeToggle();
       const data = state.tensorboardChartData;
       $('tensorboardStatus').textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
       renderTensorboardCharts(data);
@@ -1206,36 +1290,22 @@ _INDEX_HTML = """
       }
       button.disabled = true;
       state.tensorboardChartData = null;
-      updateTensorboardModeToggle();
       status.textContent = 'Reading local TensorBoard logs...';
       target.innerHTML = '';
       try {
-        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/tensorboard');
+        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/tensorboard?samples=0');
         if (!data.available) {
           status.innerHTML = `<span class="error">${esc(data.reason)}: ${esc(data.message)}</span>`;
           return;
         }
         state.tensorboardChartData = data;
         renderTensorboardCharts(data);
-        updateTensorboardModeToggle();
         status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
       } catch (err) {
         status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
       } finally {
         button.disabled = false;
       }
-    }
-    function toggleTensorboardChartMode() {
-      if (!state.tensorboardChartData) return;
-      state.tensorboardChartMode = state.tensorboardChartMode === 'combined' ? 'split' : 'combined';
-      renderTensorboardCharts(state.tensorboardChartData);
-      updateTensorboardModeToggle();
-    }
-    function updateTensorboardModeToggle() {
-      const button = $('tensorboardModeToggle');
-      if (!button) return;
-      button.disabled = !state.tensorboardChartData;
-      button.textContent = state.tensorboardChartMode === 'combined' ? 'Split metrics' : 'Combine group';
     }
     function renderTensorboardCharts(data) {
       const target = $('tensorboardCharts');
@@ -1244,11 +1314,7 @@ _INDEX_HTML = """
         target.innerHTML = empty('No numeric metrics were found in this TensorBoard log.');
         return;
       }
-      if (state.tensorboardChartMode === 'split') {
-        renderSplitMetricCharts(target, groups, 'tensorboard');
-        return;
-      }
-      renderCombinedMetricCharts(target, groups, 'tensorboard');
+      renderSplitMetricCharts(target, groups, 'tensorboard');
     }
     function metricTrace(chart) {
       return {
@@ -1278,13 +1344,6 @@ _INDEX_HTML = """
           displaylogo: false
       };
     }
-    function renderCombinedMetricCharts(target, groups, idPrefix) {
-      target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart" id="${idPrefix}-chart-combined-${groupIndex}"></div></div>`).join('');
-      groups.forEach((group, groupIndex) => {
-        const traces = (group.charts || []).map(chart => metricTrace(chart));
-        Plotly.newPlot(`${idPrefix}-chart-combined-${groupIndex}`, traces, metricLayout('', true), metricPlotOptions());
-      });
-    }
     function renderSplitMetricCharts(target, groups, idPrefix) {
       target.innerHTML = groups.map((group, groupIndex) => `<div class="wandb-group"><h3>${esc(group.name)}</h3><div class="wandb-chart-grid">${(group.charts || []).map((chart, chartIndex) => `<div class="wandb-chart-card"><div class="wandb-chart-title">${esc(chart.metric)}</div><div class="wandb-chart" id="${idPrefix}-chart-split-${groupIndex}-${chartIndex}"></div></div>`).join('')}</div></div>`).join('');
       groups.forEach((group, groupIndex) => {
@@ -1311,7 +1370,7 @@ _INDEX_HTML = """
       return String(value).split('').map(char => specials.has(char) ? slash + char : char).join('');
     }
     async function openWandbCompareModal() {
-      if (!(state.currentRun && state.wandbChartData && state.wandbChartMode === 'split')) return;
+      if (!(state.currentRun && state.wandbChartData)) return;
       state.wandbCompareRuns = await api('/api/runs?moc_id=' + encodeURIComponent(state.currentRun.moc_id));
       const recommended = relationRecommendedRunIds(state.currentRun);
       const rows = state.wandbCompareRuns.map(run => {
@@ -1356,7 +1415,6 @@ _INDEX_HTML = """
       if (state.wandbChartData) {
         renderWandbCharts(state.wandbChartData);
       }
-      updateWandbModeToggle();
       updateWandbCompareButton();
     }
     function groupComparisonMetrics(metrics) {
@@ -1513,9 +1571,8 @@ _INDEX_HTML = """
       const showRole = rows.some(r => String(r.role || '').trim());
       const showNote = rows.some(r => String(r.note || '').trim());
       const headers = ['<th>run</th>', showRole ? '<th>role</th>' : '', showNote ? '<th>note</th>' : '', '<th>status</th>', '<th>purpose</th>', '<th>result</th>'].join('');
-      const cols = ['<col class="col-run">', showRole ? '<col class="col-role">' : '', showNote ? '<col class="col-note">' : '', '<col class="col-status">', '<col class="col-purpose">', '<col class="col-result">'].join('');
       const body = rows.map(r => `<tr><td data-cell="run"><button class="link-button" title="${esc(r.run_id)}" onclick="navigate('#/run/${encodeURIComponent(r.run_id)}')"><code>${esc(r.run_id)}</code></button></td>${showRole ? `<td data-cell="role">${r.role_html || esc(r.role || '')}</td>` : ''}${showNote ? `<td data-cell="note">${r.note_html || esc(r.note || '')}</td>` : ''}<td data-cell="status">${statusBadge(r.status)}</td><td data-cell="purpose">${r.purpose_html || esc(r.purpose)}</td><td data-cell="result">${r.result_html || esc(r.result)}</td></tr>`).join('');
-      return `<div class="table-wrap"><table data-table="doc-runs"><colgroup>${cols}</colgroup><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="doc-runs"><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
     }
     function docTable(rows) {
       if (!rows.length) return empty('No analysis documents yet.');
@@ -1526,11 +1583,9 @@ _INDEX_HTML = """
       const r = await api('/api/runs/' + encodeURIComponent(id));
       const sameRun = Boolean(state.currentRun && state.currentRun.id === r.id);
       if (!sameRun) {
-        state.wandbChartMode = 'combined';
         state.wandbChartData = null;
         state.wandbCompareData = null;
         state.wandbCompareMode = 'intersection';
-        state.tensorboardChartMode = 'combined';
         state.tensorboardChartData = null;
       }
       state.currentRun = r;
@@ -1545,6 +1600,56 @@ _INDEX_HTML = """
       const d = await api('/api/docs/' + encodeURIComponent(id));
       const body = d.body_html && d.body_html.trim() ? d.body_html : '<p class="muted">No document body recorded.</p>';
       $('view').innerHTML = `${hero(esc(d.title), `<code>${esc(d.id)}</code> ${esc(d.moc_title || '')}`)}<h2>Related Runs</h2>${docRunTable(d.runs || [])}<h2>Body</h2><div class="markdown">${body}</div>`;
+      loadDocCharts(id);
+    }
+    async function loadDocCharts(docId) {
+      const charts = Array.from(document.querySelectorAll('.doc-chart[data-chart-id]'));
+      for (const chart of charts) {
+        await renderDocChart(docId, chart, false);
+      }
+    }
+    async function renderDocChart(docId, chart, refresh) {
+      const chartId = chart.dataset.chartId;
+      const body = chart.querySelector('.doc-chart-body') || chart;
+      const method = refresh ? 'POST' : 'GET';
+      const suffix = refresh ? '/refresh' : '';
+      body.innerHTML = '<span class="muted">Loading chart...</span>';
+      try {
+        const data = await api('/api/docs/' + encodeURIComponent(docId) + '/charts/' + encodeURIComponent(chartId) + suffix, { method });
+        renderDocChartPayload(docId, chart, data);
+      } catch (err) {
+        body.innerHTML = `<div class="doc-chart-error">${esc(err.message || err)}</div>`;
+      }
+    }
+    function renderDocChartPayload(docId, chart, data) {
+      const chartId = chart.dataset.chartId;
+      const title = esc(data.title || chartId);
+      const refresh = data.type === 'python' ? `<button class="top-button" type="button" data-doc-id="${esc(docId)}" onclick="renderDocChart(this.dataset.docId, this.closest('.doc-chart'), true)">Refresh</button>` : '';
+      chart.innerHTML = `<div class="doc-chart-header"><div class="doc-chart-title">${title}</div><div>${refresh}</div></div><div class="doc-chart-body"></div>`;
+      const body = chart.querySelector('.doc-chart-body');
+      if (!data.available) {
+        const details = data.details ? `\n${data.details}` : '';
+        body.innerHTML = `<div class="doc-chart-error">${esc(data.reason)}: ${esc(data.message)}${esc(details)}</div>`;
+        return;
+      }
+      if (data.plotly && window.Plotly) {
+        const targetId = 'doc-chart-' + chartId.replace(/[^A-Za-z0-9_-]/g, '-') + '-' + Math.random().toString(16).slice(2);
+        body.innerHTML = `<div class="doc-chart-plot" id="${targetId}"></div>${docChartMeta(data)}`;
+        const layout = Object.assign({}, data.plotly.layout || {});
+        const config = Object.assign({ responsive: true, displaylogo: false }, data.plotly.config || {});
+        Plotly.newPlot(targetId, data.plotly.data || [], layout, config);
+        return;
+      }
+      if (data.png_url) {
+        const plotlyError = data.plotly_error ? `<p class="doc-chart-error">${esc(data.plotly_error.reason)}: ${esc(data.plotly_error.message)}</p>` : '';
+        body.innerHTML = `${plotlyError}<img class="doc-chart-image" src="${esc(data.png_url)}" alt="${title}">${docChartMeta(data)}`;
+        return;
+      }
+      body.innerHTML = '<div class="doc-chart-error">No renderable chart output.</div>';
+    }
+    function docChartMeta(data) {
+      if (data.original_points === undefined) return '';
+      return `<p class="muted">${esc(data.returned_points)} of ${esc(data.original_points)} points shown.</p>`;
     }
     async function loadBenchmarks() {
       const benchmarks = await api('/api/benchmarks');

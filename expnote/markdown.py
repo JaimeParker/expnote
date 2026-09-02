@@ -538,18 +538,16 @@ def _resolve_doc_body(
     rendered_hash = str(doc.get("body_rendered_hash") or "")
     if rendered_hash and current_hash != rendered_hash:
         if pull_docs:
-            doc = dict(doc)
-            doc["body"] = existing_body
-            doc["_body_pulled"] = True
-            with transaction(root, state_dir=state_dir) as conn:
-                conn.execute(
-                    "UPDATE docs SET body = ?, updated_at = ? WHERE id = ?",
-                    (existing_body, _now_for_update(), doc["id"]),
-                )
-            return doc
+            raise RuntimeError(
+                "Document body imports are no longer supported. "
+                "Use doc update --body-file to update SQLite, or pass --force "
+                "to overwrite the Markdown projection."
+            )
         if not force:
             raise RuntimeError(
-                f"{doc_path} has changed document body. Use --pull-docs or --force."
+                f"{doc_path} has changed document body. Use "
+                "doc update --body-file to update SQLite, or pass --force to "
+                "overwrite the Markdown projection."
             )
     return doc
 

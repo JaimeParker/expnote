@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,10 @@ def _workspace(tmp_path: Path) -> None:
     )
 
 
+def _route(app, path: str):
+    return next(item for item in app.routes if getattr(item, "path", None) == path)
+
+
 def test_web_queries_expose_sql_moc_and_run_detail(tmp_path):
     _workspace(tmp_path)
     with transaction(tmp_path) as conn:
@@ -144,15 +149,15 @@ def test_web_get_endpoints_work_with_readonly_database(tmp_path):
     db_path.chmod(0o444)
     app = create_app(tmp_path)
 
-    def route(path: str):
-        return next(item for item in app.routes if getattr(item, "path", None) == path)
-
     try:
-        assert route("/api/mocs").endpoint()[0]["id"] == "baseline"
-        assert route("/api/runs").endpoint()[0]["id"] == "wandb123"
-        assert route("/api/runs/{run_id}").endpoint("wandb123")["id"] == "wandb123"
-        assert route("/api/docs").endpoint()[0]["id"] == "summary"
-        assert route("/api/docs/{doc_id}").endpoint("summary")["id"] == "summary"
+        assert _route(app, "/api/mocs").endpoint()[0]["id"] == "baseline"
+        assert _route(app, "/api/runs").endpoint()[0]["id"] == "wandb123"
+        assert (
+            _route(app, "/api/runs/{run_id}").endpoint("wandb123")["id"]
+            == "wandb123"
+        )
+        assert _route(app, "/api/docs").endpoint()[0]["id"] == "summary"
+        assert _route(app, "/api/docs/{doc_id}").endpoint("summary")["id"] == "summary"
     finally:
         db_path.chmod(0o644)
 
@@ -181,13 +186,166 @@ def test_web_stats_endpoint_reports_status_and_weekly_counts(tmp_path):
     )
     app = create_app(tmp_path)
 
-    def route(path: str):
-        return next(item for item in app.routes if getattr(item, "path", None) == path)
-
-    data = route("/api/stats").endpoint()
+    data = _route(app, "/api/stats").endpoint()
     by_status = {row["status"]: row["count"] for row in data["by_status"]}
     assert by_status == {"running": 1, "finished": 1}
     assert sum(row["count"] for row in data["by_week"]) == 2
+
+
+def test_web_doc_body_replaces_chart_placeholders(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "doc",
+                "update",
+                "summary",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--body",
+                "Before\n\n{{ chart:eval_return }}\n\nAfter",
+            ],
+        ).exit_code
+        == 0
+    )
+    app = create_app(tmp_path)
+
+    data = _route(app, "/api/docs/{doc_id}").endpoint("summary")
+
+    assert "Before" in data["body_html"]
+    assert "After" in data["body_html"]
+    assert 'data-chart-id="eval_return"' in data["body_html"]
+    assert "{{ chart:eval_return }}" not in data["body_html"]
+
+
+def test_web_doc_series_chart_reads_csv_and_downsamples(tmp_path):
+    _workspace(tmp_path)
+    chart_dir = tmp_path / ".expnote" / "doc-assets" / "summary"
+    chart_dir.mkdir(parents=True)
+    (chart_dir / "metrics.csv").write_text(
+        "\n".join(
+            [
+                "step,eval/return,eval/success_rate",
+                "1,10,0.1",
+                "2,20,0.2",
+                "3,30,0.3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (chart_dir / "charts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "eval_return",
+                    "title": "Eval Return",
+                    "type": "series",
+                    "source": "metrics.csv",
+                    "x": "step",
+                    "y": ["eval/return", "eval/success_rate"],
+                    "max_points": 2,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(tmp_path)
+
+    data = _route(app, "/api/docs/{doc_id}/charts/{chart_id}").endpoint(
+        "summary", "eval_return"
+    )
+
+    assert data["available"] is True
+    assert data["type"] == "series"
+    assert data["original_points"] == 3
+    assert data["returned_points"] == 2
+    assert [trace["name"] for trace in data["plotly"]["data"]] == [
+        "eval/return",
+        "eval/success_rate",
+    ]
+    assert data["plotly"]["data"][0]["x"] == [1.0, 3.0]
+    assert data["plotly"]["data"][0]["y"] == [10.0, 30.0]
+
+
+def test_web_doc_chart_rejects_paths_outside_doc_assets(tmp_path):
+    _workspace(tmp_path)
+    chart_dir = tmp_path / ".expnote" / "doc-assets" / "summary"
+    chart_dir.mkdir(parents=True)
+    (chart_dir / "charts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "bad",
+                    "type": "series",
+                    "source": "../metrics.csv",
+                    "x": "step",
+                    "y": ["return"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(tmp_path)
+
+    data = _route(app, "/api/docs/{doc_id}/charts/{chart_id}").endpoint(
+        "summary", "bad"
+    )
+
+    assert data["available"] is False
+    assert data["reason"] == "invalid_path"
+
+
+def test_web_doc_python_chart_uses_cached_outputs_and_refreshes(tmp_path):
+    _workspace(tmp_path)
+    chart_dir = tmp_path / ".expnote" / "doc-assets" / "summary"
+    chart_dir.mkdir(parents=True)
+    (chart_dir / "curve.png").write_bytes(b"cached")
+    (chart_dir / "curve.plotly.json").write_text(
+        json.dumps({"data": [{"type": "scatter", "x": [1], "y": [1]}]}),
+        encoding="utf-8",
+    )
+    (chart_dir / "plot.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "Path('curve.png').write_bytes(b'refreshed')",
+                "Path('curve.plotly.json').write_text("
+                "'{\"data\":[{\"type\":\"scatter\",\"x\":[2],\"y\":[4]}]}'"
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (chart_dir / "charts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "custom",
+                    "title": "Custom",
+                    "type": "python",
+                    "script": "plot.py",
+                    "png": "curve.png",
+                    "plotly": "curve.plotly.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(tmp_path)
+    endpoint = _route(app, "/api/docs/{doc_id}/charts/{chart_id}").endpoint
+    refresh = _route(app, "/api/docs/{doc_id}/charts/{chart_id}/refresh").endpoint
+
+    cached = endpoint("summary", "custom")
+    assert cached["available"] is True
+    assert cached["cached"] is True
+    assert cached["plotly"]["data"][0]["x"] == [1]
+
+    refreshed = refresh("summary", "custom")
+    assert refreshed["available"] is True
+    assert refreshed["cached"] is False
+    assert refreshed["plotly"]["data"][0]["x"] == [2]
+    assert (chart_dir / "curve.png").read_bytes() == b"refreshed"
 
 
 def test_web_markdown_renderer_escapes_raw_html():
@@ -286,8 +444,12 @@ def test_web_index_has_routes_and_topic_table_without_metadata():
     doc_run_func_end = _INDEX_HTML.index("function docTable", doc_run_func_start)
     assert "showRole" in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
     assert "showNote" in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
-    assert '<col class="col-note">' in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
-    assert '<col class="col-role">' in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
+    assert "<colgroup>" not in _INDEX_HTML[doc_run_func_start:doc_run_func_end]
+    assert 'table[data-table="topic-runs"] { min-width: 1080px' in _INDEX_HTML
+    assert (
+        'table[data-table="doc-runs"] { min-width: 100%; table-layout: auto; }'
+        in _INDEX_HTML
+    )
     doc_run_table_start = _INDEX_HTML.index('table data-table="doc-runs"')
     doc_run_table_end = _INDEX_HTML.index("</table>", doc_run_table_start)
     assert "topic_title" not in _INDEX_HTML[doc_run_table_start:doc_run_table_end]
@@ -640,8 +802,8 @@ def test_web_wandb_cache_stats_and_clear(tmp_path):
 def test_web_index_has_wandb_live_chart_controls():
     assert '<script src="/assets/plotly.min.js"></script>' in _INDEX_HTML
     assert "Fetch live W&B charts" in _INDEX_HTML
-    assert "Split metrics" in _INDEX_HTML
-    assert "Combine group" in _INDEX_HTML
+    assert "Split metrics" not in _INDEX_HTML
+    assert "Combine group" not in _INDEX_HTML
     assert "Compare runs" in _INDEX_HTML
     assert "Show comparison" in _INDEX_HTML
     assert "* 星标为relation中记录的推荐对比实验" in _INDEX_HTML
@@ -658,15 +820,17 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "/api/wandb/compare?" in _INDEX_HTML
     assert "Plotly.newPlot" in _INDEX_HTML
     assert "loadWandbCharts" in _INDEX_HTML
-    assert "state.wandbChartMode = 'combined'" in _INDEX_HTML
+    assert "wandbChartMode" not in _INDEX_HTML
+    assert "tensorboardChartMode" not in _INDEX_HTML
     assert "state.wandbChartData = data" in _INDEX_HTML
     assert "state.wandbCompareMode = 'intersection'" in _INDEX_HTML
-    assert "toggleWandbChartMode" in _INDEX_HTML
+    assert "toggleWandbChartMode" not in _INDEX_HTML
+    assert "toggleTensorboardChartMode" not in _INDEX_HTML
     assert "openWandbCompareModal" in _INDEX_HTML
     assert "toggleWandbCompareMetricMode" in _INDEX_HTML
     assert "comparisonMetrics" in _INDEX_HTML
     assert "colorForRun" in _INDEX_HTML
-    assert "renderCombinedMetricCharts" in _INDEX_HTML
+    assert "renderCombinedMetricCharts" not in _INDEX_HTML
     assert "renderSplitMetricCharts" in _INDEX_HTML
     assert "wandb-chart-grid" in _INDEX_HTML
     assert "modal-backdrop" in _INDEX_HTML
@@ -677,7 +841,7 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "repeat(auto-fit, minmax(320px, 1fr))" in _INDEX_HTML
     assert "${idPrefix}-chart-split-${groupIndex}-${chartIndex}" in _INDEX_HTML
     assert "wandb-compare-chart-${index}" in _INDEX_HTML
-    assert "state.wandbChartData) return" in _INDEX_HTML
+    assert "state.currentRun && state.wandbChartData" in _INDEX_HTML
     assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
 
 
@@ -813,6 +977,7 @@ def test_tensorboard_scalars_group_by_tag_prefix_single_run():
             {"run": ".", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
             {"run": ".", "tag": "losses/actor_loss", "step": 1, "value": 0.5},
             {"run": ".", "tag": "q/predicted_q", "step": 0, "value": 2.0},
+            {"run": ".", "tag": "q/predicted_q", "step": 1, "value": 1.5},
         ]
     )
 
@@ -827,12 +992,32 @@ def test_tensorboard_scalars_disambiguate_multiple_runs():
     groups = group_tensorboard_scalars(
         [
             {"run": "offline", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": "offline", "tag": "losses/actor_loss", "step": 1, "value": 0.8},
             {"run": "online", "tag": "losses/actor_loss", "step": 0, "value": 1.2},
+            {"run": "online", "tag": "losses/actor_loss", "step": 1, "value": 0.7},
         ]
     )
 
     metrics = {chart["metric"] for group in groups for chart in group["charts"]}
     assert metrics == {"offline: losses/actor_loss", "online: losses/actor_loss"}
+
+
+def test_tensorboard_scalars_skip_hparams_and_single_points():
+    groups = group_tensorboard_scalars(
+        [
+            {"run": ".", "tag": "hparam/losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "hparam/losses/actor_loss", "step": 1, "value": 2.0},
+            {"run": ".", "tag": "losses/single_point", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "losses/actor_loss", "step": 1, "value": 0.5},
+        ]
+    )
+
+    charts = [chart for group in groups for chart in group["charts"]]
+
+    assert charts == [
+        {"metric": "losses/actor_loss", "x": [0.0, 1.0], "y": [1.0, 0.5]}
+    ]
 
 
 def test_web_tensorboard_endpoint_reports_missing_dir(tmp_path):
@@ -871,7 +1056,10 @@ def test_web_tensorboard_endpoint_returns_live_charts(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(path: str, *, samples: int):
+    captured: dict[str, object] = {}
+
+    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+        captured["run_id"] = run_id
         return {
             "available": True,
             "source": path,
@@ -891,8 +1079,49 @@ def test_web_tensorboard_endpoint_returns_live_charts(tmp_path, monkeypatch):
 
     assert response["available"] is True
     assert response["source"] == "/logs/wandb123"
-    assert response["samples"] == 1000
+    assert response["samples"] == 0
     assert response["groups"][0]["name"] == "losses"
+    assert captured["run_id"] == "wandb123"
+
+
+def test_web_tensorboard_endpoint_accepts_sample_limit(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+        del run_id
+        return {
+            "available": True,
+            "source": path,
+            "samples": samples,
+            "groups": [],
+        }
+
+    monkeypatch.setattr("expnote.web.fetch_tensorboard_charts", fake_fetch)
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123", samples=50000)
+
+    assert response["samples"] == 50000
 
 
 def test_web_tensorboard_endpoint_returns_read_error(tmp_path, monkeypatch):
@@ -913,7 +1142,8 @@ def test_web_tensorboard_endpoint_returns_read_error(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(path: str, *, samples: int):
+    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+        del samples, run_id
         raise TensorboardLiveError("path_not_found", "no such directory")
 
     monkeypatch.setattr("expnote.web.fetch_tensorboard_charts", fake_fetch)
@@ -963,6 +1193,54 @@ def test_fetch_tensorboard_charts_reads_real_event_files(tmp_path):
             ],
         }
     ]
+
+
+def test_fetch_tensorboard_charts_prefers_matching_run_subdirectory(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "tb-logs"
+    child = root / "run123"
+    child.mkdir(parents=True)
+    captured: dict[str, str] = {}
+
+    def fake_read(path: str, *, samples: int, run_id: str | None = None):
+        del samples, run_id
+        captured["path"] = path
+        return [
+            {"run": ".", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "losses/actor_loss", "step": 1, "value": 0.5},
+        ]
+
+    monkeypatch.setattr("expnote.tensorboard_live._read_tensorboard_scalars", fake_read)
+
+    data = fetch_tensorboard_charts(str(root), run_id="run123")
+
+    assert data["source"] == str(child)
+    assert captured["path"] == str(child)
+    assert data["groups"][0]["charts"][0]["metric"] == "losses/actor_loss"
+
+
+def test_fetch_tensorboard_charts_falls_back_to_root_without_matching_subdirectory(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "tb-logs"
+    root.mkdir()
+    captured: dict[str, str] = {}
+
+    def fake_read(path: str, *, samples: int, run_id: str | None = None):
+        del samples, run_id
+        captured["path"] = path
+        return [
+            {"run": ".", "tag": "losses/actor_loss", "step": 0, "value": 1.0},
+            {"run": ".", "tag": "losses/actor_loss", "step": 1, "value": 0.5},
+        ]
+
+    monkeypatch.setattr("expnote.tensorboard_live._read_tensorboard_scalars", fake_read)
+
+    data = fetch_tensorboard_charts(str(root), run_id="missing")
+
+    assert data["source"] == str(root)
+    assert captured["path"] == str(root)
 
 
 def test_fetch_tensorboard_charts_reports_missing_path(tmp_path):
