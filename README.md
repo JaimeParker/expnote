@@ -237,13 +237,18 @@ from the doc asset directory and expects both a static image and Plotly JSON:
 Obsidian projections keep `{{ chart:id }}` as text. Chart files are not copied
 to Obsidian, and Markdown sync does not execute Python.
 
-## Read-only web UI
+## Web UI
 
-Start a local read-only web UI that reads directly from SQLite:
+Start a local Web UI that reads directly from SQLite:
 
 ```bash
 expnote web --workspace example
 ```
+
+Run and document detail pages include explicit Edit/Save controls. Saving from
+the Web UI writes only to SQLite and the audit log; run Markdown notes and
+document Markdown projections are updated later by `expnote sync markdown` or
+`expnote sync all`.
 
 To start it in the background and return to the shell immediately:
 

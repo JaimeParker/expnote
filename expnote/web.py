@@ -9,10 +9,16 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import markdown as markdown_lib
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from expnote.db import readonly_transaction, row_to_dict
+from expnote.db import (
+    append_event,
+    now_iso,
+    readonly_transaction,
+    row_to_dict,
+    transaction,
+)
 from expnote.doc_charts import (
     DocChartError,
     chart_summary,
@@ -148,48 +154,44 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     @app.get("/api/runs/{run_id}")
     def api_run(run_id: str) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
+            return _run_detail(conn, run_id)
+
+    @app.patch("/api/runs/{run_id}")
+    def api_update_run(
+        run_id: str,
+        payload: Annotated[dict[str, Any], Body()],
+    ) -> dict[str, Any]:
+        updates = _editable_updates(
+            payload,
+            allowed_fields={"purpose", "relation", "result", "analysis"},
+        )
+        expected_updated_at = _expected_updated_at(payload)
+        ts = now_iso()
+        with transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
-                SELECT runs.*, topics.title AS topic_title, topics.moc_id,
-                    mocs.title AS moc_title
-                FROM runs
-                JOIN topics ON topics.id = runs.topic_id
-                JOIN mocs ON mocs.id = topics.moc_id
-                WHERE runs.id = ? AND runs.deleted_at IS NULL
+                SELECT * FROM runs
+                WHERE id = ? AND deleted_at IS NULL
                 """,
                 (run_id,),
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Run not found")
-            active_run_ids = _active_run_ids(conn)
-            data = _render_run_text_fields(row_to_dict(row), active_run_ids)
-            data["analysis_html"] = render_markdown(
-                str(data.get("analysis") or ""), active_run_ids
+            _check_expected_updated_at(row["updated_at"], expected_updated_at)
+            fields = sorted(updates)
+            assignments = ", ".join(f"{field} = ?" for field in fields)
+            values = [updates[field] for field in fields]
+            conn.execute(
+                f"UPDATE runs SET {assignments}, updated_at = ? WHERE id = ?",
+                (*values, ts, run_id),
             )
-            data["artifacts"] = [
-                row_to_dict(artifact)
-                for artifact in conn.execute(
-                    """
-                    SELECT * FROM artifacts
-                    WHERE run_id = ? AND deleted_at IS NULL
-                    ORDER BY created_at DESC, id DESC
-                    """,
-                    (run_id,),
-                )
-            ]
-            data["relations"] = [
-                row_to_dict(rel)
-                for rel in conn.execute(
-                    """
-                    SELECT * FROM relations
-                    WHERE src_run_id = ? AND deleted_at IS NULL
-                    ORDER BY created_at DESC, id DESC
-                    """,
-                    (run_id,),
-                )
-            ]
-            data["docs"] = _docs(conn, run_id=run_id)
-            return data
+            event_row = conn.execute(
+                "SELECT * FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            data = _run_detail(conn, run_id)
+        append_event(root, "run.update", row_to_dict(event_row), state_dir=state_dir)
+        return data
 
     @app.get("/api/runs/{run_id}/wandb")
     def api_run_wandb(run_id: str) -> dict[str, Any]:
@@ -348,23 +350,41 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     @app.get("/api/docs/{doc_id}")
     def api_doc(doc_id: str) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
+            return _doc_detail(conn, doc_id)
+
+    @app.patch("/api/docs/{doc_id}")
+    def api_update_doc(
+        doc_id: str,
+        payload: Annotated[dict[str, Any], Body()],
+    ) -> dict[str, Any]:
+        updates = _editable_updates(payload, allowed_fields={"title", "body"})
+        expected_updated_at = _expected_updated_at(payload)
+        ts = now_iso()
+        with transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
-                SELECT docs.*, mocs.title AS moc_title
-                FROM docs JOIN mocs ON mocs.id = docs.moc_id
-                WHERE docs.id = ? AND docs.deleted_at IS NULL
+                SELECT * FROM docs
+                WHERE id = ? AND deleted_at IS NULL
                 """,
                 (doc_id,),
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Doc not found")
-            active_run_ids = _active_run_ids(conn)
-            data = row_to_dict(row)
-            data["body_html"] = render_doc_markdown(
-                str(data.get("body") or ""), active_run_ids
+            _check_expected_updated_at(row["updated_at"], expected_updated_at)
+            fields = sorted(updates)
+            assignments = ", ".join(f"{field} = ?" for field in fields)
+            values = [updates[field] for field in fields]
+            conn.execute(
+                f"UPDATE docs SET {assignments}, updated_at = ? WHERE id = ?",
+                (*values, ts, doc_id),
             )
-            data["runs"] = _doc_runs(conn, doc_id, active_run_ids=active_run_ids)
-            return data
+            event_row = conn.execute(
+                "SELECT * FROM docs WHERE id = ?",
+                (doc_id,),
+            ).fetchone()
+            data = _doc_detail(conn, doc_id)
+        append_event(root, "doc.update", row_to_dict(event_row), state_dir=state_dir)
+        return data
 
     @app.get("/api/docs/{doc_id}/charts")
     def api_doc_charts(doc_id: str) -> dict[str, Any]:
@@ -512,6 +532,109 @@ def render_inline_text(text: str, active_run_ids: set[str] | None = None) -> str
     escaped = html.escape(text or "")
     linked = render_html_run_links(escaped, active_run_ids or set())
     return linked.replace("\n", "<br>")
+
+
+def _run_detail(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT runs.*, topics.title AS topic_title, topics.moc_id,
+            mocs.title AS moc_title
+        FROM runs
+        JOIN topics ON topics.id = runs.topic_id
+        JOIN mocs ON mocs.id = topics.moc_id
+        WHERE runs.id = ? AND runs.deleted_at IS NULL
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    active_run_ids = _active_run_ids(conn)
+    data = _render_run_text_fields(row_to_dict(row), active_run_ids)
+    data["analysis_html"] = render_markdown(
+        str(data.get("analysis") or ""), active_run_ids
+    )
+    data["artifacts"] = [
+        row_to_dict(artifact)
+        for artifact in conn.execute(
+            """
+            SELECT * FROM artifacts
+            WHERE run_id = ? AND deleted_at IS NULL
+            ORDER BY created_at DESC, id DESC
+            """,
+            (run_id,),
+        )
+    ]
+    data["relations"] = [
+        row_to_dict(rel)
+        for rel in conn.execute(
+            """
+            SELECT * FROM relations
+            WHERE src_run_id = ? AND deleted_at IS NULL
+            ORDER BY created_at DESC, id DESC
+            """,
+            (run_id,),
+        )
+    ]
+    data["docs"] = _docs(conn, run_id=run_id)
+    return data
+
+
+def _doc_detail(conn: sqlite3.Connection, doc_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT docs.*, mocs.title AS moc_title
+        FROM docs JOIN mocs ON mocs.id = docs.moc_id
+        WHERE docs.id = ? AND docs.deleted_at IS NULL
+        """,
+        (doc_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Doc not found")
+    active_run_ids = _active_run_ids(conn)
+    data = row_to_dict(row)
+    data["body_html"] = render_doc_markdown(str(data.get("body") or ""), active_run_ids)
+    data["runs"] = _doc_runs(conn, doc_id, active_run_ids=active_run_ids)
+    return data
+
+
+def _editable_updates(
+    payload: dict[str, Any], *, allowed_fields: set[str]
+) -> dict[str, str]:
+    allowed_keys = allowed_fields | {"expected_updated_at"}
+    extra = sorted(set(payload) - allowed_keys)
+    if extra:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported fields: {', '.join(extra)}",
+        )
+    updates = {field: payload[field] for field in allowed_fields if field in payload}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No editable fields provided")
+    invalid = sorted(field for field, value in updates.items() if not isinstance(value, str))
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Editable fields must be strings: {', '.join(invalid)}",
+        )
+    return updates
+
+
+def _expected_updated_at(payload: dict[str, Any]) -> str:
+    value = payload.get("expected_updated_at")
+    if not isinstance(value, str) or not value:
+        raise HTTPException(
+            status_code=400,
+            detail="expected_updated_at is required",
+        )
+    return value
+
+
+def _check_expected_updated_at(current: str, expected: str) -> None:
+    if current != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="Record changed since it was loaded. Refresh before saving.",
+        )
 
 
 def _require_moc(conn: sqlite3.Connection, moc_id: str) -> None:
@@ -730,7 +853,7 @@ _INDEX_HTML = """
       background-size: 32px 32px;
       mask-image: linear-gradient(to bottom, rgba(0,0,0,0.40), transparent 70%);
     }
-    button, input, select { font: inherit; }
+    button, input, select, textarea { font: inherit; }
     button {
       border: 0;
       color: inherit;
@@ -860,6 +983,18 @@ _INDEX_HTML = """
       outline: none;
     }
     input:focus, select:focus { border-color: rgba(47, 91, 216, 0.55); box-shadow: 0 0 0 3px rgba(47, 91, 216, 0.10); }
+    textarea {
+      width: 100%;
+      min-height: 92px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 11px;
+      background: rgba(255, 255, 255, 0.88);
+      color: var(--ink);
+      outline: none;
+      resize: vertical;
+    }
+    textarea:focus { border-color: rgba(47, 91, 216, 0.55); box-shadow: 0 0 0 3px rgba(47, 91, 216, 0.10); }
     #search { min-width: 260px; margin-left: auto; }
     .hero {
       border: 1px solid var(--line);
@@ -972,6 +1107,23 @@ _INDEX_HTML = """
     .status-failed { color: var(--red); background: #fef3f2; border-color: rgba(180, 35, 24, 0.20); }
     .pill { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #fff; }
     .run-sections { display: grid; gap: 12px; margin-top: 16px; }
+    .record-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .edit-form {
+      max-width: 1040px;
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      background: var(--panel-strong);
+      box-shadow: var(--shadow-soft);
+    }
+    .edit-field { display: grid; gap: 6px; }
+    .edit-field label { color: #344054; font-size: 12px; font-weight: 800; }
+    .edit-title { width: min(100%, 680px); }
+    .edit-status { color: var(--muted); }
+    .edit-status.error { color: var(--red); }
     .markdown {
       max-width: 1040px;
       border: 1px solid var(--line);
@@ -1164,13 +1316,22 @@ _INDEX_HTML = """
     </main>
   </div>
   <script>
-    const state = { mocs: [], selectedMoc: null, currentRun: null, wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection', tensorboardChartData: null };
+    const state = { mocs: [], selectedMoc: null, currentRun: null, currentDoc: null, wandbChartData: null, wandbCompareRuns: [], wandbCompareData: null, wandbCompareMode: 'intersection', tensorboardChartData: null };
     const $ = (id) => document.getElementById(id);
     const route = () => window.location.hash || '#/';
 
     async function api(path, options = {}) {
       const res = await fetch(path, options);
       if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+    async function patchJson(path, payload) {
+      const res = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (!res.ok) {
+        let detail = await res.text();
+        try { detail = JSON.parse(detail).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
       return await res.json();
     }
     function esc(value) {
@@ -1519,7 +1680,7 @@ _INDEX_HTML = """
       const statusStats = runStats.by_status.map(s => `<div class="stat"><span class="muted">${esc(s.status || 'unknown')}</span><strong>${s.count}</strong></div>`).join('');
       const stats = `<div class="stats"><div class="stat"><span class="muted">MOCs</span><strong>${state.mocs.length}</strong></div><div class="stat"><span class="muted">Benchmarks</span><strong>${benchmarks.length}</strong></div>${statusStats}<div class="stat"><span class="muted">W&B cache</span><strong id="wandbCacheSize">${formatBytes(cache.bytes)}</strong><button class="top-button" type="button" onclick="clearWandbCache()">Clear W&B cache</button></div></div>`;
       const benchmarksSection = benchmarks.length ? `<h2>Benchmarks</h2><div class="grid">${benchmarks.map(b => `<button class="card card-button" onclick="navigate('#/benchmark/${encodeURIComponent(b.id)}')"><h3>${esc(b.title)}</h3><code>${esc(b.id)}</code><p class="muted">${esc(b.summary || 'No summary recorded.')}</p></button>`).join('')}</div>` : '';
-      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents from one read-only dashboard.', stats)}${weeklyRunBars(runStats.by_week)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>${benchmarksSection}`;
+      $('view').innerHTML = `${hero('Experiment knowledge base', 'Browse SQL MOCs, topics, runs, and analysis documents.', stats)}${weeklyRunBars(runStats.by_week)}<h2>MOCs</h2><div class="grid">${state.mocs.map(m => `<button class="card card-button" onclick="navigate('#/moc/${encodeURIComponent(m.id)}')"><h3>${esc(m.title)}</h3><code>${esc(m.id)}</code><p class="muted">${esc(m.summary || 'No summary recorded.')}</p></button>`).join('')}</div>${benchmarksSection}`;
     }
     function weeklyRunBars(byWeek) {
       if (!byWeek || !byWeek.length) return '';
@@ -1578,6 +1739,81 @@ _INDEX_HTML = """
       if (!rows.length) return empty('No analysis documents yet.');
       return `<div class="table-wrap"><table data-table="docs"><colgroup><col class="col-doc"><col class="col-moc"><col class="col-updated"></colgroup><thead><tr><th>doc</th><th>MOC</th><th>updated</th></tr></thead><tbody>${rows.map(d => `<tr><td data-cell="doc"><button class="link-button" onclick="navigate('#/doc/${encodeURIComponent(d.id)}')"><code>${esc(d.id)}</code></button><br>${esc(d.title)}</td><td data-cell="moc">${esc(d.moc_title || '')}</td><td data-cell="updated">${esc(d.updated_at || '')}</td></tr>`).join('')}</tbody></table></div>`;
     }
+    function runReadOnly(r) {
+      return `<div class="record-actions"><button class="top-button" type="button" onclick="renderRunEditForm()"><i data-lucide="edit-3"></i>Edit</button><span class="edit-status" id="runEditStatus"></span></div><div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}${tensorboardPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
+    }
+    function renderRun(r, preserveCharts = false) {
+      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}${runReadOnly(r)}`;
+      if (preserveCharts) {
+        reviveWandbPanel();
+        reviveTensorboardPanel();
+      }
+      if (window.lucide) window.lucide.createIcons();
+    }
+    function renderRunEditForm() {
+      const r = state.currentRun;
+      if (!r) return;
+      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<form class="edit-form" onsubmit="saveRunEdit(event)"><input type="hidden" id="runExpectedUpdatedAt" value="${esc(r.updated_at || '')}"><div class="edit-field"><label for="runPurpose">Purpose</label><textarea id="runPurpose" rows="4">${esc(r.purpose || '')}</textarea></div><div class="edit-field"><label for="runRelation">Relation</label><textarea id="runRelation" rows="4">${esc(r.relation || '')}</textarea></div><div class="edit-field"><label for="runResult">Result</label><textarea id="runResult" rows="3">${esc(r.result || '')}</textarea></div><div class="edit-field"><label for="runAnalysis">Analysis</label><textarea id="runAnalysis" rows="12">${esc(r.analysis || '')}</textarea></div><div class="record-actions"><button class="wandb-button" type="submit"><i data-lucide="save"></i>Save</button><button class="top-button" type="button" onclick="renderRun(state.currentRun)"><i data-lucide="x"></i>Cancel</button><span class="edit-status" id="runEditStatus"></span></div></form>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+    async function saveRunEdit(event) {
+      event.preventDefault();
+      const status = $('runEditStatus');
+      status.className = 'edit-status';
+      status.textContent = 'Saving...';
+      try {
+        const payload = {
+          expected_updated_at: $('runExpectedUpdatedAt').value,
+          purpose: $('runPurpose').value,
+          relation: $('runRelation').value,
+          result: $('runResult').value,
+          analysis: $('runAnalysis').value
+        };
+        const data = await patchJson('/api/runs/' + encodeURIComponent(state.currentRun.id), payload);
+        state.currentRun = data;
+        state.wandbChartData = null;
+        state.wandbCompareData = null;
+        state.tensorboardChartData = null;
+        renderRun(data);
+      } catch (err) {
+        status.className = 'edit-status error';
+        status.textContent = err.message || String(err);
+      }
+    }
+    function docReadOnly(d) {
+      const body = d.body_html && d.body_html.trim() ? d.body_html : '<p class="muted">No document body recorded.</p>';
+      return `<div class="record-actions"><button class="top-button" type="button" onclick="renderDocEditForm()"><i data-lucide="edit-3"></i>Edit</button><span class="edit-status" id="docEditStatus"></span></div><h2>Related Runs</h2>${docRunTable(d.runs || [])}<h2>Body</h2><div class="markdown">${body}</div>`;
+    }
+    function renderDoc(d) {
+      $('view').innerHTML = `${hero(esc(d.title), `<code>${esc(d.id)}</code> ${esc(d.moc_title || '')}`)}${docReadOnly(d)}`;
+      loadDocCharts(d.id);
+      if (window.lucide) window.lucide.createIcons();
+    }
+    function renderDocEditForm() {
+      const d = state.currentDoc;
+      if (!d) return;
+      $('view').innerHTML = `${hero(esc(d.title), `<code>${esc(d.id)}</code> ${esc(d.moc_title || '')}`)}<form class="edit-form" onsubmit="saveDocEdit(event)"><input type="hidden" id="docExpectedUpdatedAt" value="${esc(d.updated_at || '')}"><div class="edit-field"><label for="docTitle">Title</label><input class="edit-title" id="docTitle" value="${esc(d.title || '')}"></div><div class="edit-field"><label for="docBody">Body</label><textarea id="docBody" rows="18">${esc(d.body || '')}</textarea></div><div class="record-actions"><button class="wandb-button" type="submit"><i data-lucide="save"></i>Save</button><button class="top-button" type="button" onclick="renderDoc(state.currentDoc)"><i data-lucide="x"></i>Cancel</button><span class="edit-status" id="docEditStatus"></span></div></form>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+    async function saveDocEdit(event) {
+      event.preventDefault();
+      const status = $('docEditStatus');
+      status.className = 'edit-status';
+      status.textContent = 'Saving...';
+      try {
+        const payload = {
+          expected_updated_at: $('docExpectedUpdatedAt').value,
+          title: $('docTitle').value,
+          body: $('docBody').value
+        };
+        const data = await patchJson('/api/docs/' + encodeURIComponent(state.currentDoc.id), payload);
+        state.currentDoc = data;
+        renderDoc(data);
+      } catch (err) {
+        status.className = 'edit-status error';
+        status.textContent = err.message || String(err);
+      }
+    }
     async function loadRun(id) {
       await ensureMocs();
       const r = await api('/api/runs/' + encodeURIComponent(id));
@@ -1589,18 +1825,15 @@ _INDEX_HTML = """
         state.tensorboardChartData = null;
       }
       state.currentRun = r;
-      $('view').innerHTML = `${hero(`<code>${esc(r.id)}</code>`, `${statusBadge(r.status)} ${esc(r.moc_title)} / ${esc(r.topic_title)}`)}<div class="run-sections"><section class="markdown"><h2>Purpose</h2><p>${r.purpose_html || esc(r.purpose || 'TBD')}</p></section><section class="markdown"><h2>Relation</h2><p>${r.relation_html || esc(r.relation || 'TBD')}</p></section><section class="markdown"><h2>Result</h2><p>${r.result_html || esc(r.result || 'TBD')}</p></section><section class="markdown"><h2>Metadata</h2>${metadata(r.metadata)}</section>${wandbPanel(r)}${tensorboardPanel(r)}<section class="markdown"><h2>Analysis</h2>${r.analysis_html || '<p class="muted">No analysis recorded.</p>'}</section></div><h2>Related Docs</h2>${docTable(r.docs)}`;
-      if (sameRun) {
-        reviveWandbPanel();
-        reviveTensorboardPanel();
-      }
+      state.currentDoc = null;
+      renderRun(r, sameRun);
     }
     async function loadDoc(id) {
       await ensureMocs();
       const d = await api('/api/docs/' + encodeURIComponent(id));
-      const body = d.body_html && d.body_html.trim() ? d.body_html : '<p class="muted">No document body recorded.</p>';
-      $('view').innerHTML = `${hero(esc(d.title), `<code>${esc(d.id)}</code> ${esc(d.moc_title || '')}`)}<h2>Related Runs</h2>${docRunTable(d.runs || [])}<h2>Body</h2><div class="markdown">${body}</div>`;
-      loadDocCharts(id);
+      state.currentDoc = d;
+      state.currentRun = null;
+      renderDoc(d);
     }
     async function loadDocCharts(docId) {
       const charts = Array.from(document.querySelectorAll('.doc-chart[data-chart-id]'));

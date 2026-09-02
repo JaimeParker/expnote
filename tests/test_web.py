@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from typer.testing import CliRunner
 
 from expnote.cli import app as cli_app
@@ -121,8 +122,22 @@ def _workspace(tmp_path: Path) -> None:
     )
 
 
-def _route(app, path: str):
-    return next(item for item in app.routes if getattr(item, "path", None) == path)
+def _route(app, path: str, method: str | None = None):
+    return next(
+        item
+        for item in app.routes
+        if getattr(item, "path", None) == path
+        and (method is None or method in getattr(item, "methods", set()))
+    )
+
+
+def _events(tmp_path: Path) -> list[dict[str, object]]:
+    events_path = tmp_path / ".expnote" / "events.jsonl"
+    return [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_web_queries_expose_sql_moc_and_run_detail(tmp_path):
@@ -160,6 +175,119 @@ def test_web_get_endpoints_work_with_readonly_database(tmp_path):
         assert _route(app, "/api/docs/{doc_id}").endpoint("summary")["id"] == "summary"
     finally:
         db_path.chmod(0o644)
+
+
+def test_web_patch_run_updates_editable_fields_and_logs_event(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    before = _route(app, "/api/runs/{run_id}", "GET").endpoint("wandb123")
+
+    data = _route(app, "/api/runs/{run_id}", "PATCH").endpoint(
+        "wandb123",
+        {
+            "expected_updated_at": before["updated_at"],
+            "purpose": "New purpose",
+            "relation": "See [[wandb123]]",
+            "result": "Solved",
+            "analysis": "New analysis",
+        },
+    )
+
+    assert data["purpose"] == "New purpose"
+    assert data["relation"] == "See [[wandb123]]"
+    assert 'href="#/run/wandb123"' in data["relation_html"]
+    assert data["result"] == "Solved"
+    assert data["analysis"] == "New analysis"
+    with transaction(tmp_path) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", ("wandb123",)).fetchone()
+    assert row["purpose"] == "New purpose"
+    assert _events(tmp_path)[-1]["type"] == "run.update"
+
+
+def test_web_patch_doc_updates_editable_fields_and_logs_event(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    before = _route(app, "/api/docs/{doc_id}", "GET").endpoint("summary")
+
+    data = _route(app, "/api/docs/{doc_id}", "PATCH").endpoint(
+        "summary",
+        {
+            "expected_updated_at": before["updated_at"],
+            "title": "New Summary",
+            "body": "Body with [[wandb123]]",
+        },
+    )
+
+    assert data["title"] == "New Summary"
+    assert data["body"] == "Body with [[wandb123]]"
+    assert 'href="#/run/wandb123"' in data["body_html"]
+    with transaction(tmp_path) as conn:
+        row = conn.execute("SELECT * FROM docs WHERE id = ?", ("summary",)).fetchone()
+    assert row["title"] == "New Summary"
+    assert row["body"] == "Body with [[wandb123]]"
+    assert _events(tmp_path)[-1]["type"] == "doc.update"
+
+
+def test_web_patch_rejects_stale_updated_at_without_event(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    before_events = _events(tmp_path)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _route(app, "/api/runs/{run_id}", "PATCH").endpoint(
+            "wandb123",
+            {"expected_updated_at": "stale", "purpose": "Changed"},
+        )
+
+    assert excinfo.value.status_code == 409
+    with transaction(tmp_path) as conn:
+        row = conn.execute(
+            "SELECT purpose FROM runs WHERE id = ?", ("wandb123",)
+        ).fetchone()
+    assert row["purpose"] == "Train baseline"
+    assert _events(tmp_path) == before_events
+
+
+def test_web_patch_rejects_unknown_and_non_editable_fields(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+    run = _route(app, "/api/runs/{run_id}", "GET").endpoint("wandb123")
+    doc = _route(app, "/api/docs/{doc_id}", "GET").endpoint("summary")
+
+    with pytest.raises(HTTPException) as run_excinfo:
+        _route(app, "/api/runs/{run_id}", "PATCH").endpoint(
+            "wandb123",
+            {"expected_updated_at": run["updated_at"], "status": "finished"},
+        )
+    with pytest.raises(HTTPException) as doc_excinfo:
+        _route(app, "/api/docs/{doc_id}", "PATCH").endpoint(
+            "summary",
+            {"expected_updated_at": doc["updated_at"], "metadata": {"x": 1}},
+        )
+
+    assert run_excinfo.value.status_code == 400
+    assert "Unsupported fields" in run_excinfo.value.detail
+    assert doc_excinfo.value.status_code == 400
+    assert "Unsupported fields" in doc_excinfo.value.detail
+
+
+def test_web_patch_missing_records_return_404(tmp_path):
+    _workspace(tmp_path)
+    app = create_app(tmp_path)
+
+    with pytest.raises(HTTPException) as run_excinfo:
+        _route(app, "/api/runs/{run_id}", "PATCH").endpoint(
+            "missing",
+            {"expected_updated_at": "now", "purpose": "Changed"},
+        )
+    with pytest.raises(HTTPException) as doc_excinfo:
+        _route(app, "/api/docs/{doc_id}", "PATCH").endpoint(
+            "missing",
+            {"expected_updated_at": "now", "title": "Changed"},
+        )
+
+    assert run_excinfo.value.status_code == 404
+    assert doc_excinfo.value.status_code == 404
 
 
 def test_web_stats_endpoint_reports_status_and_weekly_counts(tmp_path):
@@ -843,6 +971,24 @@ def test_web_index_has_wandb_live_chart_controls():
     assert "wandb-compare-chart-${index}" in _INDEX_HTML
     assert "state.currentRun && state.wandbChartData" in _INDEX_HTML
     assert "wandbLayout(chart.metric, false)" not in _INDEX_HTML
+
+
+def test_web_index_has_run_and_doc_edit_controls():
+    assert "function renderRunEditForm" in _INDEX_HTML
+    assert "function saveRunEdit" in _INDEX_HTML
+    assert "function renderDocEditForm" in _INDEX_HTML
+    assert "function saveDocEdit" in _INDEX_HTML
+    assert "method: 'PATCH'" in _INDEX_HTML
+    assert "expected_updated_at" in _INDEX_HTML
+    assert "runPurpose" in _INDEX_HTML
+    assert "runRelation" in _INDEX_HTML
+    assert "runResult" in _INDEX_HTML
+    assert "runAnalysis" in _INDEX_HTML
+    assert "docTitle" in _INDEX_HTML
+    assert "docBody" in _INDEX_HTML
+    assert ">Edit</button>" in _INDEX_HTML
+    assert ">Save</button>" in _INDEX_HTML
+    assert ">Cancel</button>" in _INDEX_HTML
 
 
 def test_web_benchmark_endpoints_expose_matrix_data(tmp_path):

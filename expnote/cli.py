@@ -280,6 +280,10 @@ _AGENT_GUIDE = {
             "doc body is stored in SQLite; use doc update --body-file "
             "instead of editing Obsidian projections"
         ),
+        "web_edit": (
+            "expnote web can edit run Purpose/Relation/Result/Analysis and "
+            "doc Title/Body after explicit Edit+Save; saves write SQLite only"
+        ),
         "doc_charts": (
             "charts are Web-only; Obsidian keeps {{ chart:id }} text. "
             "Put data and charts.json under workspace-dir/doc-assets/<doc_id>."
@@ -484,6 +488,11 @@ def _render_agent_guide() -> str:
             "expnote doc add --doc-id <doc_id> --moc-id <moc_id> "
             "--title <title> --run-id <run_id> --body <text> --json",
             "expnote doc update <doc_id> --append-body <text> --json",
+            "",
+            "Web editing:",
+            "expnote web detail pages allow explicit Edit+Save for core run/doc text.",
+            "Web saves write SQLite and events only; "
+            "run sync markdown or sync all later.",
             "",
             "Doc chart workflow:",
             "1. Put data in <workspace-dir>/doc-assets/<doc_id>/, e.g. metrics.csv",

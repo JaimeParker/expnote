@@ -92,12 +92,16 @@ Prefer `expnote sync all` when handing off a workspace with curated MOCs. It
 updates run notes, the auto index, and all registered curated MOC sections.
 `sync markdown` updates run notes, analysis documents, and the auto index only.
 
-For read-only browsing independent from Obsidian:
+For Web browsing independent from Obsidian:
 
 ```bash
 expnote web --workspace example
 expnote web --workspace example --detach --no-open
 ```
+
+Run and document detail pages include explicit Edit/Save controls. Web saves
+write only to SQLite and the audit log; generated Markdown projections are
+updated later by `sync markdown` or `sync all`.
 
 ## TensorBoard Charts in the Web UI
 
