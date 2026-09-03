@@ -113,6 +113,15 @@ def map_wandb_state_to_status(state: str) -> str:
     return state
 
 
+def load_cached_wandb_chart(cache_dir: Path, run_id: str) -> dict[str, Any] | None:
+    cache_path = _cache_path(cache_dir, run_id)
+    if not cache_path.exists():
+        return None
+    data = json.loads(cache_path.read_text(encoding="utf-8"))
+    data["cached"] = True
+    return data
+
+
 def fetch_wandb_charts(
     url: str,
     *,
@@ -120,13 +129,13 @@ def fetch_wandb_charts(
     status: str,
     cache_dir: Path,
     samples: int = 1000,
+    force: bool = False,
 ) -> dict[str, Any]:
     cacheable = status == "finished"
-    cache_path = _cache_path(cache_dir, run_id)
-    if cacheable and cache_path.exists():
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        data["cached"] = True
-        return data
+    if not force:
+        cached = load_cached_wandb_chart(cache_dir, run_id) if cacheable else None
+        if cached is not None:
+            return cached
 
     data = fetch_live_wandb_charts(url, samples=samples)
     data["cached"] = False
@@ -137,7 +146,7 @@ def fetch_wandb_charts(
             "cached_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
             "source_run_id": run_id,
         }
-        cache_path.write_text(
+        _cache_path(cache_dir, run_id).write_text(
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
         )

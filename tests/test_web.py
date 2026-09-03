@@ -13,11 +13,13 @@ from expnote.tensorboard_live import (
     TensorboardLiveError,
     fetch_tensorboard_charts,
     group_tensorboard_scalars,
+    load_cached_tensorboard_chart,
 )
 from expnote.wandb_live import (
     WandbLiveError,
     fetch_wandb_charts,
     group_wandb_history,
+    load_cached_wandb_chart,
     parse_wandb_run_url,
 )
 from expnote.web import (
@@ -689,6 +691,44 @@ def test_wandb_finished_runs_use_local_cache(tmp_path, monkeypatch):
     assert len(list(cache_dir.glob("*.json"))) == 1
 
 
+def test_wandb_force_refresh_ignores_and_overwrites_cache(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_live(url: str, *, samples: int):
+        nonlocal calls
+        calls += 1
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": "entity/project/run1",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": [{"metric": f"call{calls}"}]}],
+        }
+
+    monkeypatch.setattr("expnote.wandb_live.fetch_live_wandb_charts", fake_live)
+    cache_dir = tmp_path / "cache"
+
+    fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+    )
+    refreshed = fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+        force=True,
+    )
+
+    assert calls == 2
+    assert refreshed["cached"] is False
+    assert refreshed["groups"][0]["charts"][0]["metric"] == "call2"
+    cached = load_cached_wandb_chart(cache_dir, "run1")
+    assert cached["groups"][0]["charts"][0]["metric"] == "call2"
+
+
 def test_wandb_running_runs_do_not_use_local_cache(tmp_path, monkeypatch):
     calls = 0
 
@@ -744,7 +784,13 @@ def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
     )
 
     def fake_fetch(
-        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+        url: str,
+        *,
+        run_id: str,
+        status: str,
+        cache_dir: Path,
+        samples: int,
+        force: bool = False,
     ):
         return {
             "available": True,
@@ -770,6 +816,90 @@ def test_web_wandb_endpoint_returns_live_charts(tmp_path, monkeypatch):
     assert response["groups"][0]["name"] == "eval"
 
 
+def test_web_wandb_endpoint_cached_only_reports_no_cache(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123", False, True)
+
+    assert response == {
+        "available": False,
+        "reason": "no_cache",
+        "message": "No cached W&B chart data for this run yet.",
+    }
+
+
+def test_web_wandb_endpoint_cached_only_returns_existing_cache(tmp_path, monkeypatch):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+                "--status",
+                "finished",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_live(url: str, *, samples: int):
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": "entity/project/wandb123",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": []}],
+        }
+
+    monkeypatch.setattr("expnote.wandb_live.fetch_live_wandb_charts", fake_live)
+    fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/wandb123",
+        run_id="wandb123",
+        status="finished",
+        cache_dir=tmp_path / ".expnote" / "wandb-cache",
+    )
+
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123", False, True)
+
+    assert response["available"] is True
+    assert response["cached"] is True
+    assert response["groups"][0]["name"] == "eval"
+
+
 def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
     _workspace(tmp_path)
     assert (
@@ -789,7 +919,13 @@ def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
     )
 
     def fake_fetch(
-        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+        url: str,
+        *,
+        run_id: str,
+        status: str,
+        cache_dir: Path,
+        samples: int,
+        force: bool = False,
     ):
         raise WandbLiveError("wandb_api_error", "permission denied")
 
@@ -869,7 +1005,13 @@ def test_web_wandb_compare_endpoint_returns_successes_and_errors(tmp_path, monke
     )
 
     def fake_fetch(
-        url: str, *, run_id: str, status: str, cache_dir: Path, samples: int
+        url: str,
+        *,
+        run_id: str,
+        status: str,
+        cache_dir: Path,
+        samples: int,
+        force: bool = False,
     ):
         if "badwandb" in url:
             raise WandbLiveError("wandb_api_error", "permission denied")
@@ -1184,6 +1326,130 @@ def test_web_tensorboard_endpoint_reports_missing_dir(tmp_path):
     }
 
 
+def test_web_tensorboard_endpoint_cached_only_reports_no_cache(tmp_path):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+            ],
+        ).exit_code
+        == 0
+    )
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123", 0, False, True)
+
+    assert response == {
+        "available": False,
+        "reason": "no_cache",
+        "message": "No cached TensorBoard chart data for this run yet.",
+    }
+
+
+def test_web_tensorboard_endpoint_cached_only_returns_existing_cache(
+    tmp_path, monkeypatch
+):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+                "--status",
+                "finished",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_read(path: str, *, samples: int) -> list[dict]:
+        del path, samples
+        return [
+            {"run": ".", "tag": "loss", "step": 1, "value": 1.0},
+            {"run": ".", "tag": "loss", "step": 2, "value": 0.5},
+        ]
+
+    monkeypatch.setattr(
+        "expnote.tensorboard_live._read_tensorboard_scalars", fake_read
+    )
+    fetch_tensorboard_charts(
+        "/logs/wandb123",
+        run_id="wandb123",
+        status="finished",
+        cache_dir=tmp_path / ".expnote" / "tensorboard-cache",
+    )
+
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123", 0, False, True)
+
+    assert response["available"] is True
+    assert response["cached"] is True
+    assert response["groups"][0]["charts"][0]["metric"] == "loss"
+
+
+def test_tensorboard_force_refresh_ignores_and_overwrites_cache(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_read(path: str, *, samples: int) -> list[dict]:
+        del path, samples
+        nonlocal calls
+        calls += 1
+        tag = f"loss{calls}"
+        return [
+            {"run": ".", "tag": tag, "step": 1, "value": float(calls)},
+            {"run": ".", "tag": tag, "step": 2, "value": float(calls) + 1},
+        ]
+
+    monkeypatch.setattr(
+        "expnote.tensorboard_live._read_tensorboard_scalars", fake_read
+    )
+    cache_dir = tmp_path / "cache"
+
+    fetch_tensorboard_charts(
+        "/logs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+    )
+    refreshed = fetch_tensorboard_charts(
+        "/logs/run1",
+        run_id="run1",
+        status="finished",
+        cache_dir=cache_dir,
+        force=True,
+    )
+
+    assert calls == 2
+    assert refreshed["cached"] is False
+    cached = load_cached_tensorboard_chart(cache_dir, "run1")
+    assert cached["groups"][0]["charts"][0]["metric"] == "loss2"
+
+
 def test_web_tensorboard_endpoint_returns_live_charts(tmp_path, monkeypatch):
     _workspace(tmp_path)
     assert (
@@ -1204,7 +1470,15 @@ def test_web_tensorboard_endpoint_returns_live_charts(tmp_path, monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+    def fake_fetch(
+        path: str,
+        *,
+        samples: int,
+        run_id: str | None = None,
+        status: str | None = None,
+        cache_dir=None,
+        force: bool = False,
+    ):
         captured["run_id"] = run_id
         return {
             "available": True,
@@ -1248,7 +1522,15 @@ def test_web_tensorboard_endpoint_accepts_sample_limit(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+    def fake_fetch(
+        path: str,
+        *,
+        samples: int,
+        run_id: str | None = None,
+        status: str | None = None,
+        cache_dir=None,
+        force: bool = False,
+    ):
         del run_id
         return {
             "available": True,
@@ -1288,7 +1570,15 @@ def test_web_tensorboard_endpoint_returns_read_error(tmp_path, monkeypatch):
         == 0
     )
 
-    def fake_fetch(path: str, *, samples: int, run_id: str | None = None):
+    def fake_fetch(
+        path: str,
+        *,
+        samples: int,
+        run_id: str | None = None,
+        status: str | None = None,
+        cache_dir=None,
+        force: bool = False,
+    ):
         del samples, run_id
         raise TensorboardLiveError("path_not_found", "no such directory")
 

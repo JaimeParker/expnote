@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -96,21 +99,54 @@ def group_tensorboard_scalars(entries: list[dict[str, Any]]) -> list[dict[str, A
     ]
 
 
+def load_cached_tensorboard_chart(
+    cache_dir: Path, run_id: str
+) -> dict[str, Any] | None:
+    cache_path = _cache_path(cache_dir, run_id)
+    if not cache_path.exists():
+        return None
+    data = json.loads(cache_path.read_text(encoding="utf-8"))
+    data["cached"] = True
+    return data
+
+
 def fetch_tensorboard_charts(
     path: str,
     *,
     samples: int = 0,
     run_id: str | None = None,
+    status: str | None = None,
+    cache_dir: Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
+    cacheable = cache_dir is not None and run_id is not None and status == "finished"
+    if cacheable and not force:
+        cached = load_cached_tensorboard_chart(cache_dir, run_id)
+        if cached is not None:
+            return cached
+
     source = _resolve_tensorboard_dir(path, run_id=run_id)
     entries = _read_tensorboard_scalars(str(source), samples=samples)
     groups = group_tensorboard_scalars(entries)
-    return {
+    data = {
         "available": True,
+        "cached": False,
         "source": str(source),
         "samples": samples,
         "groups": groups,
     }
+    if cacheable:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **data,
+            "cached_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            "source_run_id": run_id,
+        }
+        _cache_path(cache_dir, run_id).write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+    return data
 
 
 def _resolve_tensorboard_dir(path: str, *, run_id: str | None) -> Path:
@@ -120,6 +156,11 @@ def _resolve_tensorboard_dir(path: str, *, run_id: str | None) -> Path:
         if child.is_dir():
             return child
     return root
+
+
+def _cache_path(cache_dir: Path, run_id: str) -> Path:
+    digest = sha256(run_id.encode("utf-8")).hexdigest()[:16]
+    return cache_dir / f"{digest}.json"
 
 
 def _metric_group(tag: str) -> str:

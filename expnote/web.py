@@ -27,11 +27,16 @@ from expnote.doc_charts import (
     resolve_asset,
 )
 from expnote.links import render_html_run_links
-from expnote.tensorboard_live import TensorboardLiveError, fetch_tensorboard_charts
+from expnote.tensorboard_live import (
+    TensorboardLiveError,
+    fetch_tensorboard_charts,
+    load_cached_tensorboard_chart,
+)
 from expnote.wandb_live import (
     WandbLiveError,
     clear_wandb_cache,
     fetch_wandb_charts,
+    load_cached_wandb_chart,
     wandb_cache_stats,
 )
 
@@ -42,6 +47,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     state_dir = state_dir.resolve() if state_dir is not None else None
     state_root = state_dir or root / ".expnote"
     cache_dir = state_root / "wandb-cache"
+    tensorboard_cache_dir = state_root / "tensorboard-cache"
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -194,7 +200,11 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
         return data
 
     @app.get("/api/runs/{run_id}/wandb")
-    def api_run_wandb(run_id: str) -> dict[str, Any]:
+    def api_run_wandb(
+        run_id: str,
+        refresh: bool = False,
+        cached_only: bool = False,
+    ) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
                 """
@@ -214,6 +224,15 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "reason": "missing_wandb_url",
                 "message": "This run does not have metadata.wandb_url.",
             }
+        if cached_only:
+            cached = load_cached_wandb_chart(cache_dir, run_id)
+            if cached is None:
+                return {
+                    "available": False,
+                    "reason": "no_cache",
+                    "message": "No cached W&B chart data for this run yet.",
+                }
+            return cached
         try:
             return fetch_wandb_charts(
                 str(url),
@@ -221,6 +240,7 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 status=str(data.get("status") or ""),
                 cache_dir=cache_dir,
                 samples=1000,
+                force=refresh,
             )
         except WandbLiveError as exc:
             return {
@@ -233,6 +253,8 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
     def api_run_tensorboard(
         run_id: str,
         samples: Annotated[int, Query(ge=0)] = 0,
+        refresh: bool = False,
+        cached_only: bool = False,
     ) -> dict[str, Any]:
         with readonly_transaction(root, state_dir=state_dir) as conn:
             row = conn.execute(
@@ -253,8 +275,24 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "reason": "missing_tensorboard_dir",
                 "message": "This run does not have metadata.tensorboard_dir.",
             }
+        if cached_only:
+            cached = load_cached_tensorboard_chart(tensorboard_cache_dir, run_id)
+            if cached is None:
+                return {
+                    "available": False,
+                    "reason": "no_cache",
+                    "message": "No cached TensorBoard chart data for this run yet.",
+                }
+            return cached
         try:
-            return fetch_tensorboard_charts(str(path), samples=samples, run_id=run_id)
+            return fetch_tensorboard_charts(
+                str(path),
+                samples=samples,
+                run_id=run_id,
+                status=str(data.get("status") or ""),
+                cache_dir=tensorboard_cache_dir,
+                force=refresh,
+            )
         except TensorboardLiveError as exc:
             return {
                 "available": False,
@@ -1383,6 +1421,22 @@ _INDEX_HTML = """
         renderWandbCharts(data);
       }
     }
+    async function loadCachedWandbCharts(r) {
+      if (!hasWandbUrl(r.metadata)) return;
+      try {
+        const data = await api('/api/runs/' + encodeURIComponent(r.id) + '/wandb?cached_only=true');
+        if (!data.available || state.currentRun !== r) return;
+        state.wandbChartData = data;
+        updateWandbCompareButton();
+        const status = $('wandbStatus');
+        if (status) {
+          status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (cached).`;
+        }
+        renderWandbCharts(data);
+      } catch (err) {
+        // No local cache yet; leave the manual fetch button in its default state.
+      }
+    }
     async function loadWandbCharts(runId) {
       const button = $('wandbFetch');
       const status = $('wandbStatus');
@@ -1399,7 +1453,7 @@ _INDEX_HTML = """
       target.innerHTML = '';
       $('wandbCompareResults').innerHTML = '';
       try {
-        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/wandb');
+        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/wandb?refresh=true');
         if (!data.available) {
           status.innerHTML = `<span class="error">${esc(data.reason)}: ${esc(data.message)}</span>`;
           return;
@@ -1438,8 +1492,23 @@ _INDEX_HTML = """
     function reviveTensorboardPanel() {
       if (!state.tensorboardChartData || !hasTensorboardDir(state.currentRun && state.currentRun.metadata)) return;
       const data = state.tensorboardChartData;
-      $('tensorboardStatus').textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
+      $('tensorboardStatus').textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, ${data.cached ? 'cached' : 'live'}).`;
       renderTensorboardCharts(data);
+    }
+    async function loadCachedTensorboardCharts(r) {
+      if (!hasTensorboardDir(r.metadata)) return;
+      try {
+        const data = await api('/api/runs/' + encodeURIComponent(r.id) + '/tensorboard?cached_only=true');
+        if (!data.available || state.currentRun !== r) return;
+        state.tensorboardChartData = data;
+        const status = $('tensorboardStatus');
+        if (status) {
+          status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, cached).`;
+        }
+        renderTensorboardCharts(data);
+      } catch (err) {
+        // No local cache yet; leave the manual fetch button in its default state.
+      }
     }
     async function loadTensorboardCharts(runId) {
       const button = $('tensorboardFetch');
@@ -1454,14 +1523,14 @@ _INDEX_HTML = """
       status.textContent = 'Reading local TensorBoard logs...';
       target.innerHTML = '';
       try {
-        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/tensorboard?samples=0');
+        const data = await api('/api/runs/' + encodeURIComponent(runId) + '/tensorboard?samples=0&refresh=true');
         if (!data.available) {
           status.innerHTML = `<span class="error">${esc(data.reason)}: ${esc(data.message)}</span>`;
           return;
         }
         state.tensorboardChartData = data;
         renderTensorboardCharts(data);
-        status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log).`;
+        status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, ${data.cached ? 'cached' : 'live'}).`;
       } catch (err) {
         status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
       } finally {
@@ -1747,6 +1816,9 @@ _INDEX_HTML = """
       if (preserveCharts) {
         reviveWandbPanel();
         reviveTensorboardPanel();
+      } else {
+        loadCachedWandbCharts(r);
+        loadCachedTensorboardCharts(r);
       }
       if (window.lucide) window.lucide.createIcons();
     }
