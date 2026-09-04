@@ -900,6 +900,76 @@ def test_web_wandb_endpoint_cached_only_returns_existing_cache(tmp_path, monkeyp
     assert response["groups"][0]["name"] == "eval"
 
 
+def test_web_wandb_endpoint_cached_only_invalidates_on_wandb_url_change(
+    tmp_path, monkeypatch
+):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"wandb_url":"https://wandb.ai/entity/project/runs/wandb123"}',
+                "--status",
+                "finished",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_live(url: str, *, samples: int):
+        return {
+            "available": True,
+            "cached": False,
+            "run_path": "entity/project/wandb123",
+            "samples": samples,
+            "groups": [{"name": "eval", "charts": []}],
+        }
+
+    monkeypatch.setattr("expnote.wandb_live.fetch_live_wandb_charts", fake_live)
+    fetch_wandb_charts(
+        "https://wandb.ai/entity/project/runs/wandb123",
+        run_id="wandb123",
+        status="finished",
+        cache_dir=tmp_path / ".expnote" / "wandb-cache",
+    )
+
+    # The run's wandb_url metadata is later corrected to point at a
+    # different project (same run_id, different SQL-recorded identity).
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--meta",
+                "wandb_url=https://wandb.ai/entity/other-project/runs/wandb123",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/wandb"
+    )
+
+    response = route.endpoint("wandb123", False, True)
+
+    assert response["available"] is False
+    assert response["reason"] == "no_cache"
+
+
 def test_web_wandb_endpoint_returns_api_error(tmp_path, monkeypatch):
     _workspace(tmp_path)
     assert (
@@ -1410,6 +1480,75 @@ def test_web_tensorboard_endpoint_cached_only_returns_existing_cache(
     assert response["available"] is True
     assert response["cached"] is True
     assert response["groups"][0]["charts"][0]["metric"] == "loss"
+
+
+def test_web_tensorboard_endpoint_cached_only_invalidates_on_dir_change(
+    tmp_path, monkeypatch
+):
+    _workspace(tmp_path)
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--metadata-json",
+                '{"tensorboard_dir":"/logs/wandb123"}',
+                "--status",
+                "finished",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_read(path: str, *, samples: int) -> list[dict]:
+        del path, samples
+        return [
+            {"run": ".", "tag": "loss", "step": 1, "value": 1.0},
+            {"run": ".", "tag": "loss", "step": 2, "value": 0.5},
+        ]
+
+    monkeypatch.setattr(
+        "expnote.tensorboard_live._read_tensorboard_scalars", fake_read
+    )
+    fetch_tensorboard_charts(
+        "/logs/wandb123",
+        run_id="wandb123",
+        status="finished",
+        cache_dir=tmp_path / ".expnote" / "tensorboard-cache",
+    )
+
+    # The run's tensorboard_dir metadata is later repointed elsewhere.
+    assert (
+        runner.invoke(
+            cli_app,
+            [
+                "run",
+                "update",
+                "wandb123",
+                "--workspace-dir",
+                str(tmp_path / ".expnote"),
+                "--meta",
+                "tensorboard_dir=/logs/wandb123-v2",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    app = create_app(tmp_path)
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/runs/{run_id}/tensorboard"
+    )
+
+    response = route.endpoint("wandb123", 0, False, True)
+
+    assert response["available"] is False
+    assert response["reason"] == "no_cache"
 
 
 def test_tensorboard_force_refresh_ignores_and_overwrites_cache(tmp_path, monkeypatch):

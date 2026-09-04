@@ -21,7 +21,7 @@ def _read_tensorboard_scalars(
     samples: int,
     run_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    log_dir = _resolve_tensorboard_dir(path, run_id=run_id)
+    log_dir = resolve_tensorboard_dir(path, run_id=run_id)
     if not log_dir.is_dir():
         raise TensorboardLiveError(
             "path_not_found",
@@ -100,12 +100,14 @@ def group_tensorboard_scalars(entries: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def load_cached_tensorboard_chart(
-    cache_dir: Path, run_id: str
+    cache_dir: Path, run_id: str, *, expected_source: str | None = None
 ) -> dict[str, Any] | None:
     cache_path = _cache_path(cache_dir, run_id)
     if not cache_path.exists():
         return None
     data = json.loads(cache_path.read_text(encoding="utf-8"))
+    if expected_source is not None and data.get("source") != expected_source:
+        return None
     data["cached"] = True
     return data
 
@@ -119,13 +121,15 @@ def fetch_tensorboard_charts(
     cache_dir: Path | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
+    source = resolve_tensorboard_dir(path, run_id=run_id)
     cacheable = cache_dir is not None and run_id is not None and status == "finished"
     if cacheable and not force:
-        cached = load_cached_tensorboard_chart(cache_dir, run_id)
+        cached = load_cached_tensorboard_chart(
+            cache_dir, run_id, expected_source=str(source)
+        )
         if cached is not None:
             return cached
 
-    source = _resolve_tensorboard_dir(path, run_id=run_id)
     entries = _read_tensorboard_scalars(str(source), samples=samples)
     groups = group_tensorboard_scalars(entries)
     data = {
@@ -149,7 +153,7 @@ def fetch_tensorboard_charts(
     return data
 
 
-def _resolve_tensorboard_dir(path: str, *, run_id: str | None) -> Path:
+def resolve_tensorboard_dir(path: str, *, run_id: str | None) -> Path:
     root = Path(path)
     if run_id:
         child = root / run_id

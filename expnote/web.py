@@ -31,12 +31,14 @@ from expnote.tensorboard_live import (
     TensorboardLiveError,
     fetch_tensorboard_charts,
     load_cached_tensorboard_chart,
+    resolve_tensorboard_dir,
 )
 from expnote.wandb_live import (
     WandbLiveError,
     clear_wandb_cache,
     fetch_wandb_charts,
     load_cached_wandb_chart,
+    parse_wandb_run_url,
     wandb_cache_stats,
 )
 
@@ -225,7 +227,17 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "message": "This run does not have metadata.wandb_url.",
             }
         if cached_only:
-            cached = load_cached_wandb_chart(cache_dir, run_id)
+            try:
+                expected_run_path = parse_wandb_run_url(str(url)).path
+            except WandbLiveError as exc:
+                return {
+                    "available": False,
+                    "reason": exc.reason,
+                    "message": exc.message,
+                }
+            cached = load_cached_wandb_chart(
+                cache_dir, run_id, expected_run_path=expected_run_path
+            )
             if cached is None:
                 return {
                     "available": False,
@@ -276,7 +288,12 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
                 "message": "This run does not have metadata.tensorboard_dir.",
             }
         if cached_only:
-            cached = load_cached_tensorboard_chart(tensorboard_cache_dir, run_id)
+            expected_source = str(
+                resolve_tensorboard_dir(str(path), run_id=run_id)
+            )
+            cached = load_cached_tensorboard_chart(
+                tensorboard_cache_dir, run_id, expected_source=expected_source
+            )
             if cached is None:
                 return {
                     "available": False,
@@ -1191,6 +1208,8 @@ _INDEX_HTML = """
     }
     .wandb-button:disabled { opacity: 0.64; cursor: wait; }
     .wandb-status { color: var(--muted); }
+    .cache-badge-cached { color: var(--teal); background: #ecfdf3; border-color: rgba(6, 118, 71, 0.20); }
+    .cache-badge-live { color: var(--accent); background: #eef3ff; border-color: rgba(47, 91, 216, 0.20); }
     .wandb-group { margin-top: 16px; }
     .wandb-chart-grid {
       display: grid;
@@ -1399,6 +1418,13 @@ _INDEX_HTML = """
     function hasTensorboardDir(meta) {
       return Boolean(meta && meta.tensorboard_dir);
     }
+    function setChartCacheBadge(id, cached) {
+      const el = $(id);
+      if (!el) return;
+      el.hidden = false;
+      el.textContent = cached ? 'Cached' : 'Live';
+      el.className = 'badge cache-badge ' + (cached ? 'cache-badge-cached' : 'cache-badge-live');
+    }
     function formatBytes(bytes) {
       const value = Number(bytes || 0);
       if (value < 1024) return `${value} B`;
@@ -1408,12 +1434,13 @@ _INDEX_HTML = """
     function wandbPanel(r) {
       if (!hasWandbUrl(r.metadata)) return '';
       const id = esc(r.id);
-      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
+      return `<section class="markdown" id="wandb-panel"><h2>W&B Charts</h2><div class="wandb-actions"><button id="wandbFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadWandbCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch live W&B charts</button><button id="wandbCompare" class="top-button" type="button" onclick="openWandbCompareModal()" hidden disabled>Compare runs</button><span id="wandbCacheBadge" class="badge cache-badge" hidden></span><span id="wandbStatus" class="wandb-status">Uses metadata.wandb_url and does not write to SQL.</span></div><div id="wandbCharts"></div><div id="wandbCompareResults"></div></section>`;
     }
     function reviveWandbPanel() {
       if (!state.wandbChartData || !hasWandbUrl(state.currentRun && state.currentRun.metadata)) return;
       updateWandbCompareButton();
       const data = state.wandbChartData;
+      setChartCacheBadge('wandbCacheBadge', Boolean(data.cached));
       $('wandbStatus').textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
       if (state.wandbCompareData) {
         renderWandbComparison();
@@ -1428,6 +1455,7 @@ _INDEX_HTML = """
         if (!data.available || state.currentRun !== r) return;
         state.wandbChartData = data;
         updateWandbCompareButton();
+        setChartCacheBadge('wandbCacheBadge', true);
         const status = $('wandbStatus');
         if (status) {
           status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (cached).`;
@@ -1449,6 +1477,7 @@ _INDEX_HTML = """
       state.wandbChartData = null;
       state.wandbCompareData = null;
       updateWandbCompareButton();
+      $('wandbCacheBadge').hidden = true;
       status.textContent = 'Fetching live W&B history...';
       target.innerHTML = '';
       $('wandbCompareResults').innerHTML = '';
@@ -1461,6 +1490,7 @@ _INDEX_HTML = """
         state.wandbChartData = data;
         renderWandbCharts(data);
         updateWandbCompareButton();
+        setChartCacheBadge('wandbCacheBadge', Boolean(data.cached));
         status.textContent = `${data.run_path}: ${data.groups.length} metric groups from ${data.samples} sampled history rows (${data.cached ? 'cached' : 'live'}).`;
       } catch (err) {
         status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
@@ -1487,11 +1517,12 @@ _INDEX_HTML = """
     function tensorboardPanel(r) {
       if (!hasTensorboardDir(r.metadata)) return '';
       const id = esc(r.id);
-      return `<section class="markdown" id="tensorboard-panel"><h2>TensorBoard Charts</h2><div class="wandb-actions"><button id="tensorboardFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadTensorboardCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch TensorBoard charts</button><span id="tensorboardStatus" class="wandb-status">Uses metadata.tensorboard_dir and reads local event files; does not write to SQL.</span></div><div id="tensorboardCharts"></div></section>`;
+      return `<section class="markdown" id="tensorboard-panel"><h2>TensorBoard Charts</h2><div class="wandb-actions"><button id="tensorboardFetch" class="wandb-button" type="button" data-run-id="${id}" onclick="loadTensorboardCharts(this.dataset.runId)"><i data-lucide="line-chart"></i>Fetch TensorBoard charts</button><span id="tensorboardCacheBadge" class="badge cache-badge" hidden></span><span id="tensorboardStatus" class="wandb-status">Uses metadata.tensorboard_dir and reads local event files; does not write to SQL.</span></div><div id="tensorboardCharts"></div></section>`;
     }
     function reviveTensorboardPanel() {
       if (!state.tensorboardChartData || !hasTensorboardDir(state.currentRun && state.currentRun.metadata)) return;
       const data = state.tensorboardChartData;
+      setChartCacheBadge('tensorboardCacheBadge', Boolean(data.cached));
       $('tensorboardStatus').textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, ${data.cached ? 'cached' : 'live'}).`;
       renderTensorboardCharts(data);
     }
@@ -1501,6 +1532,7 @@ _INDEX_HTML = """
         const data = await api('/api/runs/' + encodeURIComponent(r.id) + '/tensorboard?cached_only=true');
         if (!data.available || state.currentRun !== r) return;
         state.tensorboardChartData = data;
+        setChartCacheBadge('tensorboardCacheBadge', true);
         const status = $('tensorboardStatus');
         if (status) {
           status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, cached).`;
@@ -1520,6 +1552,7 @@ _INDEX_HTML = """
       }
       button.disabled = true;
       state.tensorboardChartData = null;
+      $('tensorboardCacheBadge').hidden = true;
       status.textContent = 'Reading local TensorBoard logs...';
       target.innerHTML = '';
       try {
@@ -1530,6 +1563,7 @@ _INDEX_HTML = """
         }
         state.tensorboardChartData = data;
         renderTensorboardCharts(data);
+        setChartCacheBadge('tensorboardCacheBadge', Boolean(data.cached));
         status.textContent = `${data.source}: ${data.groups.length} metric groups (local TensorBoard log, ${data.cached ? 'cached' : 'live'}).`;
       } catch (err) {
         status.innerHTML = `<span class="error">${esc(err.message || err)}</span>`;
@@ -2017,7 +2051,6 @@ _INDEX_HTML = """
     };
     $('status').onchange = loadRuns;
     window.addEventListener('hashchange', renderRoute);
-    window.addEventListener('popstate', renderRoute);
     if (!window.location.hash) window.location.hash = '#/';
     renderRoute();
   </script>
