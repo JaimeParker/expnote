@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import webbrowser
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -40,7 +41,9 @@ from expnote.markdown import (
 from expnote.wandb_live import (
     WandbLiveError,
     fetch_wandb_run_state,
+    fetch_wandb_run_summary,
     map_wandb_state_to_status,
+    parse_wandb_run_url,
 )
 from expnote.workspace import (
     WorkspaceContext,
@@ -117,6 +120,9 @@ _AGENT_GUIDE = {
             "init",
             "moc add",
             "topic add --moc-id",
+            "topic set-schema when the topic has required metadata fields",
+            "import rlgarden <config.json> for rl-garden runs",
+            "run add --from <run_id> for sibling runs",
             "run add",
             "markdown table add",
             "sync all",
@@ -157,8 +163,12 @@ _AGENT_GUIDE = {
         "run.add": "Create a SQL-backed run record",
         "run.show": "Read SQL-backed Purpose, Relation, Result, Metadata, Analysis",
         "run.update": "Update structured run fields and metadata",
+        "run.refresh": "Refresh W&B status and summary into a run",
         "run.query": "Query runs with restricted SQL-like filters and metadata keys",
         "run.status": "List runs with a specific manual status",
+        "topic.set_schema": "Declare required metadata keys for a topic",
+        "topic.schema": "Read required metadata schema for a topic",
+        "topic.history": "Read topic title/summary changelog",
         "doc.add": "Create a SQL-backed cross-run analysis document",
         "doc.show": "Read a SQL-backed analysis document and related runs",
         "doc.list": "List SQL-backed analysis documents",
@@ -173,7 +183,8 @@ _AGENT_GUIDE = {
         "markdown.table.add_topic": "Add all active topic runs to a Markdown table",
         "markdown.table.sections": "List registered Markdown table sections",
         "markdown.table.diff": "Compare a managed Markdown table with SQLite",
-        "web": "Start the read-only SQL-backed web UI",
+        "web": "Start the SQL-backed web UI",
+        "import.rlgarden": "Import run metadata from an rl-garden resolved config.json",
         "sync.markdown": "Render SQLite records into Markdown",
         "sync.all": "Render run notes, analysis documents, auto index, and MOCs",
         "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
@@ -207,6 +218,21 @@ _AGENT_GUIDE = {
             "expnote run add --workspace <name> "
             "--moc-id <moc_id> --topic <topic> --run-id <id> --purpose <text> "
             "--meta-json seed=1 --json"
+        ),
+        "clone_run": (
+            "expnote run add --workspace <name> --from <existing_run_id> "
+            "--run-id <new_run_id> --meta-json seed=2 --json"
+        ),
+        "import_rlgarden": (
+            "expnote import rlgarden <config.json> --workspace <name> "
+            "--topic <topic> --wandb-url <url> --json"
+        ),
+        "topic_schema": (
+            "expnote topic set-schema <topic> --workspace <name> "
+            "--required-meta algorithm --required-meta env_id --required-meta seed"
+        ),
+        "run_refresh": (
+            "expnote run refresh <run_id> --workspace <name> --apply --json"
         ),
         "create_run_by_topic_id": (
             "expnote run create --workspace <name> "
@@ -268,7 +294,7 @@ _AGENT_GUIDE = {
         ),
         "status": (
             "status is manual; update it explicitly with "
-            "run update <id> --status finished"
+            "run update <id> --status finished, or use run refresh for W&B runs"
         ),
         "result": (
             "Result is a one-line headline metric only (return, success "
@@ -291,6 +317,14 @@ _AGENT_GUIDE = {
         "run_charts": (
             "expnote web shows W&B and TensorBoard run charts as split metrics "
             "only; TensorBoard hparam/* and single-point scalars are skipped."
+        ),
+        "metadata_copying": (
+            "when adding a sibling run, prefer run add --from <run_id>; for "
+            "rl-garden, prefer import rlgarden <config.json>"
+        ),
+        "benchmark": (
+            "when work is naturally tasks x algorithms, use benchmark commands "
+            "instead of flattening the matrix into topic prose"
         ),
         "curated_mocs": (
             "sync markdown does not update curated Markdown tables; use "
@@ -447,6 +481,214 @@ def _emit(data: object, as_json: bool) -> None:
         )
 
 
+def _emit_with_warnings(
+    data: dict[str, object],
+    warnings: list[str],
+    as_json: bool,
+) -> None:
+    if warnings and as_json:
+        data = {**data, "warnings": warnings}
+    elif warnings:
+        for warning in warnings:
+            typer.echo(f"Warning: {warning}", err=True)
+    _emit(data, as_json)
+
+
+def _manual_metadata_count(
+    meta: list[str] | None,
+    meta_json: list[str] | None,
+    metadata_json: str | None,
+) -> int:
+    count = len(meta or []) + len(meta_json or [])
+    if metadata_json:
+        try:
+            value = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            return count
+        if isinstance(value, dict):
+            count += len(value)
+    return count
+
+
+def _schema_key_list(keys: list[str]) -> list[str]:
+    return sorted({key.strip() for key in keys if key.strip()})
+
+
+def _schema_payload(row: sqlite3.Row) -> dict[str, object]:
+    data = row_to_dict(row)
+    data["required_metadata"] = json.loads(
+        str(data.pop("required_metadata_json", "[]"))
+    )
+    data["algorithm"] = data["algorithm"] or None
+    return data
+
+
+def _topic_schema_rows(
+    conn: sqlite3.Connection,
+    topic_id: str,
+    algorithm: str | None = None,
+) -> list[sqlite3.Row]:
+    params: list[object] = [topic_id]
+    algorithm_clause = ""
+    if algorithm is not None:
+        algorithm_clause = "AND algorithm = ?"
+        params.append(algorithm)
+    return conn.execute(
+        f"""
+        SELECT *
+        FROM topic_schemas
+        WHERE topic_id = ? {algorithm_clause} AND deleted_at IS NULL
+        ORDER BY algorithm ASC
+        """,
+        params,
+    ).fetchall()
+
+
+def _required_metadata_keys(
+    conn: sqlite3.Connection,
+    topic_id: str,
+    metadata: dict[str, object],
+) -> list[str]:
+    algorithms = [""]
+    algo = metadata.get("algorithm") or metadata.get("algo")
+    if algo is not None:
+        algorithms.append(str(algo))
+    keys: set[str] = set()
+    for row in conn.execute(
+        """
+        SELECT required_metadata_json
+        FROM topic_schemas
+        WHERE topic_id = ?
+            AND algorithm IN ({})
+            AND deleted_at IS NULL
+        """.format(",".join("?" for _ in algorithms)),
+        [topic_id, *algorithms],
+    ):
+        keys.update(json.loads(row["required_metadata_json"] or "[]"))
+    return sorted(keys)
+
+
+def _missing_required_metadata(
+    conn: sqlite3.Connection,
+    topic_id: str,
+    metadata: dict[str, object],
+) -> list[str]:
+    required = _required_metadata_keys(conn, topic_id, metadata)
+    return [key for key in required if key not in metadata]
+
+
+def _run_creation_warnings(
+    root: Path,
+    *,
+    state_dir: Path | None,
+    run_data: dict[str, object],
+    manual_metadata_count: int,
+    cloned_from: str | None = None,
+    imported: bool = False,
+) -> list[str]:
+    warnings: list[str] = []
+    metadata = dict(run_data.get("metadata") or {})
+    topic_id = str(run_data["topic_id"])
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        missing = _missing_required_metadata(conn, topic_id, metadata)
+        sibling = conn.execute(
+            """
+            SELECT id
+            FROM runs
+            WHERE topic_id = ?
+                AND id != ?
+                AND deleted_at IS NULL
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+            """,
+            (topic_id, run_data["id"]),
+        ).fetchone()
+    if missing:
+        warnings.append(
+            "run is missing topic schema metadata: " + ", ".join(missing)
+        )
+    if manual_metadata_count >= 3 and sibling is not None and cloned_from is None:
+        warnings.append(
+            "this topic already has runs; consider "
+            f"`run add --from {sibling['id']}` or `import rlgarden <config.json>` "
+            "to reduce metadata copy errors"
+        )
+    if not imported and _looks_like_benchmark_metadata(metadata):
+        warnings.append(
+            "metadata includes task/algorithm dimensions; consider `benchmark` "
+            "commands for a task x algo matrix"
+        )
+    wandb_warning = _wandb_run_id_warning(str(run_data["id"]), metadata)
+    if wandb_warning is not None:
+        warnings.append(wandb_warning)
+    return warnings
+
+
+def _looks_like_benchmark_metadata(metadata: dict[str, object]) -> bool:
+    keys = set(metadata)
+    return bool({"env_id", "task", "task_id"} & keys and {"algorithm", "algo"} & keys)
+
+
+def _wandb_run_id_warning(
+    run_id: str,
+    metadata: dict[str, object],
+) -> str | None:
+    wandb_url = metadata.get("wandb_url")
+    if not isinstance(wandb_url, str) or not wandb_url:
+        return None
+    try:
+        wandb_run_id = parse_wandb_run_url(wandb_url).run_id
+    except WandbLiveError:
+        return None
+    if wandb_run_id == run_id:
+        return None
+    return (
+        f"wandb_url points to W&B run id {wandb_run_id!r}; "
+        "prefer using the W&B run id as expnote run id"
+    )
+
+
+_WANDB_RESULT_KEYS = [
+    "eval/return",
+    "eval_return",
+    "eval/episode_return",
+    "eval/success_rate",
+    "eval_success_rate",
+    "success_rate",
+    "return",
+    "episode_return",
+]
+
+
+def _select_wandb_result(
+    summary: dict[str, object],
+    result_key: str | None,
+) -> tuple[str | None, object | None]:
+    keys = [result_key] if result_key is not None else _WANDB_RESULT_KEYS
+    for key in keys:
+        if key in summary and _is_result_value(summary[key]):
+            return key, summary[key]
+    return None, None
+
+
+def _is_result_value(value: object) -> bool:
+    return isinstance(value, int | float | str) and not isinstance(value, bool)
+
+
+def _format_wandb_result(key: str, value: object) -> str:
+    if isinstance(value, float):
+        value_text = f"{value:.6g}"
+    else:
+        value_text = str(value)
+    return f"{key}={value_text}"
+
+
+_RESULT_HELP = (
+    "One-line headline metric only; put interpretation, causes, and comparisons "
+    "in Analysis."
+)
+
+
 def _workspace_context(
     workspace: str | None,
     workspace_dir: Path | None,
@@ -474,7 +716,10 @@ def _render_agent_guide() -> str:
             "Minimal workflow:",
             "init -> moc add -> topic add --moc-id -> run add -> "
             "markdown table add -> sync all",
+            "For rl-garden runs, prefer expnote import rlgarden <config.json>.",
+            "For sibling runs, prefer expnote run add --from <existing_run_id>.",
             "Prefer using the wandb run id as expnote run id when available.",
+            "Use expnote topic set-schema to declare required metadata keys.",
             "",
             "Read records from SQLite:",
             "expnote run show <run_id> --json",
@@ -484,6 +729,7 @@ def _render_agent_guide() -> str:
             'expnote run query --where "metadata.seed = 1" --json',
             "expnote run update <run_id> --append-analysis <text>",
             "expnote run update <run_id> --metadata-json '{\"seed\":1}'",
+            "expnote run refresh <run_id> --apply --json",
             "expnote doc show <doc_id> --json",
             "expnote doc add --doc-id <doc_id> --moc-id <moc_id> "
             "--title <title> --run-id <run_id> --body <text> --json",
@@ -533,6 +779,9 @@ def _render_agent_guide() -> str:
             "- Result is a one-line headline metric only (return, success "
             "rate, final score); no comparisons or causes; put "
             "interpretation, diagnosis, and comparisons in Analysis or docs",
+            "- validate --json reports stale running runs and missing topic "
+            "schema metadata",
+            "- Use benchmark commands when a topic is really tasks x algorithms",
             "",
             "Handoff checks:",
             "expnote validate --json",
@@ -593,6 +842,20 @@ def _topic_id(
     if row is None:
         raise typer.BadParameter(f"topic not found: {title}")
     return str(row["id"])
+
+
+def _topic_id_or_title(
+    conn: sqlite3.Connection,
+    value: str,
+    moc_id: str | None = None,
+) -> str:
+    row = conn.execute(
+        "SELECT id FROM topics WHERE id = ? AND deleted_at IS NULL",
+        (value,),
+    ).fetchone()
+    if row is not None:
+        return str(row["id"])
+    return _topic_id(conn, value, moc_id=moc_id)
 
 
 def _topic_id_exists(conn: sqlite3.Connection, topic_id: str) -> str:
@@ -1048,6 +1311,8 @@ def topic_update(
     ts = now_iso()
     with transaction(root, state_dir=state_dir) as conn:
         tid = _topic_id(conn, title, moc_id=moc_id)
+        old_row = conn.execute("SELECT * FROM topics WHERE id = ?", (tid,)).fetchone()
+        old_data = row_to_dict(old_row)
         if new_title is not None:
             conn.execute(
                 "UPDATE topics SET title = ?, updated_at = ? WHERE id = ?",
@@ -1059,8 +1324,157 @@ def topic_update(
                 (summary, ts, tid),
             )
         row = conn.execute("SELECT * FROM topics WHERE id = ?", (tid,)).fetchone()
+        new_data = row_to_dict(row)
+        changed_fields = [
+            field
+            for field in ("title", "summary")
+            if old_data[field] != new_data[field]
+        ]
+        if changed_fields:
+            conn.execute(
+                """
+                INSERT INTO topic_history(
+                    id, topic_id, changed_at, fields_json,
+                    old_values_json, new_values_json
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("topichist"),
+                    tid,
+                    ts,
+                    json.dumps(changed_fields, ensure_ascii=False, sort_keys=True),
+                    json.dumps(
+                        {field: old_data[field] for field in changed_fields},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    json.dumps(
+                        {field: new_data[field] for field in changed_fields},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            )
     data = row_to_dict(row)
     append_event(root, "topic.update", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@topic_app.command("set-schema")
+def topic_set_schema(
+    title: Annotated[str, typer.Argument(help="Topic title.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = None,
+    required_meta: Annotated[
+        list[str] | None,
+        typer.Option("--required-meta", help="Required metadata key."),
+    ] = None,
+    algorithm: Annotated[
+        str | None,
+        typer.Option("--algorithm", help="Optional algorithm-specific schema."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    keys = _schema_key_list(required_meta or [])
+    ts = now_iso()
+    algorithm_key = algorithm or ""
+    with transaction(root, state_dir=state_dir) as conn:
+        tid = _topic_id(conn, title, moc_id=moc_id)
+        existing = conn.execute(
+            """
+            SELECT id FROM topic_schemas
+            WHERE topic_id = ? AND algorithm = ?
+            """,
+            (tid, algorithm_key),
+        ).fetchone()
+        schema_id = str(existing["id"]) if existing is not None else new_id("schema")
+        conn.execute(
+            """
+            INSERT INTO topic_schemas(
+                id, topic_id, algorithm, required_metadata_json,
+                created_at, updated_at, deleted_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(topic_id, algorithm) DO UPDATE SET
+                required_metadata_json = excluded.required_metadata_json,
+                updated_at = excluded.updated_at,
+                deleted_at = NULL
+            """,
+            (
+                schema_id,
+                tid,
+                algorithm_key,
+                json.dumps(keys, ensure_ascii=False, sort_keys=True),
+                ts,
+                ts,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM topic_schemas WHERE topic_id = ? AND algorithm = ?",
+            (tid, algorithm_key),
+        ).fetchone()
+    data = _schema_payload(row)
+    append_event(root, "topic.schema.set", data, state_dir=state_dir)
+    _emit(data, json_output)
+
+
+@topic_app.command("schema")
+def topic_schema(
+    title: Annotated[str, typer.Argument(help="Topic title.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id.")
+    ] = None,
+    algorithm: Annotated[
+        str | None,
+        typer.Option("--algorithm", help="Show one algorithm-specific schema."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    with readonly_transaction(ctx.root, state_dir=ctx.workspace_dir) as conn:
+        tid = _topic_id(conn, title, moc_id=moc_id)
+        rows = _topic_schema_rows(conn, tid, algorithm=algorithm or None)
+    _emit([_schema_payload(row) for row in rows], json_output)
+
+
+@topic_app.command("history")
+def topic_history(
+    topic: Annotated[str, typer.Argument(help="Topic title or id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    moc_id: Annotated[
+        str | None, typer.Option("--moc-id", help="Parent SQL MOC id for title lookup.")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    with readonly_transaction(ctx.root, state_dir=ctx.workspace_dir) as conn:
+        tid = _topic_id_or_title(conn, topic, moc_id=moc_id)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM topic_history
+            WHERE topic_id = ?
+            ORDER BY changed_at ASC, id ASC
+            """,
+            (tid,),
+        ).fetchall()
+    data = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["fields"] = json.loads(str(item.pop("fields_json", "[]")))
+        item["old_values"] = json.loads(str(item.pop("old_values_json", "{}")))
+        item["new_values"] = json.loads(str(item.pop("new_values_json", "{}")))
+        data.append(item)
     _emit(data, json_output)
 
 
@@ -1118,7 +1532,7 @@ def run_add(
     ] = None,
     purpose: Annotated[str | None, typer.Option(help="Short run purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
-    result: Annotated[str, typer.Option(help="Result summary.")] = "",
+    result: Annotated[str, typer.Option(help=_RESULT_HELP)] = "",
     analysis: Annotated[str | None, typer.Option(help="Run analysis.")] = None,
     analysis_file: Annotated[
         Path | None,
@@ -1144,6 +1558,7 @@ def run_add(
     root = ctx.root
     state_dir = ctx.workspace_dir
     analysis = _resolve_text_option(analysis, analysis_file, "--analysis")
+    manual_count = _manual_metadata_count(meta, meta_json, metadata_json)
     try:
         metadata = _merge_metadata_options(meta, meta_json, metadata_json)
     except ValueError as exc:
@@ -1175,7 +1590,14 @@ def run_add(
         status=status,
         metadata=metadata,
     )
-    _emit(data, json_output)
+    warnings = _run_creation_warnings(
+        root,
+        state_dir=state_dir,
+        run_data=data,
+        manual_metadata_count=manual_count,
+        cloned_from=run_from,
+    )
+    _emit_with_warnings(data, warnings, json_output)
 
 
 def _insert_run(
@@ -1368,7 +1790,7 @@ def run_update(
     workspace_dir: WorkspaceDirOption = None,
     purpose: Annotated[str | None, typer.Option(help="New purpose.")] = None,
     relation: Annotated[str | None, typer.Option(help="New relation.")] = None,
-    result: Annotated[str | None, typer.Option(help="New result.")] = None,
+    result: Annotated[str | None, typer.Option(help=_RESULT_HELP)] = None,
     analysis: Annotated[str | None, typer.Option(help="New analysis.")] = None,
     analysis_file: Annotated[
         Path | None,
@@ -1463,6 +1885,99 @@ def run_update(
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     data = row_to_dict(row)
     append_event(root, "run.update", data, state_dir=state_dir)
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        missing = _missing_required_metadata(
+            conn, str(data["topic_id"]), dict(data["metadata"])
+        )
+    warnings = []
+    if missing:
+        warnings.append(
+            "run is missing topic schema metadata: " + ", ".join(missing)
+        )
+    _emit_with_warnings(data, warnings, json_output)
+
+
+@run_app.command("refresh")
+def run_refresh(
+    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Write W&B summary/status updates to SQLite."),
+    ] = False,
+    result_key: Annotated[
+        str | None,
+        typer.Option("--result-key", help="Summary key to use for run.result."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        row = _run_row_or_error(conn, run_id)
+        run = row_to_dict(row)
+    metadata = dict(run["metadata"])
+    wandb_url = metadata.get("wandb_url")
+    if not isinstance(wandb_url, str) or not wandb_url:
+        raise typer.BadParameter(f"run {run_id} has no metadata.wandb_url")
+    try:
+        fetched = fetch_wandb_run_summary(wandb_url)
+    except WandbLiveError as exc:
+        raise typer.BadParameter(exc.message) from exc
+    summary = dict(fetched.get("summary") or {})
+    wandb_state = str(fetched.get("state") or "")
+    suggested_status = map_wandb_state_to_status(wandb_state) if wandb_state else None
+    selected_key, selected_value = _select_wandb_result(summary, result_key)
+    result_text = (
+        _format_wandb_result(selected_key, selected_value)
+        if selected_key is not None
+        else None
+    )
+    updated: list[str] = []
+    if apply:
+        ts = now_iso()
+        metadata["wandb_summary"] = summary
+        metadata["wandb_summary_updated_at"] = ts
+        if fetched.get("run_path"):
+            metadata["wandb_run_path"] = fetched["run_path"]
+        with transaction(root, state_dir=state_dir) as conn:
+            if suggested_status is not None and suggested_status != run["status"]:
+                conn.execute(
+                    "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                    (suggested_status, ts, run_id),
+                )
+                updated.append("status")
+            if result_text is not None and result_text != run["result"]:
+                conn.execute(
+                    "UPDATE runs SET result = ?, updated_at = ? WHERE id = ?",
+                    (result_text, ts, run_id),
+                )
+                updated.append("result")
+            conn.execute(
+                "UPDATE runs SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False, sort_keys=True), ts, run_id),
+            )
+            updated.append("metadata")
+        append_event(
+            root,
+            "run.update",
+            {"id": run_id, "status": suggested_status, "result": result_text},
+            state_dir=state_dir,
+        )
+    data = {
+        "run_id": run_id,
+        "apply": apply,
+        "wandb_url": wandb_url,
+        "wandb_state": wandb_state,
+        "suggested_status": suggested_status,
+        "summary": summary,
+        "result_key": selected_key,
+        "result": result_text,
+        "result_key_not_found": result_key is not None and selected_key is None,
+        "updated": updated,
+    }
     _emit(data, json_output)
 
 
@@ -3252,6 +3767,13 @@ def markdown_sync_command(
 def validate(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
+    stale_running_days: Annotated[
+        int,
+        typer.Option(
+            "--stale-running-days",
+            help="Report running runs older than N days with empty result; 0 disables.",
+        ),
+    ] = 2,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     ctx = _workspace_context(workspace, workspace_dir)
@@ -3264,12 +3786,25 @@ def validate(
             "artifacts": _count_active(conn, "artifacts"),
             "benchmarks": _count_active(conn, "benchmarks"),
         }
+        stale_running_runs = (
+            _stale_running_runs(conn, stale_running_days)
+            if stale_running_days > 0
+            else []
+        )
+        missing_required_metadata = _runs_missing_required_metadata(conn)
     conflicts = (
         projection_conflicts(root, state_dir=state_dir)
         if ctx.obsidian_root is not None
         else []
     )
-    result = {"ok": not conflicts, "counts": counts, "projection_conflicts": conflicts}
+    ok = not conflicts and not stale_running_runs and not missing_required_metadata
+    result = {
+        "ok": ok,
+        "counts": counts,
+        "projection_conflicts": conflicts,
+        "stale_running_runs": stale_running_runs,
+        "missing_required_metadata": missing_required_metadata,
+    }
     _emit(result, json_output)
 
 
@@ -3290,7 +3825,7 @@ def web(
         ),
     ] = False,
 ) -> None:
-    """Start the read-only expnote web UI."""
+    """Start the expnote web UI."""
     import uvicorn
 
     from expnote.web import create_app
@@ -3312,7 +3847,7 @@ def web(
         return
 
     app_obj = create_app(root, state_dir=state_dir)
-    typer.echo(f"expnote web is read-only: {url}")
+    typer.echo(f"expnote web: {url}")
     if open_browser and os.environ.get("EXPNOTE_NO_BROWSER") != "1":
         webbrowser.open(url)
     uvicorn.run(app_obj, host=host, port=port, log_level="info")
@@ -3368,7 +3903,7 @@ def import_rlgarden(
     status: Annotated[str, typer.Option(help="Initial status.")] = "running",
     purpose: Annotated[str | None, typer.Option(help="Override purpose.")] = None,
     relation: Annotated[str, typer.Option(help="Relation summary.")] = "",
-    result: Annotated[str, typer.Option(help="Result summary.")] = "",
+    result: Annotated[str, typer.Option(help=_RESULT_HELP)] = "",
     analysis: Annotated[str, typer.Option(help="Initial analysis.")] = "",
     run_id: Annotated[
         str | None,
@@ -3410,7 +3945,14 @@ def import_rlgarden(
         {"config_path": str(config_path), "run": data},
         state_dir=state_dir,
     )
-    _emit(data, json_output)
+    warnings = _run_creation_warnings(
+        root,
+        state_dir=state_dir,
+        run_data=data,
+        manual_metadata_count=0,
+        imported=True,
+    )
+    _emit_with_warnings(data, warnings, json_output)
 
 
 _RUN_QUERY_FIELDS = {
@@ -4103,6 +4645,82 @@ def _format_benchmark_matrix(data: dict[str, object]) -> str:
     return "\n".join(
         "  ".join(f"{cell:<{widths[i]}}" for i, cell in enumerate(row)) for row in rows
     )
+
+
+def _stale_running_runs(
+    conn: sqlite3.Connection,
+    stale_running_days: int,
+) -> list[dict[str, object]]:
+    cutoff = datetime.now(UTC) - timedelta(days=stale_running_days)
+    rows = conn.execute(
+        """
+        SELECT runs.*, topics.title AS topic_title, topics.moc_id
+        FROM runs
+        JOIN topics ON topics.id = runs.topic_id
+        WHERE runs.deleted_at IS NULL
+            AND topics.deleted_at IS NULL
+            AND runs.status = 'running'
+            AND TRIM(runs.result) = ''
+        ORDER BY runs.started_at ASC, runs.id ASC
+        """
+    ).fetchall()
+    stale = []
+    for row in rows:
+        started_at = _parse_iso_datetime(str(row["started_at"]))
+        if started_at is None or started_at > cutoff:
+            continue
+        age_days = (datetime.now(UTC) - started_at).days
+        stale.append(
+            {
+                "run_id": row["id"],
+                "topic_id": row["topic_id"],
+                "topic_title": row["topic_title"],
+                "moc_id": row["moc_id"],
+                "started_at": row["started_at"],
+                "age_days": age_days,
+            }
+        )
+    return stale
+
+
+def _runs_missing_required_metadata(
+    conn: sqlite3.Connection,
+) -> list[dict[str, object]]:
+    diagnostics = []
+    rows = conn.execute(
+        """
+        SELECT runs.*, topics.title AS topic_title, topics.moc_id
+        FROM runs
+        JOIN topics ON topics.id = runs.topic_id
+        WHERE runs.deleted_at IS NULL
+            AND topics.deleted_at IS NULL
+        ORDER BY runs.started_at DESC, runs.id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        metadata = json.loads(row["metadata_json"] or "{}")
+        missing = _missing_required_metadata(conn, str(row["topic_id"]), metadata)
+        if missing:
+            diagnostics.append(
+                {
+                    "run_id": row["id"],
+                    "topic_id": row["topic_id"],
+                    "topic_title": row["topic_title"],
+                    "moc_id": row["moc_id"],
+                    "missing_metadata": missing,
+                }
+            )
+    return diagnostics
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _count_active(conn: sqlite3.Connection, table: str) -> int:

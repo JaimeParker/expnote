@@ -103,6 +103,49 @@ def fetch_wandb_run_state(url: str) -> str:
         ) from exc
 
 
+def fetch_wandb_run_summary(url: str) -> dict[str, Any]:
+    ref = parse_wandb_run_url(url)
+    try:
+        import wandb
+    except ImportError as exc:
+        raise WandbLiveError(
+            "wandb_not_installed",
+            "The wandb Python package is not installed in this environment.",
+        ) from exc
+
+    try:
+        run = wandb.Api().run(ref.path)
+        state = run.state
+        summary_obj = run.summary
+        if hasattr(summary_obj, "_json_dict"):
+            raw_summary = dict(summary_obj._json_dict)
+        else:
+            raw_summary = dict(summary_obj)
+    except Exception as exc:
+        raise WandbLiveError(
+            "wandb_api_error",
+            str(exc) or exc.__class__.__name__,
+        ) from exc
+
+    return {
+        "state": state,
+        "run_path": ref.path,
+        "summary": {
+            key: value
+            for key, value in raw_summary.items()
+            if _is_summary_value(key, value)
+        },
+    }
+
+
+def _is_summary_value(key: str, value: object) -> bool:
+    if key.startswith("_"):
+        return False
+    if isinstance(value, str | int | float | bool) or value is None:
+        return math.isfinite(value) if isinstance(value, float) else True
+    return False
+
+
 def map_wandb_state_to_status(state: str) -> str:
     if state == "finished":
         return "finished"

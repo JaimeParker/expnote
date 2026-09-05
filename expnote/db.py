@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -153,6 +153,26 @@ def migrate(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             deleted_at TEXT,
             UNIQUE(moc_id, title)
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_schemas (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL REFERENCES topics(id),
+            algorithm TEXT NOT NULL DEFAULT '',
+            required_metadata_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(topic_id, algorithm)
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_history (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL REFERENCES topics(id),
+            changed_at TEXT NOT NULL,
+            fields_json TEXT NOT NULL,
+            old_values_json TEXT NOT NULL,
+            new_values_json TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS runs (

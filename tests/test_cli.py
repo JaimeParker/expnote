@@ -4,6 +4,7 @@ import io
 import json
 import sqlite3
 import tarfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -165,6 +166,23 @@ def test_guide_agent_mentions_status_lookup_and_manual_status():
     data = json.loads(result.output)
     assert "run status running --json" in data["workflows"]["query_run"]
     assert "manual" in data["common_pitfalls"]["status"]
+
+
+def test_help_and_guide_surface_low_error_run_creation_paths():
+    guide = runner.invoke(app, ["guide", "agent"])
+    assert guide.exit_code == 0, guide.output
+    assert "import rlgarden <config.json>" in guide.output
+    assert "run add --from <existing_run_id>" in guide.output
+    assert "topic set-schema" in guide.output
+    assert "run refresh <run_id>" in guide.output
+
+    run_help = runner.invoke(app, ["run", "add", "--help"])
+    assert run_help.exit_code == 0, run_help.output
+    assert "One-line headline metric only" in run_help.output
+
+    import_help = runner.invoke(app, ["import", "rlgarden", "--help"])
+    assert import_help.exit_code == 0, import_help.output
+    assert "wandb run URL" in import_help.output
 
 
 def test_guide_agent_json_includes_run_record_template():
@@ -780,14 +798,19 @@ def test_existing_schema_migrates_on_mutating_cli_use(tmp_path):
     conn = sqlite3.connect(state_dir / "expnote.sqlite")
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
-        "('docs', 'doc_runs')"
+        "('docs', 'doc_runs', 'topic_schemas', 'topic_history')"
     ).fetchall()
     version = conn.execute(
         "SELECT value FROM meta WHERE key = 'schema_version'"
     ).fetchone()[0]
     conn.close()
-    assert {row[0] for row in rows} == {"docs", "doc_runs"}
-    assert version == "5"
+    assert {row[0] for row in rows} == {
+        "docs",
+        "doc_runs",
+        "topic_schemas",
+        "topic_history",
+    }
+    assert version == "6"
 
 
 def test_external_state_dir_supports_cli_workflow(tmp_path):
@@ -1748,6 +1771,117 @@ def test_topic_update_delete_and_include_deleted(tmp_path):
     assert len(rows) == 1
     assert rows[0]["title"] == "new"
     assert rows[0]["deleted_at"] is not None
+
+
+def test_topic_schema_round_trips_and_validate_reports_missing_metadata(tmp_path):
+    _init_with_topic(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "topic", "set-schema", "topic",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--required-meta", "algorithm",
+            "--required-meta", "env_id",
+            "--required-meta", "seed",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    schema = json.loads(result.output)
+    assert schema["required_metadata"] == ["algorithm", "env_id", "seed"]
+
+    _add_run(tmp_path, "run1")
+
+    validate = runner.invoke(
+        app,
+        [
+            "validate",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--stale-running-days", "0",
+            "--json",
+        ],
+    )
+    assert validate.exit_code == 0, validate.output
+    data = json.loads(validate.output)
+    assert data["ok"] is False
+    assert data["missing_required_metadata"] == [
+        {
+            "run_id": "run1",
+            "topic_id": schema["topic_id"],
+            "topic_title": "topic",
+            "moc_id": "default",
+            "missing_metadata": ["algorithm", "env_id", "seed"],
+        }
+    ]
+
+    show = runner.invoke(
+        app,
+        [
+            "topic", "schema", "topic",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+    assert show.exit_code == 0, show.output
+    assert json.loads(show.output)[0]["required_metadata"] == [
+        "algorithm", "env_id", "seed"
+    ]
+
+
+def test_topic_update_writes_history(tmp_path):
+    _init_with_topic(tmp_path, "old")
+
+    update = runner.invoke(
+        app,
+        [
+            "topic", "update", "old",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--new-title", "new",
+            "--summary", "summary",
+        ],
+    )
+    assert update.exit_code == 0, update.output
+
+    history = runner.invoke(
+        app,
+        [
+            "topic", "history", "new",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+    assert history.exit_code == 0, history.output
+    data = json.loads(history.output)
+    assert len(data) == 1
+    assert data[0]["fields"] == ["title", "summary"]
+    assert data[0]["old_values"] == {"title": "old", "summary": ""}
+    assert data[0]["new_values"] == {"title": "new", "summary": "summary"}
+
+
+def test_validate_reports_stale_running_runs(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "old")
+    started_at = (datetime.now(UTC) - timedelta(days=4)).replace(microsecond=0)
+    conn = sqlite3.connect(tmp_path / ".expnote" / "expnote.sqlite")
+    try:
+        conn.execute(
+            "UPDATE runs SET started_at = ? WHERE id = ?",
+            (started_at.isoformat(), "old"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(
+        app,
+        ["validate", "--workspace-dir", str(tmp_path / ".expnote"), "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["ok"] is False
+    assert data["stale_running_runs"][0]["run_id"] == "old"
+    assert data["stale_running_runs"][0]["age_days"] >= 3
 
 
 def test_run_show_update_list_and_metadata_merge(tmp_path):
@@ -3632,6 +3766,39 @@ def test_run_add_from_missing_source_fails(tmp_path):
     assert "not found" in result.output
 
 
+def test_run_add_json_warns_for_manual_metadata_and_wandb_id_mismatch(tmp_path):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "source",
+            "--purpose", "source",
+            "--meta", "algorithm=sac",
+            "--meta", "env_id=Kitchen-v0",
+            "--meta", "seed=1",
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "manual-id",
+            "--purpose", "manual",
+            "--meta", "algorithm=sac",
+            "--meta", "env_id=Kitchen-v0",
+            "--meta", "seed=2",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/wandb-id",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert any("run add --from source" in warning for warning in data["warnings"])
+    assert any("wandb-id" in warning for warning in data["warnings"])
+
+
 def test_run_diff_reports_field_and_metadata_differences(tmp_path):
     _init_with_topic(tmp_path)
     runner.invoke(
@@ -3734,6 +3901,94 @@ def test_sync_wandb_status_reports_without_writing_by_default(tmp_path, monkeypa
         ],
     )
     assert show_result.output.strip() == "running"
+
+
+def test_run_refresh_dry_run_reports_wandb_summary(tmp_path, monkeypatch):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run1", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/run1",
+        ],
+    )
+    monkeypatch.setattr(
+        "expnote.cli.fetch_wandb_run_summary",
+        lambda url: {
+            "state": "finished",
+            "run_path": "entity/project/run1",
+            "summary": {"eval/return": 123.456789},
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "refresh", "run1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["suggested_status"] == "finished"
+    assert data["result"] == "eval/return=123.457"
+    assert data["updated"] == []
+
+    show_result = runner.invoke(
+        app,
+        [
+            "run", "show", "run1", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+    show = json.loads(show_result.output)
+    assert show["status"] == "running"
+    assert show["result"] == ""
+
+
+def test_run_refresh_apply_writes_status_result_and_summary(tmp_path, monkeypatch):
+    _init_with_topic(tmp_path)
+    runner.invoke(
+        app,
+        [
+            "run", "add", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--topic", "topic", "--run-id", "run1", "--status", "running",
+            "--meta", "wandb_url=https://wandb.ai/entity/project/runs/run1",
+        ],
+    )
+    monkeypatch.setattr(
+        "expnote.cli.fetch_wandb_run_summary",
+        lambda url: {
+            "state": "finished",
+            "run_path": "entity/project/run1",
+            "summary": {"success_rate": 0.75},
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "refresh", "run1", "--apply",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["updated"] == ["status", "result", "metadata"]
+
+    show_result = runner.invoke(
+        app,
+        [
+            "run", "show", "run1", "--workspace-dir", str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+    show = json.loads(show_result.output)
+    assert show["status"] == "finished"
+    assert show["result"] == "success_rate=0.75"
+    assert show["metadata"]["wandb_summary"] == {"success_rate": 0.75}
+    assert "run.update" in [event["type"] for event in _events(tmp_path)]
 
 
 def test_sync_wandb_status_apply_writes_and_logs_event(tmp_path, monkeypatch):
