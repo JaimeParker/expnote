@@ -1095,8 +1095,13 @@ _INDEX_HTML = """
     table[data-table="topic-runs"] { min-width: 1080px; table-layout: fixed; }
     table[data-table="doc-runs"] { min-width: 100%; table-layout: auto; }
     table[data-table="docs"] { min-width: 720px; }
-    table[data-table="benchmark-matrix"] { width: auto; }
-    table[data-table="benchmark-matrix"] th, table[data-table="benchmark-matrix"] td { white-space: nowrap; }
+    table[data-table="benchmark-matrix"] { width: auto; table-layout: fixed; }
+    table[data-table="benchmark-matrix"] th, table[data-table="benchmark-matrix"] td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    table[data-table="benchmark-matrix"] th[data-cell="task"] { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+    table[data-table="benchmark-matrix"] td[data-cell="matrix"] .link-button { display: flex; width: 100%; min-width: 0; }
+    table[data-table="benchmark-matrix"] td[data-cell="matrix"] .link-button code { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    table[data-table="benchmark-matrix"] .col-resizer { position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: col-resize; z-index: 2; }
+    table[data-table="benchmark-matrix"] .col-resizer:hover, table[data-table="benchmark-matrix"] .col-resizer.active { background: rgba(47, 91, 216, 0.35); }
     col.col-run { width: 190px; }
     col.col-status { width: 100px; }
     col.col-role { width: 90px; }
@@ -2001,22 +2006,110 @@ _INDEX_HTML = """
     async function loadBenchmark(id) {
       const b = await api('/api/benchmarks/' + encodeURIComponent(id));
       $('view').innerHTML = `${hero(esc(b.title), `<code>${esc(b.id)}</code>`)}${renderBenchmarkMatrix(b)}`;
+      initBenchmarkColResize();
+    }
+    const BENCHMARK_COL_DEFAULT_WIDTH = { task: 220, algo: 120 };
+    const BENCHMARK_COL_MIN_WIDTH = { task: 100, algo: 60 };
+    function benchmarkColWidthsKey(benchmarkId) {
+      return 'expnote:benchmarkColWidths:' + benchmarkId;
+    }
+    function loadBenchmarkColWidths(benchmarkId) {
+      try {
+        const raw = localStorage.getItem(benchmarkColWidthsKey(benchmarkId));
+        if (!raw) return { task: null, algo: {} };
+        const parsed = JSON.parse(raw);
+        return { task: parsed.task || null, algo: parsed.algo || {} };
+      } catch (err) {
+        return { task: null, algo: {} };
+      }
+    }
+    function saveBenchmarkColWidth(benchmarkId, col, algoId, width) {
+      try {
+        const widths = loadBenchmarkColWidths(benchmarkId);
+        if (col === 'task') {
+          widths.task = width;
+        } else {
+          widths.algo[algoId] = width;
+        }
+        localStorage.setItem(benchmarkColWidthsKey(benchmarkId), JSON.stringify(widths));
+      } catch (err) {
+        // localStorage unavailable (e.g. private browsing) - width just won't persist.
+      }
+    }
+    function breakableText(text) {
+      return esc(text).replace(/([_-])/g, '$1<wbr>');
     }
     function renderBenchmarkMatrix(b) {
       const tasks = b.tasks || [], algos = b.algos || [];
       if (!tasks.length || !algos.length) return empty('No tasks/algos recorded yet.');
       const cellMap = {};
       (b.cells || []).forEach(c => { cellMap[c.task_id + '::' + c.algo_id] = c; });
-      const header = '<th></th>' + algos.map(a => `<th>${esc(a.title)}</th>`).join('');
+      const widths = loadBenchmarkColWidths(b.id);
+      const taskWidth = widths.task || BENCHMARK_COL_DEFAULT_WIDTH.task;
+      const cols = '<colgroup><col class="col-task" style="width:' + taskWidth + 'px">' +
+        algos.map(a => `<col class="col-algo" data-algo-id="${esc(a.id)}" style="width:${widths.algo[a.id] || BENCHMARK_COL_DEFAULT_WIDTH.algo}px">`).join('') +
+        '</colgroup>';
+      const header = '<th class="resizable-th"><span class="col-resizer" data-col="task"></span></th>' +
+        algos.map(a => `<th class="resizable-th" title="${esc(a.title)}">${esc(a.title)}<span class="col-resizer" data-col="algo" data-algo-id="${esc(a.id)}"></span></th>`).join('');
       const rows = tasks.map(t => {
         const cells = algos.map(a => {
           const c = cellMap[t.id + '::' + a.id];
           if (!c) return `<td data-cell="matrix"><span class="muted">—</span></td>`;
-          return `<td data-cell="matrix"><button class="link-button" onclick="navigate('#/run/${encodeURIComponent(c.run_id)}')"><code>${esc(c.run_id)}</code></button></td>`;
+          return `<td data-cell="matrix"><button class="link-button" title="${esc(c.run_id)}" onclick="navigate('#/run/${encodeURIComponent(c.run_id)}')"><code>${esc(c.run_id)}</code></button></td>`;
         }).join('');
-        return `<tr><th data-cell="task">${esc(t.title)}</th>${cells}</tr>`;
+        return `<tr><th data-cell="task" title="${esc(t.title)}">${breakableText(t.title)}</th>${cells}</tr>`;
       }).join('');
-      return `<div class="table-wrap"><table data-table="benchmark-matrix"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+      return `<div class="table-wrap"><table data-table="benchmark-matrix" id="benchmarkMatrixTable" data-benchmark-id="${esc(b.id)}">${cols}<thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    function syncBenchmarkTableWidth(table) {
+      // table-layout:fixed + width:auto shouldn't need this, but setting an
+      // explicit table width as the sum of column widths removes any
+      // ambiguity about whether the browser reflows the table after a
+      // live <col> width mutation.
+      let total = 0;
+      table.querySelectorAll('colgroup col').forEach(col => {
+        total += parseInt(col.style.width, 10) || 0;
+      });
+      table.style.width = total + 'px';
+    }
+    function initBenchmarkColResize() {
+      const table = $('benchmarkMatrixTable');
+      if (!table) return;
+      const benchmarkId = table.dataset.benchmarkId;
+      syncBenchmarkTableWidth(table);
+      table.querySelectorAll('.col-resizer').forEach(handle => {
+        handle.addEventListener('mousedown', event => startBenchmarkColResize(event, table, benchmarkId, handle));
+      });
+    }
+    function startBenchmarkColResize(event, table, benchmarkId, handle) {
+      event.preventDefault();
+      const col = handle.dataset.col;
+      const algoId = handle.dataset.algoId || null;
+      const colEl = col === 'task'
+        ? table.querySelector('col.col-task')
+        : table.querySelector(`col.col-algo[data-algo-id="${CSS.escape(algoId)}"]`);
+      if (!colEl) return;
+      const startX = event.clientX;
+      // <col> elements generate no rendered box of their own, so
+      // getBoundingClientRect() on them is unreliable (often all-zero);
+      // read back the inline width we always set at render time instead.
+      const startWidth = parseInt(colEl.style.width, 10) || BENCHMARK_COL_DEFAULT_WIDTH[col];
+      const minWidth = BENCHMARK_COL_MIN_WIDTH[col];
+      handle.classList.add('active');
+      function onMove(moveEvent) {
+        const delta = moveEvent.clientX - startX;
+        const newWidth = Math.max(minWidth, Math.round(startWidth + delta));
+        colEl.style.width = newWidth + 'px';
+        syncBenchmarkTableWidth(table);
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('active');
+        saveBenchmarkColWidth(benchmarkId, col, algoId, parseInt(colEl.style.width, 10));
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     }
     async function renderRoute() {
       setActive();
