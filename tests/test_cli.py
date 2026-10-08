@@ -2602,6 +2602,217 @@ def test_run_delete_hides_run_from_list_and_query(tmp_path):
     assert [row["id"] for row in json.loads(result.output)] == ["active"]
 
 
+def test_run_rename_updates_fk_tables_text_notes_and_events(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "old-run-1", purpose="baseline run")
+    _add_run(tmp_path, "old-run-1-actionfix", purpose="see [[old-run-1]]")
+    _add_run(
+        tmp_path,
+        "sibling",
+        purpose="compare to [[old-run-1]] and [[old-run-1-actionfix]]",
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "run", "update", "sibling",
+                "--workspace-dir", str(tmp_path / ".expnote"),
+                "--meta-json", 'wandb_run_id="wb_old-run-1_suffix123"',
+                "--meta", "relation_note=old-run-1",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "relation", "add", "old-run-1", "sibling",
+                "--kind", "comparison",
+                "--workspace-dir", str(tmp_path / ".expnote"),
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "artifact", "add", "old-run-1", "file:///tmp/x.pt",
+                "--kind", "checkpoint",
+                "--workspace-dir", str(tmp_path / ".expnote"),
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app, ["sync", "all", "--workspace-dir", str(tmp_path / ".expnote")]
+        ).exit_code
+        == 0
+    )
+
+    notes_dir = tmp_path / "notes" / "runs"
+    assert (notes_dir / "old-run-1.md").exists()
+
+    db_path = tmp_path / ".expnote" / "expnote.sqlite"
+    events_path = tmp_path / ".expnote" / "events.jsonl"
+    before_db = db_path.read_bytes()
+    before_events = events_path.read_text(encoding="utf-8")
+
+    dry = runner.invoke(
+        app,
+        [
+            "run", "rename", "old-run-1", "new-id-1",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--dry-run", "--json",
+        ],
+    )
+    assert dry.exit_code == 0, dry.output
+    plan = json.loads(dry.output)
+    assert plan["dry_run"] is True
+    assert plan["fk_updates"]["relations.src_run_id"] == 1
+    assert plan["fk_updates"]["artifacts.run_id"] == 1
+    assert {u["run_id"] for u in plan["text_updates"]} == {
+        "old-run-1-actionfix",
+        "sibling",
+    }
+    assert db_path.read_bytes() == before_db, "dry-run must not touch the database"
+    assert (
+        events_path.read_text(encoding="utf-8") == before_events
+    ), "dry-run must not append events"
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "rename", "old-run-1", "new-id-1",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["fk_updates"]["relations.src_run_id"] == 1
+    assert set(data["text_updated_run_ids"]) == {"old-run-1-actionfix", "sibling"}
+    assert data["stale_note_removed"] == str(notes_dir / "old-run-1.md")
+    assert not (notes_dir / "old-run-1.md").exists()
+
+    result = runner.invoke(
+        app, ["run", "show", "old-run-1", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "show", "new-id-1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["id"] == "new-id-1"
+
+    result = runner.invoke(
+        app,
+        [
+            "artifact", "list", "new-id-1",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(result.output)) == 1
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "show", "old-run-1-actionfix",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    assert json.loads(result.output)["purpose"] == "see [[new-id-1]]"
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "show", "sibling",
+            "--workspace-dir", str(tmp_path / ".expnote"), "--json",
+        ],
+    )
+    sibling = json.loads(result.output)
+    assert sibling["purpose"] == "compare to [[new-id-1]] and [[old-run-1-actionfix]]"
+    assert sibling["metadata"]["relation_note"] == "new-id-1"
+    # "wb_old-run-1_suffix123" is not a whole-token match (old-run-1 is glued to
+    # surrounding id characters), so it must be left untouched.
+    assert sibling["metadata"]["wandb_run_id"] == "wb_old-run-1_suffix123"
+
+    events = _events(tmp_path)
+    rename_events = [e for e in events if e["type"] == "run.rename"]
+    assert rename_events[-1]["payload"] == {
+        "old_id": "old-run-1",
+        "new_id": "new-id-1",
+    }
+    sibling_update_events = [
+        e
+        for e in events
+        if e["type"] == "run.update" and e["payload"].get("id") == "sibling"
+    ]
+    assert sibling_update_events
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+
+    result = runner.invoke(
+        app, ["validate", "--workspace-dir", str(tmp_path / ".expnote"), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["ok"] is True
+
+    sync_result = runner.invoke(
+        app, ["sync", "all", "--workspace-dir", str(tmp_path / ".expnote")]
+    )
+    assert sync_result.exit_code == 0, sync_result.output
+    assert (notes_dir / "new-id-1.md").exists()
+    assert not (notes_dir / "old-run-1.md").exists()
+
+
+def test_run_rename_refuses_missing_old_existing_new_and_identical_ids(tmp_path):
+    _init_with_topic(tmp_path)
+    _add_run(tmp_path, "run1")
+    _add_run(tmp_path, "run2")
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "rename", "does-not-exist", "new-id",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "rename", "run1", "run2",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "rename", "run1", "run1",
+            "--workspace-dir", str(tmp_path / ".expnote"),
+        ],
+    )
+    assert result.exit_code != 0
+
+
 def test_artifact_add_list_and_delete(tmp_path):
     _init_with_topic(tmp_path)
     _add_run(tmp_path, "run1")

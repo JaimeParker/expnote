@@ -27,6 +27,7 @@ from expnote.db import (
     now_iso,
     parse_meta,
     parse_meta_json,
+    read_config,
     readonly_transaction,
     row_to_dict,
     transaction,
@@ -35,6 +36,7 @@ from expnote.markdown import (
     diff_moc_section,
     ensure_curated_moc_target,
     projection_conflicts,
+    run_note_filename,
     sync_markdown,
     sync_moc_section,
 )
@@ -2000,6 +2002,248 @@ def run_delete(
     payload = {"id": run_id, "deleted_at": ts}
     append_event(root, "run.delete", payload, state_dir=state_dir)
     _emit(payload, json_output)
+
+
+_RUN_ID_FK_COLUMNS: list[tuple[str, str]] = [
+    ("relations", "src_run_id"),
+    ("relations", "dst_run_id"),
+    ("artifacts", "run_id"),
+    ("doc_runs", "run_id"),
+    ("benchmark_cells", "run_id"),
+    ("moc_entries", "run_id"),
+]
+
+_ID_TOKEN_CHARS = "A-Za-z0-9_-"
+
+
+def _replace_id_token(text: str, old_id: str, new_id: str) -> tuple[str, int]:
+    """Replace old_id with new_id wherever it appears as a whole id token.
+
+    A boundary check (not a plain substring replace) is required because run
+    ids can be prefixes of other, unrelated run ids (e.g. "foo-s0" is a
+    substring of the distinct run id "foo-s0-actionfix"), and a renamed run's
+    own new_id can itself already contain old_id as a literal prefix (e.g. a
+    wandb_run_id of "<old_id><hash-suffix>"). Only replace old_id when it is
+    not immediately adjacent to another id character on either side.
+    """
+    if not text or old_id not in text:
+        return text, 0
+    pattern = re.compile(
+        rf"(?<![{_ID_TOKEN_CHARS}]){re.escape(old_id)}(?![{_ID_TOKEN_CHARS}])"
+    )
+    return pattern.subn(new_id, text)
+
+
+def _replace_id_in_metadata_value(
+    value: object, old_id: str, new_id: str
+) -> tuple[object, int]:
+    if isinstance(value, str):
+        return _replace_id_token(value, old_id, new_id)
+    if isinstance(value, list):
+        count = 0
+        result = []
+        for item in value:
+            new_item, item_count = _replace_id_in_metadata_value(item, old_id, new_id)
+            result.append(new_item)
+            count += item_count
+        return result, count
+    if isinstance(value, dict):
+        count = 0
+        result = {}
+        for key, item in value.items():
+            new_item, item_count = _replace_id_in_metadata_value(item, old_id, new_id)
+            result[key] = new_item
+            count += item_count
+        return result, count
+    return value, 0
+
+
+_RUN_TEXT_FIELDS = ("purpose", "relation", "result", "analysis")
+
+
+def _run_id_field_changes(
+    run: dict[str, object], old_id: str, new_id: str
+) -> dict[str, tuple[object, int]]:
+    """Return {column: (new_value, occurrence_count)} for changed columns.
+
+    Column names are the actual `runs` SQL columns to update: the text
+    fields directly, and "metadata_json" (re-serialized) for metadata.
+    """
+    changes: dict[str, tuple[object, int]] = {}
+    for field in _RUN_TEXT_FIELDS:
+        value = str(run.get(field) or "")
+        new_value, count = _replace_id_token(value, old_id, new_id)
+        if count:
+            changes[field] = (new_value, count)
+    metadata = run.get("metadata")
+    if isinstance(metadata, dict):
+        new_metadata, count = _replace_id_in_metadata_value(metadata, old_id, new_id)
+        if count:
+            changes["metadata_json"] = (
+                json.dumps(new_metadata, ensure_ascii=False, sort_keys=True),
+                count,
+            )
+    return changes
+
+
+def _run_note_path(
+    root: Path, state_dir: Path | None, obsidian_root: Path | None, run_id: str
+) -> Path | None:
+    if obsidian_root is None:
+        return None
+    config = read_config(root, state_dir=state_dir)
+    return root / config["notes_dir"] / run_note_filename(run_id)
+
+
+def _run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
+    row = conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone()
+    return row is not None
+
+
+@run_app.command("rename")
+def run_rename(
+    old_id: Annotated[str, typer.Argument(help="Existing run id.")],
+    new_run_id: Annotated[
+        str, typer.Argument(metavar="NEW_ID", help="New run id (e.g. wandb_run_id).")
+    ],
+    workspace: WorkspaceOption = None,
+    workspace_dir: WorkspaceDirOption = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Report every planned change without committing."
+        ),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Rename a run id everywhere: FK tables, literal id mentions, and notes."""
+    ctx = _workspace_context(workspace, workspace_dir)
+    root = ctx.root
+    state_dir = ctx.workspace_dir
+    if old_id == new_run_id:
+        raise typer.BadParameter("old_id and new_id must differ")
+
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        if not _run_exists(conn, old_id):
+            raise typer.BadParameter(f"run not found: {old_id}")
+        if _run_exists(conn, new_run_id):
+            raise typer.BadParameter(f"run already exists: {new_run_id}")
+        fk_updates = {
+            f"{table}.{column}": conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (old_id,)
+            ).fetchone()[0]
+            for table, column in _RUN_ID_FK_COLUMNS
+        }
+        all_runs = [row_to_dict(row) for row in conn.execute("SELECT * FROM runs")]
+
+    text_updates = []
+    for run in all_runs:
+        changes = _run_id_field_changes(run, old_id, new_run_id)
+        if changes:
+            text_updates.append(
+                {
+                    "run_id": run["id"],
+                    "fields": {
+                        field: count for field, (_, count) in sorted(changes.items())
+                    },
+                }
+            )
+
+    old_note_path = _run_note_path(root, state_dir, ctx.obsidian_root, old_id)
+
+    if dry_run:
+        _emit(
+            {
+                "old_id": old_id,
+                "new_id": new_run_id,
+                "dry_run": True,
+                "fk_updates": fk_updates,
+                "text_updates": text_updates,
+                "stale_note_path": str(old_note_path) if old_note_path else None,
+            },
+            json_output,
+        )
+        return
+
+    ts = now_iso()
+    other_updated_ids: list[str] = []
+    with transaction(root, state_dir=state_dir) as conn:
+        # migrate() may leave a pending implicit transaction open (from its own
+        # idempotent meta upsert); PRAGMA foreign_keys is a no-op while a
+        # transaction is pending, so flush it before toggling the pragma below.
+        conn.commit()
+        if not _run_exists(conn, old_id):
+            raise typer.BadParameter(f"run not found: {old_id}")
+        if _run_exists(conn, new_run_id):
+            raise typer.BadParameter(f"run already exists: {new_run_id}")
+        all_runs = [row_to_dict(row) for row in conn.execute("SELECT * FROM runs")]
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 0:
+            raise RuntimeError(
+                "PRAGMA foreign_keys=OFF did not take effect; "
+                "refusing to rename a run id with FK enforcement still on."
+            )
+        conn.execute(
+            "UPDATE runs SET id = ?, updated_at = ? WHERE id = ?",
+            (new_run_id, ts, old_id),
+        )
+        for table, column in _RUN_ID_FK_COLUMNS:
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                (new_run_id, old_id),
+            )
+        for run in all_runs:
+            changes = _run_id_field_changes(run, old_id, new_run_id)
+            if not changes:
+                continue
+            row_id = new_run_id if run["id"] == old_id else str(run["id"])
+            columns = list(changes)
+            values = [new_value for new_value, _count in changes.values()]
+            assignments = ", ".join(f"{column} = ?" for column in columns)
+            conn.execute(
+                f"UPDATE runs SET {assignments}, updated_at = ? WHERE id = ?",
+                (*values, ts, row_id),
+            )
+            if row_id != new_run_id:
+                other_updated_ids.append(row_id)
+        # `transaction()` commits on normal exit from this block. PRAGMA
+        # foreign_keys cannot be turned back on until then (it is a no-op
+        # while a transaction is pending), so re-enabling it and running the
+        # integrity check happen below on a fresh connection.
+
+    with readonly_transaction(root, state_dir=state_dir) as conn:
+        # connect_readonly() sets `PRAGMA foreign_keys = ON` on this fresh
+        # connection, satisfying the ON-then-check ordering.
+        orphans = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if orphans:
+        raise RuntimeError(
+            "PRAGMA foreign_key_check found orphaned row(s) after renaming "
+            f"{old_id} -> {new_run_id}: {[tuple(row) for row in orphans]}"
+        )
+
+    stale_note_removed = None
+    if old_note_path is not None and old_note_path.exists():
+        old_note_path.unlink()
+        stale_note_removed = str(old_note_path)
+
+    rename_payload = {"old_id": old_id, "new_id": new_run_id}
+    append_event(root, "run.rename", rename_payload, state_dir=state_dir)
+    for run_id in other_updated_ids:
+        with readonly_transaction(root, state_dir=state_dir) as conn:
+            row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        append_event(root, "run.update", row_to_dict(row), state_dir=state_dir)
+
+    _emit(
+        {
+            "old_id": old_id,
+            "new_id": new_run_id,
+            "fk_updates": fk_updates,
+            "text_updated_run_ids": other_updated_ids,
+            "stale_note_removed": stale_note_removed,
+        },
+        json_output,
+    )
 
 
 @run_app.command("query")

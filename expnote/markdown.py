@@ -909,3 +909,7 @@ def _strip_marker_padding(value: str) -> str:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "run"
+
+
+def run_note_filename(run_id: str) -> str:
+    return f"{_safe_filename(run_id)}.md"
