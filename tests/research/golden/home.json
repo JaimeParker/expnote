@@ -1,0 +1,172 @@
+{
+ "decisions": {
+  "awaiting": [
+   {
+    "date": "2026-10-22",
+    "id": "O2O-DEC-0125",
+    "layer": "研究",
+    "number": 125,
+    "path": "10 Projects/Demo/decisions/O2O-DEC-0125--批准.md",
+    "plans": [
+     "PLAN-900A"
+    ],
+    "title": "决定 125"
+   }
+  ],
+  "layers": [
+   "研究",
+   "工程"
+  ],
+  "total": 9
+ },
+ "deviations": {
+  "open": [
+   {
+    "cards": "—",
+    "date": "2026-10-04",
+    "experiment": "PLAN-900A S1",
+    "found": null,
+    "id": "D-02",
+    "impact": "弱",
+    "status": "open",
+    "summary": "y"
+   }
+  ],
+  "total": 2
+ },
+ "display": {
+  "label_cn": {
+   "empty": "未填",
+   "filled": "已填",
+   "missing": "无标签节",
+   "partial": "部分"
+  }
+ },
+ "doctor": {
+  "flags": [],
+  "summary": {
+   "fail": 0,
+   "ok": 17,
+   "warn": 0
+  }
+ },
+ "findings": {
+  "fail": 1,
+  "info": 7,
+  "warn": 4
+ },
+ "index": {
+  "built": true,
+  "conflictFiles": 0,
+  "files": 17,
+  "linksResolved": 31,
+  "linksUnresolved": 3,
+  "notes": 16
+ },
+ "plans": {
+  "byStatus": {
+   "closed": 1,
+   "unknown": 1
+  },
+  "groups": [
+   {
+    "plans": [
+     {
+      "archived": false,
+      "decisionCount": 5,
+      "evCount": 1,
+      "id": "PLAN-900A",
+      "legacy": false,
+      "openItems": 3,
+      "path": "10 Projects/Demo/plans/PLAN-900A--demo.md",
+      "resStatus": "confirmed",
+      "status": "closed",
+      "title": "PLAN-900A：演示"
+     }
+    ],
+    "status": "closed"
+   },
+   {
+    "plans": [
+     {
+      "archived": false,
+      "decisionCount": 2,
+      "evCount": 0,
+      "id": "PLAN-900B",
+      "legacy": true,
+      "openItems": 0,
+      "path": "10 Projects/Demo/plans/PLAN-900B--other.md",
+      "resStatus": null,
+      "status": null,
+      "title": "PLAN-900B--other"
+     }
+    ],
+    "status": "unknown"
+   }
+  ],
+  "hidden": {
+   "archived": 0,
+   "noPlanId": 0
+  },
+  "total": 2
+ },
+ "project": {
+  "id": "off2on",
+  "name": "Demo"
+ },
+ "runs": {
+  "recent": [
+   {
+    "id": "abcd1234",
+    "result": "终点 0.1",
+    "status": "finished",
+    "topic": "主题",
+    "updatedAt": "2026-10-01T00:00:00+00:00",
+    "workspace": "w1"
+   }
+  ],
+  "workspaces": [
+   "w1"
+  ]
+ },
+ "today": "2026-10-22",
+ "todos": {
+  "agent": 1,
+  "derived": 2,
+  "items": [
+   {
+    "id": "derived:decision-proposed:O2O-DEC-0125",
+    "kind": "decision-proposed",
+    "message": "O2O-DEC-0125 is proposed and waits for the user",
+    "owner": "user",
+    "plan": "PLAN-900A",
+    "ref": "O2O-DEC-0125",
+    "severity": "action",
+    "source": "derived"
+   },
+   {
+    "id": "T-0007",
+    "kind": "manual",
+    "message": "用户事项 [[别的笔记]]",
+    "owner": "user",
+    "plan": "PLAN-900A",
+    "ref": "T-0007",
+    "severity": "info",
+    "source": "manual"
+   },
+   {
+    "id": "derived:deviation-open:D-02",
+    "kind": "deviation-open",
+    "message": "deviation D-02 is open: y",
+    "owner": "agent",
+    "plan": "PLAN-900A",
+    "ref": "D-02",
+    "severity": "warn",
+    "source": "derived"
+   }
+  ],
+  "manual": 1,
+  "total": 3,
+  "user": 2
+ }
+}

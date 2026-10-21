@@ -42,9 +42,19 @@ from expnote.wandb_live import (
     wandb_cache_stats,
 )
 
+_RESEARCH_NAV_MARKER = "<!--research-nav-->"
+_RESEARCH_NAV_LINK = (
+    '<div class="nav-section"><a class="nav-item" href="/research/" '
+    'style="text-decoration:none"><i data-lucide="flask-conical"></i>'
+    '<span class="nav-text">Research</span></a></div>'
+)
 
-def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
+
+def create_app(
+    root: Path, state_dir: Path | None = None, *, research: bool = True
+) -> FastAPI:
     app = FastAPI(title="expnote", docs_url=None, redoc_url=None)
+    research_mounted = False
     root = root.resolve()
     state_dir = state_dir.resolve() if state_dir is not None else None
     state_root = state_dir or root / ".expnote"
@@ -53,7 +63,10 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
-        return HTMLResponse(_INDEX_HTML, headers={"Cache-Control": "no-store"})
+        page = _INDEX_HTML.replace(
+            _RESEARCH_NAV_MARKER, _RESEARCH_NAV_LINK if research_mounted else ""
+        )
+        return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
     @app.get("/assets/plotly.min.js")
     def plotly_asset() -> Response:
@@ -544,6 +557,12 @@ def create_app(root: Path, state_dir: Path | None = None) -> FastAPI:
             ]
             return data
 
+    if research:
+        from expnote.research.web_routes import mount_research, research_available
+
+        if research_available():
+            mount_research(app, run_app=True)
+            research_mounted = True
     return app
 
 
@@ -1348,6 +1367,7 @@ _INDEX_HTML = """
         <div class="logo"></div>
         <div><strong>expnote</strong><span>SQL-backed research notes</span></div>
       </div>
+      <!--research-nav-->
       <div class="nav-section">
         <p class="label">Workspace</p>
         <button class="nav-item" data-route="#/" onclick="navigate('#/')"><i data-lucide="layout-dashboard"></i><span class="nav-text">MOC overview</span></button>

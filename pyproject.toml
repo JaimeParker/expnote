@@ -23,13 +23,26 @@ charts = [
   "matplotlib>=3.8",
   "numpy>=2",
 ]
+research = [
+  "pyyaml>=6",
+]
 dev = [
   "pytest>=8",
+  "pyyaml>=6",
   "ruff>=0.8",
 ]
 
 [project.scripts]
 expnote = "expnote.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["expnote"]
+# The research GUI is plain static files next to the Python code (no build step).
+artifacts = [
+  "expnote/research/static/*.html",
+  "expnote/research/static/*.js",
+  "expnote/research/static/*.css",
+]
 
 [tool.ruff]
 line-length = 88

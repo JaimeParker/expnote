@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>expnote research</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/research/research.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar" id="topbar">
+    <div class="topbar-row">
+      <a class="brand" href="#/" aria-label="Research home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text">expnote <b>research</b></span>
+      </a>
+      <label class="project-switch" id="projectSwitch">
+        <span class="sr-only">Project</span>
+      </label>
+      <form class="search" id="searchForm" role="search">
+        <label class="sr-only" for="searchInput">Search notes</label>
+        <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search notes  ( / )">
+      </form>
+      <a class="runs-link" id="runsLink" href="/" hidden>Runs</a>
+    </div>
+    <nav class="topnav" id="topnav" aria-label="Project sections"></nav>
+  </header>
+  <main id="main" tabindex="-1">
+    <noscript><p class="notice">This page needs JavaScript.</p></noscript>
+  </main>
+  <script type="module" src="/research/research.js"></script>
+</body>
+</html>

@@ -1,0 +1,564 @@
+"""TODO catalogue: derived items (never written), manual TODO file, and `next`."""
+
+from __future__ import annotations
+
+import json
+
+from expnote.research.entities import (
+    decision_id,
+    decision_plans,
+    deviation_plans,
+    is_legacy,
+    normalized_result_status,
+    notes_of,
+    plan_id_of,
+    plan_members,
+    plan_pages,
+    truncate,
+)
+from expnote.research.index import linked_workspaces
+from expnote.research.model import Decision, Note
+from expnote.research.runs import stale_running_runs
+from expnote.research.textkit import fold, iter_links, link_stem
+from expnote.research.view import ProjectView
+
+SEVERITY_RANK = {"action": 0, "warn": 1, "info": 2}
+GATE_CODES = ("LIFE.", "DEC.NOT_CONFIRMED")
+IMPACT_CHOICES = "--deviation-impact <none|weak|moderate|affects>"
+# Order of the agent's steps in `next`: unblock first, tidy last.
+NEXT_PRIORITY = (
+    "decision-confirmed-not-applied",
+    "plan-gate-blocked",
+    "legacy-no-final-res",
+    "deviation-open",
+    "ev-unmapped",
+    "stale-running-runs",
+)
+
+
+def _item(
+    kind: str,
+    owner: str,
+    severity: str,
+    ref: str,
+    message: str,
+    action: str,
+    *,
+    plan: str | None = None,
+    command: str | None = None,
+    **extra,
+) -> dict:
+    return {
+        "id": f"derived:{kind}:{ref}",
+        "source": "derived",
+        "kind": kind,
+        "owner": owner,
+        "severity": severity,
+        "ref": ref,
+        "message": message,
+        "action": action,
+        "plan": plan,
+        "command": command,
+        **extra,
+    }
+
+
+def lands_cites(decision: Decision, cstem: str) -> bool:
+    """The decision's target column / `targets` field links the note."""
+    return any(fold(link_stem(t)) == cstem for _, t in iter_links(decision.lands_text))
+
+
+def _project_flag(view: ProjectView) -> str:
+    return f" --project {view.project_id} --json"
+
+
+class _Derive:
+    """One pass over a view that yields the derived items kind by kind."""
+
+    def __init__(self, view: ProjectView):
+        self.view = view
+        self.snap = view.snapshot
+        self.flag = _project_flag(view)
+        self.pages = plan_pages(view)
+        self.decisions = [self.snap.decisions[n] for n in sorted(self.snap.decisions)]
+        self.plans_of = decision_plans(view)
+
+    def decision_id(self, decision: Decision) -> str:
+        return decision_id(self.view, decision)
+
+    def decisions_proposed(self) -> list[dict]:
+        items = []
+        for decision in self.decisions:
+            if decision.status != "proposed":
+                continue
+            did = self.decision_id(decision)
+            plans = self.plans_of.get(decision.number, [])
+            items.append(
+                _item(
+                    "decision-proposed",
+                    "user",
+                    "action",
+                    did,
+                    f"{did} is proposed and waits for the user",
+                    "approve or reject it in the GUI (or confirm in chat and let the "
+                    "agent record it with the user's words)",
+                    plan=plans[0] if plans else None,
+                )
+            )
+        return items
+
+    def evidence(self) -> list[dict]:
+        items = []
+        for note in notes_of(self.view, "evidence"):
+            if note.get("status") == "rendered":
+                items.append(
+                    _item(
+                        "ev-unlabelled",
+                        "user",
+                        "action",
+                        note.stem,
+                        f"evidence page {note.stem} is rendered and needs the "
+                        "user's labels",
+                        "open the evidence page and fill the label table",
+                        plan=plan_id_of(self.view, note),
+                    )
+                )
+            if note.link_field("plan") is None and is_legacy(self.view, note):
+                items.append(
+                    _item(
+                        "ev-unmapped",
+                        "agent",
+                        "info",
+                        note.stem,
+                        f"legacy evidence page {note.stem} has no plan field",
+                        "infer the plan and propose it to the coordinator",
+                        command="expnote ev list --fields stem,plan,path" + self.flag,
+                    )
+                )
+        return items
+
+    def plan_waiting_on_decisions(self, page: Note) -> list[dict]:
+        """Draft plans: a proposed decision waits, or a confirmed one is unapplied."""
+        plan_id = str(page.get("id", ""))
+        if page.get("status") != "draft":
+            return []
+        items = []
+        concerning = [d for d, _ in self.snap.decisions_for_plan(plan_id)]
+        waiting = [d for d in concerning if d.status == "proposed"]
+        if waiting:
+            ids = ", ".join(self.decision_id(d) for d in waiting)
+            items.append(
+                _item(
+                    "plan-awaiting-approval",
+                    "user",
+                    "action",
+                    plan_id,
+                    f"draft plan {plan_id} waits for a decision: {ids}",
+                    "decide the proposed decision(s)",
+                    plan=plan_id,
+                )
+            )
+        if not page.get("approved_decision"):
+            for decision in self.decisions:
+                if decision.status == "confirmed" and lands_cites(decision, page.cstem):
+                    did = self.decision_id(decision)
+                    items.append(
+                        _item(
+                            "decision-confirmed-not-applied",
+                            "agent",
+                            "action",
+                            f"{did}:{plan_id}",
+                            f"{did} approves {plan_id} but the plan is still draft",
+                            "advance the plan",
+                            plan=plan_id,
+                            role="approval",
+                            decision=did,
+                            command=f"expnote plan advance {plan_id} --to approved "
+                            f"--decision {did} --apply" + self.flag,
+                        )
+                    )
+        return items
+
+    def exec_rules(self, page: Note, member: Note) -> list[dict]:
+        if member.get("status") != "draft":
+            return []
+        plan_id = str(page.get("id", ""))
+        exec_id = str(member.get("id") or member.stem)
+        items = []
+        for decision in self.decisions:
+            if not lands_cites(decision, member.cstem):
+                continue
+            did = self.decision_id(decision)
+            if decision.status == "proposed":
+                items.append(
+                    _item(
+                        "exec-rules-unconfirmed",
+                        "user",
+                        "action",
+                        exec_id,
+                        f"rules of {exec_id} wait for the user ({did})",
+                        "decide the rules decision",
+                        plan=plan_id,
+                    )
+                )
+            elif decision.status == "confirmed":
+                items.append(
+                    _item(
+                        "decision-confirmed-not-applied",
+                        "agent",
+                        "action",
+                        f"{did}:{exec_id}",
+                        f"{did} confirms the rules of {exec_id}, still draft",
+                        "freeze the exec-plan",
+                        plan=plan_id,
+                        role="rules",
+                        decision=did,
+                        command=f"expnote exec freeze {exec_id} "
+                        f"--rules-decision {did} --apply" + self.flag,
+                    )
+                )
+        return items
+
+    def result_confirmation(self, page: Note, member: Note) -> list[dict]:
+        if member.get("status") != "first-read":
+            return []
+        plan_id = str(page.get("id", ""))
+        status = page.get("status")
+        res_id = str(member.get("id") or member.stem)
+        waiting_plan = status == "read-out" or (
+            is_legacy(self.view, page) and status in ("confirmed", "closed")
+        )
+        items = []
+        for decision in self.decisions:
+            if not lands_cites(decision, member.cstem):
+                continue
+            did = self.decision_id(decision)
+            if decision.status == "proposed" and waiting_plan:
+                items.append(
+                    _item(
+                        "res-awaiting-confirmation",
+                        "user",
+                        "action",
+                        res_id,
+                        f"result {res_id} waits for the user ({did})",
+                        "decide the confirming decision",
+                        plan=plan_id,
+                    )
+                )
+            elif decision.status == "confirmed" and not is_legacy(self.view, member):
+                items.append(
+                    _item(
+                        "decision-confirmed-not-applied",
+                        "agent",
+                        "action",
+                        f"{did}:{res_id}",
+                        f"{did} confirms {res_id}, still first-read",
+                        "confirm the result",
+                        plan=plan_id,
+                        role="result",
+                        decision=did,
+                        command=(
+                            f"expnote res confirm {res_id} --decision {did} "
+                            f"{IMPACT_CHOICES} --apply{self.flag}"
+                        ),
+                    )
+                )
+        return items
+
+    def legacy_without_final_result(
+        self, page: Note, members: list[Note]
+    ) -> list[dict]:
+        status = page.get("status")
+        if not (is_legacy(self.view, page) and status in ("confirmed", "closed")):
+            return []
+        results = [m for m in members if self.snap.entity_type(m) == "result"]
+        if any(normalized_result_status(self.view, r) == "confirmed" for r in results):
+            return []
+        plan_id = str(page.get("id", ""))
+        return [
+            _item(
+                "legacy-no-final-res",
+                "agent",
+                "warn",
+                plan_id,
+                f"legacy plan {plan_id} is {status} without a confirmed result",
+                "draft the final result and a decision that confirms it",
+                plan=plan_id,
+                command=f'expnote new res --plan {plan_id} --title "<title>" '
+                f"--apply{self.flag}",
+            )
+        ]
+
+    def plans(self) -> list[dict]:
+        items = []
+        for page in self.pages:
+            members = plan_members(self.view, page)
+            items += self.plan_waiting_on_decisions(page)
+            for member in members:
+                entity = self.snap.entity_type(member)
+                if entity == "exec-plan":
+                    items += self.exec_rules(page, member)
+                elif entity == "result":
+                    items += self.result_confirmation(page, member)
+            items += self.legacy_without_final_result(page, members)
+        return items
+
+    def gate_blocked(self) -> list[dict]:
+        blocked: dict[str, list[str]] = {}
+        for finding in self.view.checks().findings:
+            if finding.level == "FAIL" and finding.code.startswith(GATE_CODES):
+                blocked.setdefault(finding.where, []).append(finding.code)
+        items = []
+        for page in self.pages:
+            codes = blocked.get(page.rel)
+            if not codes:
+                continue
+            plan_id = str(page.get("id", ""))
+            items.append(
+                _item(
+                    "plan-gate-blocked",
+                    "agent",
+                    "warn",
+                    plan_id,
+                    f"plan {plan_id} fails lifecycle checks: "
+                    f"{', '.join(sorted(set(codes)))}",
+                    "read the findings and repair the missing gate",
+                    plan=plan_id,
+                    command=f"expnote check --plan {plan_id}" + self.flag,
+                )
+            )
+        return items
+
+    def open_deviations(self) -> list[dict]:
+        items = []
+        for row in sorted(self.snap.deviations.values(), key=lambda d: d.did):
+            if row.closed:
+                continue
+            plans = deviation_plans(self.view, row)
+            items.append(
+                _item(
+                    "deviation-open",
+                    "agent",
+                    "warn",
+                    row.did,
+                    f"deviation {row.did} is open: {truncate(row.content, 100)}",
+                    "close it or record why it stays open",
+                    plan=plans[0] if plans else None,
+                    command=f"expnote deviation show {row.did}" + self.flag,
+                )
+            )
+        return items
+
+    def reviews_due(self) -> list[dict]:
+        today = self.view.today()
+        items = []
+        for decision in self.decisions:
+            review_by = decision.note.get("review_by") if decision.note else None
+            if (
+                isinstance(review_by, str)
+                and review_by <= today
+                and decision.status in ("proposed", "confirmed")
+            ):
+                did = self.decision_id(decision)
+                items.append(
+                    _item(
+                        "decision-review-due",
+                        "user",
+                        "info",
+                        did,
+                        f"{did} was due for review on {review_by}",
+                        "review the decision and supersede or keep it",
+                    )
+                )
+        return items
+
+    def conflict_files(self) -> list[dict]:
+        prefix = self.view.prefix
+        rows = self.view.conn.execute(
+            "SELECT rel FROM files WHERE is_conflict = 1 "
+            "AND substr(rel, 1, ?) = ? ORDER BY rel",
+            (len(prefix) + 1, prefix + "/"),
+        )
+        return [
+            _item(
+                "sync-conflict-file",
+                "user",
+                "warn",
+                rel,
+                f"sync conflict file: {rel}",
+                "merge or delete the conflict copy in Obsidian",
+            )
+            for (rel,) in rows
+        ]
+
+    def stale_runs(self) -> tuple[list[dict], list[dict]]:
+        names = linked_workspaces(self.view.context)
+        stale, problems = (
+            stale_running_runs(names, self.view.clock()) if names else ([], {})
+        )
+        warnings = [
+            {"code": "RUNS_UNAVAILABLE", "message": f"workspace {w}: {why}"}
+            for w, why in problems.items()
+        ]
+        by_workspace: dict[str, list[dict]] = {}
+        for run in stale:
+            by_workspace.setdefault(run["workspace"], []).append(run)
+        items = [
+            _item(
+                "stale-running-runs",
+                "agent",
+                "info",
+                workspace,
+                f"{len(runs)} running run(s) older than 2 days with no result in "
+                f"workspace {workspace}",
+                "mark them finished/failed or stop them",
+                command=f"expnote validate --workspace {workspace} --json",
+                runs=[r["runId"] for r in runs[:20]],
+            )
+            for workspace, runs in sorted(by_workspace.items())
+        ]
+        return items, warnings
+
+
+def derived_todos(
+    view: ProjectView, include_runs: bool = False
+) -> tuple[list[dict], list[dict]]:
+    """(items, warnings) for the catalogue of the design (section 9.4)."""
+    derive = _Derive(view)
+    items = [
+        *derive.decisions_proposed(),
+        *derive.evidence(),
+        *derive.plans(),
+        *derive.gate_blocked(),
+        *derive.open_deviations(),
+        *derive.reviews_due(),
+        *derive.conflict_files(),
+    ]
+    warnings: list[dict] = []
+    if include_runs:
+        stale, warnings = derive.stale_runs()
+        items += stale
+    return items, warnings
+
+
+def manual_todos(view: ProjectView, include_done: bool = False) -> list[dict]:
+    todo_file = view.profile.todo_file
+    if not todo_file:
+        return []
+    rows = view.conn.execute(
+        "SELECT t.todo_id, t.synthetic, t.state, t.line, t.text, t.fields_json "
+        "FROM todos t JOIN files f ON f.id = t.src_file_id WHERE f.rel = ? "
+        "ORDER BY t.line",
+        (view.vault_rel(todo_file),),
+    ).fetchall()
+    items = []
+    for row in rows:
+        if row["state"] == "done" and not include_done:
+            continue
+        fields = json.loads(row["fields_json"])
+        items.append(
+            {
+                "id": row["todo_id"],
+                "source": "manual",
+                "kind": "manual",
+                "owner": fields.get("owner", "user"),
+                "severity": "info",
+                "ref": row["todo_id"],
+                "message": row["text"],
+                "action": None,
+                "plan": fields.get("plan"),
+                "command": None,
+                "state": row["state"],
+                "due": fields.get("due"),
+                "by": fields.get("by"),
+                "line": row["line"],
+                "synthetic": bool(row["synthetic"]),
+            }
+        )
+    return items
+
+
+def sort_todos(items: list[dict]) -> list[dict]:
+    return sorted(
+        items,
+        key=lambda i: (
+            i["owner"] != "user",
+            SEVERITY_RANK.get(i["severity"], 3),
+            i["kind"],
+            i["ref"],
+        ),
+    )
+
+
+def all_todos(
+    view: ProjectView,
+    *,
+    source: str = "all",
+    include_runs: bool = True,
+    include_done: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    items: list[dict] = []
+    warnings: list[dict] = []
+    if source in ("derived", "all"):
+        derived, warnings = derived_todos(view, include_runs=include_runs)
+        items += derived
+    if source in ("manual", "all"):
+        items += manual_todos(view, include_done)
+    return sort_todos(items), warnings
+
+
+def filter_todos(
+    items: list[dict],
+    *,
+    owner: str | None = None,
+    kind: str | None = None,
+    plan: str | None = None,
+) -> list[dict]:
+    return [
+        i
+        for i in items
+        if (not owner or i["owner"] == owner)
+        and (not kind or i["kind"] == kind)
+        and (not plan or i["plan"] == plan)
+    ]
+
+
+def next_steps(view: ProjectView, owner: str = "agent") -> tuple[dict, list[dict]]:
+    items, warnings = all_todos(view, source="all", include_runs=True)
+    mine = [i for i in items if i["owner"] == owner]
+    other = [i for i in items if i["owner"] != owner]
+
+    def priority(item: dict) -> tuple[int, str]:
+        kind = item["kind"]
+        rank = (
+            NEXT_PRIORITY.index(kind) if kind in NEXT_PRIORITY else len(NEXT_PRIORITY)
+        )
+        return rank, item["ref"]
+
+    steps = [
+        {
+            "order": number,
+            "kind": item["kind"],
+            "ref": item["ref"],
+            "plan": item["plan"],
+            "message": item["message"],
+            "action": item["action"],
+            "command": item["command"],
+        }
+        for number, item in enumerate(sorted(mine, key=priority), start=1)
+    ]
+    waiting = {
+        "owner": "user" if owner == "agent" else "agent",
+        "count": len(other),
+        "items": [
+            {
+                "id": i["id"],
+                "kind": i["kind"],
+                "ref": i["ref"],
+                "message": i["message"],
+                "action": i["action"],
+            }
+            for i in other
+        ],
+    }
+    return {"owner": owner, "steps": steps, "waiting": waiting}, warnings

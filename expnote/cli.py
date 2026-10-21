@@ -40,6 +40,8 @@ from expnote.markdown import (
     sync_markdown,
     sync_moc_section,
 )
+from expnote.research import cli as research_cli
+from expnote.research import commands as research_commands
 from expnote.wandb_live import (
     WandbLiveError,
     fetch_wandb_run_state,
@@ -88,6 +90,19 @@ markdown_app.add_typer(markdown_table_app, name="table")
 app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
 app.add_typer(workspace_app, name="workspace")
+app.add_typer(research_cli.project_app, name="project")
+app.command("check")(research_cli.check_command)
+app.command("reindex")(research_commands.reindex_command)
+app.command("search")(research_commands.search_command)
+app.command("next")(research_commands.next_command)
+app.command("doctor")(research_commands.doctor_command)
+app.add_typer(research_commands.plan_app, name="plan")
+app.add_typer(research_commands.decision_app, name="decision")
+app.add_typer(research_commands.exec_app, name="exec")
+app.add_typer(research_commands.ev_app, name="ev")
+app.add_typer(research_commands.res_app, name="res")
+app.add_typer(research_commands.deviation_app, name="deviation")
+app.add_typer(research_commands.todo_app, name="todo")
 
 
 WorkspaceOption = Annotated[
@@ -891,6 +906,9 @@ def guide(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Show a built-in guide."""
+    if topic == "research":
+        research_commands.guide_research(json_output)
+        return
     if topic != "agent":
         raise typer.BadParameter("supported guide topic: agent")
     _emit(_AGENT_GUIDE if json_output else _render_agent_guide(), json_output)
@@ -4068,29 +4086,49 @@ def web(
             help="Start the web UI in the background and return immediately.",
         ),
     ] = False,
+    no_research: Annotated[
+        bool,
+        typer.Option(
+            "--no-research",
+            help="Do not serve the research GUI (/research/) even if projects exist.",
+        ),
+    ] = False,
 ) -> None:
     """Start the expnote web UI."""
     import uvicorn
 
+    from expnote.research.web_routes import create_research_app, research_available
     from expnote.web import create_app
 
-    ctx = _workspace_context(workspace, workspace_dir)
-    root = ctx.root
-    state_dir = ctx.workspace_dir
+    # With no active workspace the server can still serve registered research projects.
+    research_only = False
+    try:
+        ctx = _workspace_context(workspace, workspace_dir)
+    except typer.BadParameter:
+        explicit = workspace is not None or workspace_dir is not None
+        if explicit or no_research or not research_available():
+            raise
+        research_only = True
     url_host = "localhost" if host in {"127.0.0.1", "0.0.0.0"} else host
-    url = f"http://{url_host}:{port}"
+    url = f"http://{url_host}:{port}" + ("/research/" if research_only else "")
     if detach and os.environ.get("EXPNOTE_WEB_DETACHED_CHILD") != "1":
         pid = _spawn_detached_web(
             workspace=workspace,
-            workspace_dir=state_dir,
+            workspace_dir=None if research_only else ctx.workspace_dir,
             host=host,
             port=port,
             open_browser=open_browser,
+            no_research=no_research,
         )
         typer.echo(f"expnote web started in background: {url} (pid {pid})")
         return
 
-    app_obj = create_app(root, state_dir=state_dir)
+    if research_only:
+        app_obj = create_research_app()
+    else:
+        app_obj = create_app(
+            ctx.root, state_dir=ctx.workspace_dir, research=not no_research
+        )
     typer.echo(f"expnote web: {url}")
     if open_browser and os.environ.get("EXPNOTE_NO_BROWSER") != "1":
         webbrowser.open(url)
@@ -4100,25 +4138,28 @@ def web(
 def _spawn_detached_web(
     *,
     workspace: str | None,
-    workspace_dir: Path,
+    workspace_dir: Path | None,
     host: str,
     port: int,
     open_browser: bool,
+    no_research: bool = False,
 ) -> int:
     cmd = [
         sys.executable,
         "-m",
         "expnote.cli",
         "web",
-        "--workspace-dir",
-        str(workspace_dir),
         "--host",
         host,
         "--port",
         str(port),
     ]
+    if workspace_dir is not None:
+        cmd.extend(["--workspace-dir", str(workspace_dir)])
     if workspace is not None:
         cmd.extend(["--workspace", workspace])
+    if no_research:
+        cmd.append("--no-research")
     cmd.append("--open" if open_browser else "--no-open")
     env = dict(os.environ)
     env["EXPNOTE_WEB_DETACHED_CHILD"] = "1"
