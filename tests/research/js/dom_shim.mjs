@@ -82,7 +82,7 @@ export class Element_ extends Node_ {
 
 export function installDom() {
   const ids = {};
-  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar"]) {
+  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar", "helpButton"]) {
     ids[id] = new Element_(id === "searchInput" ? "input" : "div");
   }
   const windowListeners = {};
@@ -90,6 +90,7 @@ export function installDom() {
   const body = new Element_("body");
   globalThis.document = {
     createElement: (tag) => new Element_(tag),
+    createElementNS: (_ns, tag) => new Element_(tag),
     createTextNode: (t) => new Text_(t),
     getElementById: (id) => ids[id],
     addEventListener() {},
@@ -100,6 +101,8 @@ export function installDom() {
     location,
     addEventListener: (type, fn) => { (windowListeners[type] ||= []).push(fn); },
     scrollTo() {},
+    // Wide screen: master-detail previews render, so the smoke run covers them.
+    matchMedia: () => ({ matches: true }),
   };
   Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
   globalThis.FormData = class { constructor(form) { this.form = form; } entries() { return []; } };

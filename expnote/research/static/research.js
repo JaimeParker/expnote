@@ -1,6 +1,7 @@
 // expnote research GUI: shell, hash router and API client. Pages live in pages.js.
-import { clear, errorBox, h, route, skeleton } from "/research/ui.js";
+import { baseOf, nav, parseHash } from "/research/nav.js";
 import { PAGES } from "/research/pages.js";
+import { clear, errorBox, h, icon, route, setLaneOrder, skeleton } from "/research/ui.js";
 
 const API = "/api/research";
 
@@ -45,17 +46,7 @@ let navigation = 0;
 
 // ---- routing ------------------------------------------------------------------------------
 
-export function parseHash(hash) {
-  const [pathPart, query = ""] = hash.replace(/^#\/?/, "").split("?");
-  const parts = pathPart.split("/").filter(Boolean).map((p) => {
-    try {
-      return decodeURIComponent(p);
-    } catch {
-      return p;
-    }
-  });
-  return { parts, params: new URLSearchParams(query) };
-}
+export { parseHash };
 
 function resolveRoute({ parts, params }) {
   if (!parts.length) return { page: PAGES.home, ctx: { params } };
@@ -75,6 +66,20 @@ function scrollToAnchor(hash) {
   if (target && target.scrollIntoView) target.scrollIntoView();
 }
 
+const laneLoaded = new Set();
+
+// Plan colours follow the plan list order, so fetch it once per project.
+async function ensureLanes(project) {
+  if (!project || laneLoaded.has(project)) return;
+  try {
+    const body = await api(`/projects/${encodeURIComponent(project)}/plans`, { include_archived: "true" });
+    setLaneOrder(body.data.plans.map((p) => p.id));
+    laneLoaded.add(project);
+  } catch {
+    /* colours fall back to a hash of the plan id */
+  }
+}
+
 async function show() {
   // `#section` inside a rendered note is an in-page anchor, not a route.
   const hash = window.location.hash;
@@ -82,8 +87,14 @@ async function show() {
     scrollToAnchor(hash);
     return;
   }
-  const token = ++navigation;
   const parsed = parseHash(window.location.hash);
+  // Only `?sel=` changed on a master-detail page: move the selection, keep the page.
+  if (nav.view && nav.view.select && baseOf(hash) === nav.baseKey) {
+    nav.view.select(parsed.params.get("sel") || null);
+    return;
+  }
+  const token = ++navigation;
+  nav.view = null;
   const match = resolveRoute(parsed);
   state.project = match && match.ctx.project ? match.ctx.project : state.project;
   updateChrome(parsed);
@@ -95,9 +106,12 @@ async function show() {
   clear(main).append(skeleton(6));
   main.setAttribute("aria-busy", "true");
   try {
+    await ensureLanes(match.ctx.project);
     const view = await match.page({ ...match.ctx, state, api });
     if (token !== navigation) return;
     clear(main).append(view.node);
+    nav.view = view;
+    nav.baseKey = baseOf(window.location.hash);
     document.title = `${view.title} · expnote research`;
     if (!view.keepScroll) window.scrollTo(0, 0);
   } catch (error) {
@@ -146,33 +160,104 @@ function updateChrome({ parts }) {
   }
   topnav.removeAttribute("hidden");
   const current = parts[2] || "";
+  let activeLink = null;
   for (const [label, href, kinds] of SECTIONS) {
     const active = kinds.length ? kinds.includes(current) : current === "" || current === "plan";
-    topnav.append(h("a", { href: href(project), "aria-current": active ? "page" : null }, label));
+    const anchor = h("a", { href: href(project), "aria-current": active ? "page" : null }, label);
+    if (active) activeLink = anchor;
+    topnav.append(anchor);
+  }
+  // On a narrow screen the tabs scroll: keep the current one in view and fade the cut edge.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      if (activeLink) topnav.scrollLeft = Math.max(0, (activeLink.offsetLeft || 0) - 16);
+      markTabOverflow();
+    });
   }
 }
 
-function wireSearch() {
+function markTabOverflow() {
+  const more = topnav.scrollWidth - topnav.clientWidth - topnav.scrollLeft > 4;
+  if (more) topnav.setAttribute("data-more", "");
+  else topnav.removeAttribute("data-more");
+}
+
+const KEYS = [
+  ["/", "Search notes"],
+  ["j  k", "Next and previous item in a list"],
+  ["Enter", "Open the selected item as a page"],
+  ["Esc", "Close the preview, or leave the search box"],
+  ["[  ]", "Previous and next tab on a plan"],
+  ["?", "Show or hide this help"],
+];
+
+function buildHelp() {
+  const close = h("button", { type: "button", class: "btn small ghost", "aria-label": "Close help", onclick: () => toggleHelp(false) }, icon("close"));
+  const box = h(
+    "div",
+    { class: "help", role: "dialog", "aria-label": "Keyboard shortcuts", hidden: true },
+    h("div", { class: "help-head" }, h("h2", null, "Keyboard"), close),
+    h("dl", null, KEYS.map(([keys, what]) => [h("dt", null, keys.split("  ").map((k) => h("kbd", null, k))), h("dd", null, what)])),
+    h("p", { class: "muted small" }, "Keys do nothing while you type in a field. This page is read-only."),
+  );
+  document.body.append(box);
+  return { box, close };
+}
+
+let help = null;
+function toggleHelp(open) {
+  help = help || buildHelp();
+  const show = open === undefined ? help.box.hasAttribute("hidden") : open;
+  if (show) {
+    help.box.removeAttribute("hidden");
+    help.close.focus();
+  } else {
+    help.box.setAttribute("hidden", "");
+  }
+}
+
+function wireKeys() {
+  topnav.addEventListener("scroll", markTabOverflow);
+  window.addEventListener("resize", markTabOverflow);
   document.getElementById("searchForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const project = state.project || (state.projects[0] && state.projects[0].id);
     const text = searchInput.value.trim();
     if (project) window.location.hash = route.search(project, { q: text });
   });
+  const helpButton = document.getElementById("helpButton");
+  if (helpButton) helpButton.addEventListener("click", () => toggleHelp());
   document.addEventListener("keydown", (event) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((event.target.tagName || "").toUpperCase());
-    if (event.key === "/" && !typing && !event.metaKey && !event.ctrlKey) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "Escape") {
+      if (help && !help.box.hasAttribute("hidden")) toggleHelp(false);
+      else if (event.target === searchInput) {
+        if (searchInput.value) searchInput.value = "";
+        else searchInput.blur();
+      }
+      else if (!typing && nav.view && nav.view.keys && nav.view.keys.Escape && nav.view.keys.Escape()) event.preventDefault();
+      return;
+    }
+    if (typing) return;
+    if (event.key === "/") {
       event.preventDefault();
       searchInput.focus();
       searchInput.select();
-    } else if (event.key === "Escape" && event.target === searchInput) {
-      searchInput.blur();
+    } else if (event.key === "?") {
+      event.preventDefault();
+      toggleHelp();
+    } else if (nav.view && nav.view.keys && nav.view.keys[event.key]) {
+      // Enter on a link or button keeps its own meaning, except on a list row link.
+      const onControl = event.key === "Enter" && event.target.closest && event.target.closest("a, button, summary") && !event.target.closest(".row-link");
+      if (onControl) return;
+      if (nav.view.keys[event.key]()) event.preventDefault();
     }
   });
 }
 
 async function start() {
-  wireSearch();
+  wireKeys();
   window.addEventListener("hashchange", show);
   try {
     const body = await api("/projects");

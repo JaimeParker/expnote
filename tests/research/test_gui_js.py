@@ -57,5 +57,9 @@ def test_every_page_renders_without_errors(server):
     assert any(n.startswith("plan PLAN-900A") for n in names)
     assert any(n.startswith("ev ") for n in names)
     assert report["pages"] >= 15
+    by_name = {r["name"]: r for r in report["results"]}
+    # master-detail pages render the selected item in the preview pane
+    for name in ("decisions-sel", "ev-sel", "ev-figures", "todos"):
+        assert by_name[name]["previews"] == 1, name
     plan = next(r for r in report["results"] if r["name"] == "plan PLAN-900A")
     assert plan["nodes"] > 100 and plan["h1"].startswith("PLAN-900A")

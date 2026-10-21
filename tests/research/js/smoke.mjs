@@ -25,6 +25,10 @@ const routes = [
   ["ev-list", `#/p/${enc(project)}/ev`],
   ["todos", `#/p/${enc(project)}/todos`],
   ["todos-user", `#/p/${enc(project)}/todos?owner=user`],
+  ["todos-kind", `#/p/${enc(project)}/todos?kind=ev-unmapped`],
+  ["decisions-sel", `#/p/${enc(project)}/decisions?sel=${enc(decisions[decisions.length - 1]?.id || "")}`],
+  ["ev-figures", `#/p/${enc(project)}/ev?view=figures`],
+  ["ev-sel", `#/p/${enc(project)}/ev?sel=${enc(evs[0] || "")}`],
   ["search", `#/p/${enc(project)}/search?q=${enc(process.env.SEARCH_QUERY || "plan")}`],
   ["search-empty", `#/p/${enc(project)}/search`],
   ["health", `#/p/${enc(project)}/health`],
@@ -40,7 +44,7 @@ const settle = async () => {
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 10));
     const busy = main.getAttribute("aria-busy") === "true";
-    const loading = main.byClass("skeleton-card").length > 0;
+    const loading = main.byClass("skeleton").length > 0 || main.byClass("skeleton-card").length > 0;
     if (!busy && !loading && i > 1) return;
   }
   problems.push("timeout waiting for page");
@@ -57,8 +61,9 @@ for (const [name, hash] of routes) {
   let nodes = 0;
   walk(main, () => nodes++);
   if (process.env.DUMP && name === process.env.DUMP) process.stderr.write(toHtml(main));
+  const previews = main.byClass("preview-enter").length;
   const h1 = main.byTag("h1")[0];
-  results.push({ name, hash, ms: Math.round(performance.now() - start), nodes, h1: h1 ? h1.textContent : null, errors, title: document.title });
+  results.push({ name, hash, ms: Math.round(performance.now() - start), nodes, previews, h1: h1 ? h1.textContent : null, errors, title: document.title });
 }
 const failures = results.filter((r) => (r.errors.length && r.name !== "bad-route") || (!r.h1 && r.name !== "bad-route"));
 console.log(JSON.stringify({ pages: results.length, failures, problems, results }, null, 0));

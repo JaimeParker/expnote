@@ -48,6 +48,7 @@ from expnote.research.registry import (
 from expnote.research.render import (
     LinkResolver,
     find_attachment,
+    render_inline_cells,
     render_markdown,
 )
 from expnote.research.search import SearchFilters, search_notes
@@ -386,6 +387,7 @@ def build_router(service: ResearchService) -> APIRouter:
             data["ev"]["html"] = render_markdown(
                 note.body, view, run_app=service.run_app
             )
+            _add_cell_html(data["ev"], view, service.run_app)
             data["display"] = display_strings(view)
             return _ok("ev show", data, view)
 
@@ -546,6 +548,25 @@ def build_router(service: ResearchService) -> APIRouter:
             return _failure("image", error)
 
     return router
+
+
+def _add_cell_html(ev: dict, view: ProjectView, run_app: bool) -> None:
+    """Additive inline HTML beside the raw cell text.
+
+    Adds `rowsHtml` (endpoint table) and `keyHtml` / `valuesHtml` (label rows).
+    """
+    endpoints = ev.get("endpointTable")
+    if endpoints:
+        flat = [cell for row in endpoints["rows"] for cell in row]
+        html = iter(render_inline_cells(flat, view, run_app=run_app))
+        endpoints["rowsHtml"] = [[next(html) for _ in row] for row in endpoints["rows"]]
+    labels = ev.get("labelTable")
+    if labels:
+        flat = [c for row in labels["rows"] for c in (row["key"], *row["values"])]
+        html = iter(render_inline_cells(flat, view, run_app=run_app))
+        for row in labels["rows"]:
+            row["keyHtml"] = next(html)
+            row["valuesHtml"] = [next(html) for _ in row["values"]]
 
 
 def _not_found(message: str) -> ResearchError:

@@ -1,5 +1,6 @@
-// Small DOM toolkit for the research GUI: element builder, chips, tables, states.
+// Small DOM toolkit for the research GUI: element builder, status words, plan tags, panels, states.
 // Text always goes through text nodes; only server-sanitised Markdown uses innerHTML.
+// Layout is positioned by classes and SVG attributes only (the CSP forbids inline styles).
 
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
@@ -22,6 +23,19 @@ export function append(el, children) {
     if (child === null || child === undefined || child === false) continue;
     el.append(typeof child === "object" ? child : document.createTextNode(String(child)));
   }
+  return el;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// SVG element builder: positions come from attributes (x, y, cx, width), never from inline styling.
+export function s(tag, props, ...children) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === null || value === undefined || value === false) continue;
+    el.setAttribute(key, String(value));
+  }
+  append(el, children);
   return el;
 }
 
@@ -50,6 +64,9 @@ const ICONS = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
   bot: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13v2M15 13v2"/>',
   pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 115 0c0 1.8-2.5 2-2.5 4M12 17v.5"/>',
+  grid: '<rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/>',
   refresh: '<path d="M20 11a8 8 0 10-2 6"/><path d="M20 4v7h-7"/>',
 };
 
@@ -89,6 +106,31 @@ export function imageUrl(projectId, name) {
   return `/api/research/projects/${enc(projectId)}/image/${enc(name)}`;
 }
 
+// ---- per-viewer conveniences (never required for correctness) --------------------------
+
+export const store = {
+  get(key, fallback = null) {
+    try {
+      const raw = window.localStorage.getItem(`expnote.research.${key}`);
+      return raw === null || raw === undefined ? fallback : JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      window.localStorage.setItem(`expnote.research.${key}`, JSON.stringify(value));
+    } catch {
+      /* private window or blocked storage: the page works without it */
+    }
+  },
+};
+
+// Master-detail needs room for a preview pane; below this width rows navigate to full pages.
+export function isMaster() {
+  return typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 1100px)").matches : true;
+}
+
 // ---- tones: one colour per meaning, shared by every status vocabulary ------------------
 
 const TONES = {
@@ -111,15 +153,51 @@ export function toneOf(kind, value) {
   return (TONES[kind] && TONES[kind][value]) || "muted";
 }
 
+// A small bordered tag. Use it only when the tag carries information the row does not already show.
 export function chip(text, tone = "muted", extra = {}) {
   if (text === null || text === undefined || text === "") return null;
   return h("span", { class: "chip", "data-tone": tone, ...extra }, String(text));
 }
 
+// A status as a coloured dot plus the word itself.
+export function statusWord(tone, text, extra = {}) {
+  return h("span", { class: "status", "data-tone": tone, ...extra }, String(text));
+}
+
 export function statusChip(kind, value, display) {
-  if (value === null || value === undefined || value === "") return chip("none", "muted");
-  const label = (display && display[value]) || value;
-  return chip(label, toneOf(kind, value), { title: label === value ? null : value });
+  if (value === null || value === undefined || value === "") return statusWord("muted", "none");
+  const label = (display && display[value]) || (kind === "level" ? String(value).toLowerCase() : value);
+  return statusWord(toneOf(kind, value), label, { title: label === value ? null : value });
+}
+
+// ---- plan lanes: a stable colour per plan, used wherever a plan id appears ---------------------
+
+export const LANE_COUNT = 8;
+const laneOrder = new Map();
+
+export function setLaneOrder(planIds) {
+  laneOrder.clear();
+  planIds.forEach((id, i) => laneOrder.set(id, i % LANE_COUNT));
+}
+
+export function laneOf(planId) {
+  if (laneOrder.has(planId)) return laneOrder.get(planId);
+  let sum = 0;
+  for (const ch of String(planId)) sum = (sum * 31 + ch.charCodeAt(0)) % 997;
+  return sum % LANE_COUNT;
+}
+
+export function planTag(project, planId, { href = route.plan(project, planId) } = {}) {
+  return h("a", { class: "plan-tag", href, "data-lane": laneOf(planId), title: planId }, h("span", { class: "tick", "aria-hidden": "true" }), planId);
+}
+
+// The same tag without a link, for use inside buttons.
+export function planSwatch(planId) {
+  return h("span", { class: "plan-tag", "data-lane": laneOf(planId) }, h("span", { class: "tick", "aria-hidden": "true" }), planId);
+}
+
+export function planTags(project, ids) {
+  return (ids || []).map((id) => planTag(project, id));
 }
 
 // ---- layout pieces ----------------------------------------------------------------------
@@ -128,16 +206,36 @@ export function link(href, ...children) {
   return h("a", { href }, ...children);
 }
 
+// A label with its value; replaces "A · B · C" strings.
+export function pair(label, ...value) {
+  return h("span", { class: "pair" }, h("span", { class: "k" }, label), " ", h("b", { class: "v" }, ...value));
+}
+
+// A collapsible block. `foldKey` remembers the open/closed choice for this viewer.
 export function section(title, body, options = {}) {
-  const { count, id, open = true, tone, aside } = options;
+  const { count, id, open = true, tone, aside, foldKey } = options;
+  const remembered = foldKey ? store.get(`fold.${foldKey}`, null) : null;
+  const isOpen = remembered === null ? open : remembered;
   const head = h(
     "summary",
-    { class: "card-head" },
+    { class: "fold-head" },
     h("h2", null, title),
-    count !== undefined && count !== null ? chip(count, tone || "muted", { class: "chip count" }) : null,
+    count !== undefined && count !== null ? h("span", { class: "count", "data-tone": tone || "muted" }, String(count)) : null,
     aside || null,
   );
-  return h("details", { class: "card", id: id || null, open: open ? true : null }, head, h("div", { class: "card-body" }, body));
+  const details = h("details", { class: "fold", id: id || null, open: isOpen ? true : null }, head, h("div", { class: "fold-body" }, body));
+  if (foldKey) details.addEventListener("toggle", () => store.set(`fold.${foldKey}`, details.hasAttribute("open")));
+  return details;
+}
+
+// A titled block that does not fold.
+export function panel(title, body, { count, tone, className = "", aside } = {}) {
+  return h(
+    "section",
+    { class: `panel ${className}`.trim() },
+    h("header", { class: "panel-head" }, h("h2", null, title), count !== undefined && count !== null ? h("span", { class: "count", "data-tone": tone || "muted" }, String(count)) : null, aside || null),
+    h("div", { class: "panel-body" }, body),
+  );
 }
 
 export function pageHead({ crumbs = [], title, chips = [], meta = [], actions }) {
@@ -153,7 +251,7 @@ export function pageHead({ crumbs = [], title, chips = [], meta = [], actions })
       : null,
     h("div", { class: "title-row" }, h("h1", null, title), h("div", { class: "chips" }, chips)),
     meta.length ? h("div", { class: "meta-line" }, meta.filter(Boolean)) : null,
-    actions ? h("div", { class: "actions", "data-slot": "page-actions" }, actions) : null,
+    h("div", { class: "actions", "data-slot": "page-actions" }, actions || null),
   );
 }
 
@@ -230,6 +328,18 @@ export function commandBlock(text) {
 
 export const short = (sha) => (sha ? sha.slice(0, 8) : "");
 export const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-10-21" -> "Oct 21"; anything else is returned untouched.
+export function dayLabel(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  return m ? `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}` : iso || "";
+}
+
+export function monthLabel(iso) {
+  const m = /^(\d{4})-(\d{2})/.exec(iso || "");
+  return m ? `${MONTHS[Number(m[2]) - 1]} ${m[1]}` : "Undated";
+}
 
 export function relTime(iso) {
   if (!iso) return "";

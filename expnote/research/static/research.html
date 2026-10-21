@@ -11,22 +11,21 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar" id="topbar">
-    <div class="topbar-row">
-      <a class="brand" href="#/" aria-label="Research home">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <span class="brand-text">expnote <b>research</b></span>
-      </a>
-      <label class="project-switch" id="projectSwitch">
-        <span class="sr-only">Project</span>
-      </label>
-      <form class="search" id="searchForm" role="search">
-        <label class="sr-only" for="searchInput">Search notes</label>
-        <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
-               placeholder="Search notes  ( / )">
-      </form>
-      <a class="runs-link" id="runsLink" href="/" hidden>Runs</a>
-    </div>
+    <a class="brand" href="#/" aria-label="Research home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-text">expnote <b>research</b></span>
+    </a>
+    <label class="project-switch" id="projectSwitch">
+      <span class="sr-only">Project</span>
+    </label>
     <nav class="topnav" id="topnav" aria-label="Project sections"></nav>
+    <form class="search" id="searchForm" role="search">
+      <label class="sr-only" for="searchInput">Search notes</label>
+      <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search notes  ( / )">
+    </form>
+    <a class="runs-link" id="runsLink" href="/" hidden>Runs</a>
+    <button class="help-button" id="helpButton" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts ( ? )">?</button>
   </header>
   <main id="main" tabindex="-1">
     <noscript><p class="notice">This page needs JavaScript.</p></noscript>

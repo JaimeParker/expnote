@@ -372,16 +372,14 @@ def strip_frontmatter(text: str) -> str:
     return body if fm_text is not None else text
 
 
-def render_markdown(text: str, view: ProjectView, *, run_app: bool = False) -> str:
-    """HTML for a note body (frontmatter removed if still present)."""
-    resolver = LinkResolver(view, run_app)
-    engine = markdown.Markdown(
+def _engine(view: ProjectView, run_app: bool) -> markdown.Markdown:
+    return markdown.Markdown(
         extensions=[
             "fenced_code",
             "sane_lists",
             "tables",
             "toc",
-            ObsidianExtension(resolver),
+            ObsidianExtension(LinkResolver(view, run_app)),
         ],
         extension_configs={
             "toc": {"slugify": slugify_unicode, "anchorlink": False},
@@ -389,4 +387,34 @@ def render_markdown(text: str, view: ProjectView, *, run_app: bool = False) -> s
         },
         output_format="html",
     )
-    return engine.convert(strip_frontmatter(text))
+
+
+def render_markdown(text: str, view: ProjectView, *, run_app: bool = False) -> str:
+    """HTML for a note body (frontmatter removed if still present)."""
+    return _engine(view, run_app).convert(strip_frontmatter(text))
+
+
+BREAK_RE = re.compile(r"<br\s*/?>", re.I)
+ONE_PARAGRAPH = re.compile(r"^<p>(.*)</p>$", re.S)
+
+
+def render_inline_cells(
+    cells: list[str], view: ProjectView, *, run_app: bool = False
+) -> list[str]:
+    """Inline HTML for table cells: links, code, bold; a literal `<br>` is a line break.
+
+    Goes through the same sanitising engine as note bodies, so raw tags stay escaped;
+    the only tag added here is the `<br>` that separates rendered segments.
+    """
+    engine = _engine(view, run_app)
+    rendered = []
+    for cell in cells:
+        segments = []
+        for segment in BREAK_RE.split(cell):
+            engine.reset()
+            html = engine.convert(segment.strip()) if segment.strip() else ""
+            single = ONE_PARAGRAPH.match(html)
+            lone = single and "<p>" not in html[3:]
+            segments.append(single.group(1) if lone else html)
+        rendered.append("<br>".join(segments))
+    return rendered

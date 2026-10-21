@@ -12,6 +12,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 from minivault import (
+    EV_PATH,
     IMAGES_REL,
     build_vault,
     make_workspace,
@@ -247,6 +248,27 @@ def test_ev_endpoints_carry_sha_tables_and_figures(client):
     assert ev["html"]
     assert ev["appendix"]["stem"].startswith("附表")
     assert client.get(f"{P}/ev/nope").status_code == 404
+
+
+def test_ev_table_cells_render_inline_markdown_without_raw_html(world):
+    root, proj = world
+    path = proj / EV_PATH
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "| orig | 0.1 |",
+            "| orig | `x=1`<br>**粗** [[PLAN-900A--demo\\|计划]] "
+            "<script>alert(1)</script> |",
+        ),
+        encoding="utf-8",
+    )
+    ev = ok(make_client(), f"{P}/ev/{quote('EV--PLAN-900A 演示')}")["data"]["ev"]
+    cell = ev["endpointTable"]["rowsHtml"][0][1]
+    assert "<code>x=1</code><br>" in cell and "<strong>粗</strong>" in cell
+    assert 'href="#/p/off2on/plan/PLAN-900A"' in cell
+    assert "<script" not in cell and "&lt;script" in cell
+    assert ev["endpointTable"]["rows"][0][1].startswith("`x=1`")  # raw text stays
+    values = ev["labelTable"]["rows"][0]
+    assert len(values["valuesHtml"]) == len(values["values"]) and values["keyHtml"]
 
 
 def test_todos_search_check_doctor_note(client, world):
