@@ -708,6 +708,28 @@ def test_deviation_add_appends_after_the_last_row_with_the_next_id(world):
     assert data("check")["summary"]["fail"] == 0
 
 
+def test_deviation_add_to_an_empty_register_starts_at_the_regex_prefix(world):
+    root, proj = world
+    register_file = proj / DEVIATIONS_PATH
+    rows_removed = [
+        ln for ln in read(register_file).split("\n") if not ln.startswith("| D-")
+    ]
+    write(register_file, "\n".join(rows_removed))
+    set_mtime(register_file, 3600)
+    added = run(
+        "deviation",
+        "add",
+        "--experiment",
+        "e",
+        "--content",
+        "c",
+        "--impact",
+        "none",
+        "--apply",
+    )
+    assert added["_exit"] == 0 and added["data"]["id"] == "D-01"
+
+
 def test_deviation_add_inserts_before_trailing_text(world):
     root, proj = world
     register_file = proj / DEVIATIONS_PATH

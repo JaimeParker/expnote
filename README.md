@@ -7,6 +7,9 @@ search.
 The core tool is generic. Training frameworks, metric trackers, and lab-specific
 layouts should integrate through adapters instead of changing the core schema.
 
+Research notes in an Obsidian vault (plans, evidence, results, decisions, agent
+workflow): see [docs/research-vault.md](docs/research-vault.md).
+
 ## Install for development
 
 From this repository:

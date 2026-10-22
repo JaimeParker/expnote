@@ -1379,7 +1379,8 @@ def _next_deviation_id(view: ProjectView, existing: list[str]) -> str:
         width = max(len(digits) for _, digits in numbered)
         top = max(int(digits) for _, digits in numbered)
     else:
-        head = re.match(r"[A-Za-z_-]*", regex.replace("\\", ""))
+        literal = re.split(r"[\\\[(.*+?{|]", regex.lstrip("^"), maxsplit=1)[0]
+        head = re.match(r"[A-Za-z_-]*", literal)
         prefix, width, top = (head.group() if head else "") or "D-", 2, 0
     new_id = f"{prefix}{top + 1:0{width}d}"
     if not re.fullmatch(regex, new_id):
