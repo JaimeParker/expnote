@@ -76,7 +76,7 @@ export function masterDetail({ load, fullHref, hashFor, hint }) {
     if (id === current) row.setAttribute("aria-current", "true");
     row.addEventListener("click", (event) => {
       if (!isMaster() || event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
-      const inner = event.target.closest ? event.target.closest("a, button") : null;
+      const inner = event.target.closest ? event.target.closest("a, button, input, label, select, textarea") : null;
       if (inner && !inner.classList.contains("row-link")) return;
       event.preventDefault();
       select(id, { push: true });

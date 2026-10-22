@@ -7,6 +7,7 @@ import shutil
 import time
 
 import pytest
+from decisionkit import seed
 from minivault import (
     EV_PATH,
     EXEC_BODY,
@@ -19,7 +20,7 @@ from minivault import (
     write,
 )
 from readkit import data, invoke, register, run
-from test_checks_schema3 import decision_file, v3_plan
+from test_checks_schema3 import v3_plan
 
 TODO_FILE = (
     "---\ntype: todo-list\n---\n# 待办\n\n"
@@ -83,10 +84,7 @@ def kinds(**filters):
 def test_decision_proposed_and_awaiting_approval(vault):
     root, proj = vault
     write(proj / "plans/PLAN-900C--new.md", plan_c())
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md",
-        decision_file(125, status="proposed", plans='["PLAN-900C"]'),
-    )
+    seed(125, status="proposed", plans=["PLAN-900C"])
     found = kinds()
     proposed = found[("decision-proposed", "O2O-DEC-0125")]
     assert proposed["owner"] == "user" and proposed["severity"] == "action"
@@ -120,24 +118,14 @@ def test_exec_rules_unconfirmed_and_res_awaiting_confirmation(vault):
     write(proj / "plans/PLAN-900C--new.md", plan_c(status="read-out"))
     write(proj / "ops/执行方案--PLAN-900C S1.md", exec_c())
     write(proj / "results/RES--PLAN-900C 判读.md", res_c())
-    write(
-        proj / "decisions/O2O-DEC-0125--规则.md",
-        decision_file(
-            125,
-            status="proposed",
-            plans='["PLAN-900C"]',
-            targets='targets: ["[[执行方案--PLAN-900C S1]]"]\n',
-        ),
-    )
-    write(
-        proj / "decisions/O2O-DEC-0126--判读.md",
-        decision_file(
-            126,
-            status="proposed",
-            plans='["PLAN-900C"]',
-            targets='targets: ["[[RES--PLAN-900C 判读]]"]\n',
-        ),
-    )
+    seed(
+        125, status="proposed", plans=["PLAN-900C"],
+        targets=["[[执行方案--PLAN-900C S1]]"],
+    )  # fmt: skip
+    seed(
+        126, status="proposed", plans=["PLAN-900C"],
+        targets=["[[RES--PLAN-900C 判读]]"],
+    )  # fmt: skip
     found = kinds()
     assert found[("exec-rules-unconfirmed", "PLAN-900C-S1")]["owner"] == "user"
     assert found[("res-awaiting-confirmation", "RES-PLAN-900C")]["plan"] == "PLAN-900C"
@@ -153,12 +141,7 @@ def test_confirmed_decisions_not_yet_applied_carry_the_exact_command(vault):
         (126, "执行方案--PLAN-900C S1"),
         (127, "RES--PLAN-900C 判读"),
     ):
-        write(
-            proj / f"decisions/O2O-DEC-{number:04d}--x.md",
-            decision_file(
-                number, plans='["PLAN-900C"]', targets=f'targets: ["[[{target}]]"]\n'
-            ),
-        )
+        seed(number, plans=["PLAN-900C"], targets=[f"[[{target}]]"])
     found = kinds(owner="agent")
     approval = found[("decision-confirmed-not-applied", "O2O-DEC-0125:PLAN-900C")]
     assert approval["role"] == "approval" and approval["owner"] == "agent"
@@ -200,14 +183,8 @@ def test_deviation_open_gate_blocked_and_legacy_no_final_res(vault):
 
 def test_decision_review_due_is_date_driven(vault):
     root, proj = vault
-    write(
-        proj / "decisions/O2O-DEC-0125--a.md",
-        decision_file(125, extra="review_by: 2020-01-01\n"),
-    )
-    write(
-        proj / "decisions/O2O-DEC-0126--b.md",
-        decision_file(126, extra="review_by: 2999-01-01\n"),
-    )
+    seed(125, review_by="2020-01-01")
+    seed(126, review_by="2999-01-01")
     found = kinds()
     assert ("decision-review-due", "O2O-DEC-0125") in found
     assert ("decision-review-due", "O2O-DEC-0126") not in found
@@ -281,7 +258,7 @@ def test_manual_todos_follow_the_grammar(vault):
 def test_todo_ordering_puts_the_user_first(vault):
     root, proj = vault
     write(proj / "待办.md", TODO_FILE)
-    write(proj / "decisions/O2O-DEC-0125--a.md", decision_file(125, status="proposed"))
+    seed(125, status="proposed")
     owners = [t["owner"] for t in todos()]
     assert owners == sorted(owners, key=lambda o: o != "user")
     assert todos()[0]["kind"] == "decision-proposed"
@@ -301,15 +278,8 @@ def test_todo_list_rejects_bad_options(vault):
 def test_next_lists_agent_steps_with_commands(vault):
     root, proj = vault
     write(proj / "plans/PLAN-900C--new.md", plan_c())
-    write(
-        proj / "decisions/O2O-DEC-0125--approve.md",
-        decision_file(
-            125, plans='["PLAN-900C"]', targets='targets: ["[[PLAN-900C--new]]"]\n'
-        ),
-    )
-    write(
-        proj / "decisions/O2O-DEC-0126--wait.md", decision_file(126, status="proposed")
-    )
+    seed(125, plans=["PLAN-900C"], targets=["[[PLAN-900C--new]]"])
+    seed(126, status="proposed")
     body = data("next")
     assert body["owner"] == "agent"
     steps = body["steps"]
@@ -471,7 +441,7 @@ READ_COMMANDS = [
 def test_read_commands_never_touch_the_vault(tmp_path):
     root, proj = build_vault(tmp_path)
     write(proj / "待办.md", TODO_FILE)
-    write(proj / "decisions/O2O-DEC-0125--a.md", decision_file(125, status="proposed"))
+    seed(125, status="proposed")
     write(proj / "别的笔记.sync-conflict-1.md", "x")
     make_workspace("w1", runs=[{"id": "0012345", "topic": "T"}])
     register(root, proj, "--workspace", "w1")
@@ -497,10 +467,7 @@ def test_review_due_follows_the_injected_clock(tmp_path):
     from expnote.research.view import open_view
 
     root, proj = build_vault(tmp_path)
-    write(
-        proj / "decisions/O2O-DEC-0125--a.md",
-        decision_file(125, extra="review_by: 2026-06-01\n"),
-    )
+    seed(125, review_by="2026-06-01")
     context = make_context(root, proj)
 
     def due(now):

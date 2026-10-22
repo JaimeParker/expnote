@@ -42,6 +42,7 @@ from expnote.markdown import (
 )
 from expnote.research import cli as research_cli
 from expnote.research import commands as research_commands
+from expnote.research import write_commands as research_write_commands
 from expnote.wandb_live import (
     WandbLiveError,
     fetch_wandb_run_state,
@@ -91,6 +92,7 @@ app.add_typer(sync_app, name="sync")
 app.add_typer(import_app, name="import")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(research_cli.project_app, name="project")
+app.add_typer(research_cli.migrate_app, name="migrate")
 app.command("check")(research_cli.check_command)
 app.command("reindex")(research_commands.reindex_command)
 app.command("search")(research_commands.search_command)
@@ -103,6 +105,7 @@ app.add_typer(research_commands.ev_app, name="ev")
 app.add_typer(research_commands.res_app, name="res")
 app.add_typer(research_commands.deviation_app, name="deviation")
 app.add_typer(research_commands.todo_app, name="todo")
+app.add_typer(research_write_commands.new_app, name="new")
 
 
 WorkspaceOption = Annotated[

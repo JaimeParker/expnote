@@ -88,7 +88,10 @@ export function installDom() {
   const windowListeners = {};
   const location = { hash: "" };
   const body = new Element_("body");
+  const token = { value: "" };
   globalThis.document = {
+    // The write token lives in a <meta> the server templates into the page.
+    querySelector: (selector) => (selector.includes("expnote-token") ? { getAttribute: () => token.value } : null),
     createElement: (tag) => new Element_(tag),
     createElementNS: (_ns, tag) => new Element_(tag),
     createTextNode: (t) => new Text_(t),
@@ -109,6 +112,8 @@ export function installDom() {
   return {
     ids,
     location,
+    body,
+    setToken: (value) => { token.value = value; },
     fireHashChange: () => (windowListeners.hashchange || []).forEach((fn) => fn()),
   };
 }

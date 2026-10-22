@@ -32,7 +32,6 @@ ENTITY_TYPES = (
     "evidence",
     "evidence-appendix",
     "result",
-    "decision",
 )
 
 DEFAULT_ATTACHMENT_EXTS = frozenset(
@@ -71,6 +70,7 @@ _V2: dict[str, dict[str, Field]] = {
         "closed_decision": Field("int", False, "coordinator"),
         "result": Field("link", False, "coordinator"),
         "legacy": Field("bool", False, "coordinator"),
+        "forced_close": Field("bool", False, "cli"),
     },
     "exec-plan": {
         "schema": Field("int", True, "engine"),
@@ -141,42 +141,15 @@ def _v3_tables() -> dict[str, dict[str, Field]]:
     result["decisions"] = Field("decision-ids", False, "coordinator")
     result["confirmed_decision"] = decision_id
     result["legacy"] = Field("bool", False, "migration")
-    tables["decision"] = {
-        "schema": Field("int", True, "engine"),
-        "type": Field("str", True, "engine"),
-        "id": Field("str", True, "engine"),
-        "number": Field("int", True, "engine"),
-        "date": Field("date", True, "engine"),
-        "title": Field("str", True, "agent"),
-        "status": Field("enum", True, "cli", DECISION_STATUS),
-        "layer": Field("enum", True, "agent"),  # choices come from the profile
-        "plans": Field("strs", False, "agent", quoted=True),
-        "targets": Field("links", False, "agent"),
-        "supersedes": Field("decision-ids", False, "agent"),
-        "superseded_by": Field("decision-id", False, "cli"),
-        "confirmed_by": Field("enum", False, "cli", LABELLED_BY),
-        "authorization": Field("str", False, "cli"),
-        "confirmed_on": Field("date", False, "engine"),
-        "body_sha256": Field("sha256", False, "engine"),
-        "review_by": Field("date", False, "agent"),
-        "legacy": Field("bool", False, "migration"),
-        "legacy_status": Field("str", False, "migration"),
-    }
     return tables
 
 
 _V3 = _v3_tables()
 
 
-def field_table(entity: str, schema_version: str, layers: tuple[str, ...] = ()):
+def field_table(entity: str, schema_version: str):
     """Field table for an entity; None when the entity has none at that schema."""
-    table = (_V3 if schema_version == "3" else _V2).get(entity)
-    if table is None:
-        return None
-    if entity == "decision" and layers:
-        table = dict(table)
-        table["layer"] = dataclasses.replace(table["layer"], choices=tuple(layers))
-    return table
+    return (_V3 if schema_version == "3" else _V2).get(entity)
 
 
 # Profile keys: dotted path -> (required, kind). kind: str|int|strs|map|maps|regex
@@ -193,9 +166,12 @@ PROFILE_KEYS: dict[str, tuple[bool, str]] = {
     "decisions.layers": (False, "strs"),
     "decisions.options_warn_layers": (False, "strs"),
     "decisions.title_delimiters": (False, "str"),
+    "decisions.close_title": (False, "str"),
+    "decisions.close_decided": (False, "str"),
+    "decisions.close_forced_decided": (False, "str"),
     "paths.deviation_register": (True, "str"),
     "paths.todo_file": (False, "str"),
-    "paths.decisions_dir": (False, "str"),
+    "paths.decision_export": (False, "str"),
     "runs.id_regex": (False, "regex"),
     "scan.skip_dirs": (False, "strs"),
     "scan.template_dirs": (False, "strs"),
@@ -212,6 +188,10 @@ PROFILE_KEYS: dict[str, tuple[bool, str]] = {
     "forbidden.marker_level": (False, "str"),
     "forbidden.generated_notes": (False, "strs"),
     "templates.doc_markers": (False, "strs"),
+    "templates.dir": (False, "str"),
+    "templates.files": (False, "map"),
+    "images.dir": (False, "str"),
+    "labels.remark_prefix": (False, "str"),
     "labels.value_columns": (False, "ints"),
     "deviation.id_regex": (True, "regex"),
     "deviation.columns": (True, "map"),
@@ -224,6 +204,8 @@ PROFILE_KEYS: dict[str, tuple[bool, str]] = {
     "frontmatter.extra_common_keys": (False, "strs"),
     "attachments.extra_exts": (False, "strs"),
     "prose.number_allow_regexes": (False, "strs"),
+    "split": (False, "any"),
+    "migration": (False, "any"),
     "display": (False, "any"),
     "names": (False, "any"),
     "folders": (False, "any"),

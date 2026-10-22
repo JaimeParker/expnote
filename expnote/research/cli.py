@@ -8,25 +8,30 @@ from typing import Annotated
 
 import typer
 
+from expnote.research.cliutil import confirm_command, render_init
 from expnote.research.envelope import CommandResult, run_command, select_fields
 from expnote.research.errors import ResearchError
 from expnote.research.index import read_index_stats
+from expnote.research.migrate_cli import migrate_app  # noqa: F401
 from expnote.research.profile import read_profile_note
+from expnote.research.project_init import project_init
 from expnote.research.registry import (
-    ProjectEntry,
     ResolvedProject,
-    is_inside,
     load_registry,
-    new_vault_id,
     profile_or_raise,
     rebase,
+    register_project,
     registry_path,
     revalidate,
     save_registry,
     select_entry,
 )
 
-project_app = typer.Typer(help="Research projects: registry bindings and profile.")
+project_app = typer.Typer(
+    help="Research projects: registry bindings and profile. "
+    "First step for a vault project: `expnote project init --project-dir PATH "
+    "--images-dir PATH` (dry-run; add --apply), then `expnote check`."
+)
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Print the JSON envelope.")]
 ProjectOption = Annotated[
@@ -47,7 +52,61 @@ def _resolved_paths(resolved: ResolvedProject) -> dict:
     }
 
 
-# ---- project register / list / show / use / rebind -----------------------------
+# ---- project init / register / list / show / use / rebind --------------------
+
+
+@project_app.command("init")
+def project_init_command(
+    project_dir: Annotated[
+        Path,
+        typer.Option("--project-dir", help="The project's folder inside the vault."),
+    ],
+    project_id: Annotated[
+        str | None,
+        typer.Option("--id", help="Default: the profile's id, else the folder slug."),
+    ] = None,
+    name: Annotated[
+        str | None, typer.Option("--name", help="Default: the folder name.")
+    ] = None,
+    vault_root: Annotated[
+        Path | None,
+        typer.Option("--vault-root", help="Default: nearest folder with .obsidian/."),
+    ] = None,
+    images_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--images-dir", help="Figures folder (default: from the profile)."
+        ),
+    ] = None,
+    profile_note: Annotated[
+        Path | None,
+        typer.Option("--profile-note", help="Use or create this profile note."),
+    ] = None,
+    workspace: Annotated[
+        list[str] | None,
+        typer.Option("--workspace", help="Linked workspace (repeatable)."),
+    ] = None,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Create the profile note and register.")
+    ] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """First step: bind a vault folder as a project (dry-run unless --apply)."""
+
+    def action() -> CommandResult:
+        return project_init(
+            project_dir=project_dir,
+            project_id=project_id,
+            name=name,
+            vault_root=vault_root,
+            images_dir=images_dir,
+            profile_note=profile_note,
+            workspaces=list(workspace or []),
+            apply=apply,
+            confirm_command=confirm_command(),
+        )
+
+    run_command("project init", as_json, action, render_init)
 
 
 @project_app.command("register")
@@ -76,48 +135,20 @@ def project_register(
     """Bind a project to its vault and profile note (the note must exist)."""
 
     def action() -> CommandResult:
-        root = str(vault_root.expanduser().absolute())
-        paths = {
-            "--project-dir": str(project_dir.expanduser().absolute()),
-            "--images-dir": str(images_dir.expanduser().absolute()),
-            "--profile-note": str(profile_note.expanduser().absolute()),
-        }
-        for option, value in paths.items():
-            if not is_inside(value, root):
-                raise ResearchError(
-                    "USAGE_PATH_OUTSIDE_VAULT",
-                    f"{option} {value} lies outside --vault-root {root}",
-                    exit_code=2,
-                )
-        note = read_profile_note(Path(paths["--profile-note"]))
-        profile = profile_or_raise(note, project_id)
-        registry = load_registry()
-        entry_id = project_id or profile.project_id
-        entry = ProjectEntry(
-            id=entry_id,
-            name=name or Path(paths["--project-dir"]).name,
-            vault_id=new_vault_id(registry, entry_id, root),
-            vault_root=root,
-            vault_root_alternates=list(alternate or []),
-            project_dir=paths["--project-dir"],
-            images_dir=paths["--images-dir"],
-            profile_note=paths["--profile-note"],
-            workspaces=list(workspace or []),
+        data, resolved = register_project(
+            vault_root=vault_root,
+            project_dir=project_dir,
+            images_dir=images_dir,
+            profile_note=profile_note,
+            project_id=project_id,
+            name=name,
+            workspaces=workspace,
+            alternates=alternate,
             quiet_window_seconds=quiet_window_seconds,
         )
-        resolved = revalidate(entry)
-        registry.projects[entry_id] = entry
-        if registry.active_project is None:
-            registry.active_project = entry_id
-        save_registry(registry)
-        data = {
-            "project": entry_id,
-            **_resolved_paths(resolved),
-            "profileSha256": note.sha256,
-            "workspaces": entry.workspaces,
-            "profile": {"found": True, "parsed": True, "projectId": profile.project_id},
-        }
-        return CommandResult(data, meta=_project_meta(entry_id, resolved.path_note))
+        return CommandResult(
+            data, meta=_project_meta(data["project"], resolved.path_note)
+        )
 
     run_command("project register", as_json, action)
 

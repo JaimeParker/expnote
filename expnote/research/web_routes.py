@@ -1,7 +1,10 @@
-"""Read-only HTTP surface of the research layer (GUI pages and `/api/research`).
+"""HTTP surface of the research layer (GUI pages and `/api/research`).
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
-GET; no handler writes the vault. Responses carry the research CSP.
+GET except the six GUI writes of design section 7.2 (decision approve/reject, plan
+close, EV labels, TODO add/tick); those need the per-process token and a loopback
+Origin/Host, and go through `writes.py` and `writeback.py` with actor `gui`. Responses
+carry the research CSP.
 """
 
 from __future__ import annotations
@@ -10,17 +13,26 @@ import contextlib
 import functools
 import hashlib
 import json
+import re
+import secrets
 import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
-from expnote.research import entities
+from expnote.research import entities, writes
 from expnote.research.bundle import (
     build_bundle,
     byte_size,
@@ -76,7 +88,20 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024
 REFRESH_INTERVAL_SECONDS = 2.0
 BACKLINK_LIMIT = 100
 STATUS_BY_EXIT = {2: 422, 3: 404, 5: 409, 6: 503}
-STATUS_BY_CODE = {"IMAGE_UNSUPPORTED_TYPE": 415, "IMAGE_TOO_LARGE": 413}
+STATUS_BY_CODE = {
+    "IMAGE_UNSUPPORTED_TYPE": 415,
+    "IMAGE_TOO_LARGE": 413,
+    "GATE_FAILED": 422,
+    "ADDRESS_NOT_FOUND": 422,
+    "USER_ONLY": 403,
+    "FORBIDDEN_ORIGIN": 403,
+    "FORBIDDEN_TOKEN": 403,
+}
+GUI_ACTOR = "gui"
+TOKEN_HEADER = "x-expnote-token"
+TOKEN_PLACEHOLDER = '<meta name="expnote-token" content="">'
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def research_available() -> bool:
@@ -101,6 +126,12 @@ def _failure(command: str, error: ResearchError) -> JSONResponse:
         status = 409 if error.code.startswith("AMBIGUOUS") else None
     status = status or STATUS_BY_EXIT.get(error.exit_code, 400)
     return _json(failure_envelope(command, error), status)
+
+
+def _forbidden(
+    code: str, message: str, remediation: str | None = None
+) -> ResearchError:
+    return ResearchError(code, message, exit_code=7, remediation=remediation)
 
 
 def _guarded(command: str):
@@ -146,6 +177,31 @@ class ResearchService:
         self.refresh_interval = refresh_interval
         self._lock = threading.Lock()
         self._last_refresh: dict[str, float] = {}
+        self.write_token = secrets.token_urlsafe(32)
+
+    def authorize_write(self, request: Request) -> None:
+        """Origin/Host and token checks every GUI write must pass (CSRF, rebinding)."""
+        host = request.headers.get("host", "")
+        try:
+            hostname = urlsplit(f"//{host}").hostname
+        except ValueError:
+            hostname = None
+        if hostname not in LOOPBACK_HOSTS:
+            raise _forbidden(
+                "FORBIDDEN_ORIGIN", "this server only answers on localhost"
+            )
+        origin = request.headers.get("origin")
+        if origin is not None and origin.lower() != f"http://{host}".lower():
+            raise _forbidden(
+                "FORBIDDEN_ORIGIN", "the request came from a different origin"
+            )
+        sent = request.headers.get(TOKEN_HEADER, "")
+        if not secrets.compare_digest(sent.encode(), self.write_token.encode()):
+            raise _forbidden(
+                "FORBIDDEN_TOKEN",
+                "the write token is missing or stale",
+                "reload the page to get a fresh token",
+            )
 
     @contextlib.contextmanager
     def view(self, project_id: str, refresh: bool = False) -> Iterator[ProjectView]:
@@ -337,6 +393,11 @@ def build_router(service: ResearchService) -> APIRouter:
             item["html"] = (
                 render_markdown(body, view, run_app=service.run_app) if body else ""
             )
+            item["sectionsHtml"] = {
+                name: render_markdown(text, view, run_app=service.run_app)
+                for name, text in (item.get("sections") or {}).items()
+                if text
+            }
             for key in ("decisionText", "landsText"):
                 if item.get(key):
                     item[key + "Html"] = render_markdown(
@@ -389,6 +450,7 @@ def build_router(service: ResearchService) -> APIRouter:
             )
             _add_cell_html(data["ev"], view, service.run_app)
             data["display"] = display_strings(view)
+            data["write"] = {"remark": writes.remark_supported(view)}
             return _ok("ev show", data, view)
 
     # ---- todos, search, check, doctor ------------------------------------------------
@@ -547,7 +609,222 @@ def build_router(service: ResearchService) -> APIRouter:
         except ResearchError as error:
             return _failure("image", error)
 
+    # ---- GUI writes (design section 7.2: exactly these six) ------------------------
+
+    async def gui_write(
+        request: Request,
+        project_id: str,
+        command: str,
+        build: Callable[[ProjectView, dict], writes.WritePlan],
+    ) -> JSONResponse:
+        """Authorize, parse, plan on a fresh view, then dry-run or apply as `gui`."""
+        try:
+            service.authorize_write(request)
+            body = await _json_body(request)
+            dry_run = body.get("dryRun", False)
+            if not isinstance(dry_run, bool):
+                raise _bad_value("dryRun must be true or false")
+
+            def work() -> JSONResponse:
+                # `noQuiet` is deliberately never read: the quiet window is CLI-only.
+                with service.view(project_id, refresh=True) as view:
+                    plan = build(view, body)
+                    result = writes.execute_plan(
+                        view,
+                        plan,
+                        command=command,
+                        apply=not dry_run,
+                        actor=GUI_ACTOR,
+                    )
+                    return _ok(command, result.data, view, result.warnings)
+
+            return await run_in_threadpool(work)
+        except ResearchError as error:
+            return _failure(command, error)
+
+    @router.post(f"{api}/projects/{{project_id}}/decisions/{{ident}}/approve")
+    async def decision_approve(project_id: str, ident: str, request: Request):
+        return await gui_write(
+            request, project_id, "decision set", _decision_builder(ident, "confirmed")
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/decisions/{{ident}}/reject")
+    async def decision_reject(project_id: str, ident: str, request: Request):
+        return await gui_write(
+            request, project_id, "decision set", _decision_builder(ident, "rejected")
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/plans/{{plan_id}}/close")
+    async def plan_close(project_id: str, plan_id: str, request: Request):
+        return await gui_write(
+            request, project_id, "plan close", _plan_close_builder(plan_id)
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/ev/{{stem}}/labels")
+    async def ev_labels(project_id: str, stem: str, request: Request):
+        return await gui_write(
+            request, project_id, "ev label set", _labels_builder(stem)
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/todos")
+    async def todo_add(project_id: str, request: Request):
+        return await gui_write(request, project_id, "todo add", _todo_add_builder)
+
+    @router.post(f"{api}/projects/{{project_id}}/todos/{{todo_id}}/done")
+    async def todo_done(project_id: str, todo_id: str, request: Request):
+        return await gui_write(
+            request, project_id, "todo done", _todo_done_builder(todo_id)
+        )
+
     return router
+
+
+# ---- GUI write request parsing ----------------------------------------------------
+
+
+def _bad_value(message: str) -> ResearchError:
+    return ResearchError("USAGE_BAD_VALUE", message, exit_code=2)
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _bad_value("the request body is not JSON") from None
+    if not isinstance(body, dict):
+        raise _bad_value("the request body must be a JSON object")
+    return body
+
+
+def _text(body: dict, key: str, *, required: bool = False) -> str | None:
+    value = body.get(key)
+    if value is None:
+        if required:
+            raise _bad_value(f"{key} is required")
+        return None
+    if not isinstance(value, str):
+        raise _bad_value(f"{key} must be text")
+    return value
+
+
+def _expected_sha(body: dict, *, optional: bool = False) -> str | None:
+    value = body.get("expectedSha256")
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "expectedSha256 (the sha256 the page was read at) is required",
+            exit_code=2,
+            remediation="reload the page and try again",
+        )
+    return value
+
+
+def _version(body: dict) -> int:
+    value = body.get("version")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "version (the decision version the page was read at) is required",
+            exit_code=2,
+            remediation="reload the page and try again",
+        )
+    return value
+
+
+def _decision_builder(ident: str, status: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        return writes.plan_decision_set(
+            view,
+            ident,
+            status,
+            authorization=_text(body, "note"),
+            expected_version=_version(body),
+            by_user=True,
+        )
+
+    return build
+
+
+def _plan_close_builder(plan_id: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        force = body.get("force", False)
+        if not isinstance(force, bool):
+            raise _bad_value("force must be true or false")
+        return writes.plan_plan_close(
+            view,
+            plan_id,
+            reason=_text(body, "reason", required=True) or "",
+            force=force,
+            authorization=_text(body, "note"),
+            by_user=True,
+            expected_sha256=_expected_sha(body),
+        )
+
+    return build
+
+
+def _labels_builder(stem: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        raw_rows = body.get("rows", [])
+        if not isinstance(raw_rows, list):
+            raise _bad_value("rows must be a list")
+        rows = []
+        for item in raw_rows:
+            values = item.get("values") if isinstance(item, dict) else None
+            key = item.get("key") if isinstance(item, dict) else None
+            if (
+                not isinstance(key, str)
+                or not isinstance(values, dict)
+                or not all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in values.items()
+                )
+            ):
+                raise _bad_value("each row needs a key and a {column: text} values map")
+            rows.append((key, list(values.items())))
+        commit = body.get("commit", False)
+        if not isinstance(commit, bool):
+            raise _bad_value("commit must be true or false")
+        return writes.plan_ev_labels_by_user(
+            view,
+            stem,
+            rows=rows,
+            remark=_text(body, "remark"),
+            commit=commit,
+            expected_sha256=_expected_sha(body),
+        )
+
+    return build
+
+
+def _todo_add_builder(view: ProjectView, body: dict) -> writes.WritePlan:
+    owner = _text(body, "owner") or "user"
+    if owner not in ("user", "agent"):
+        raise _bad_value("owner is user or agent")
+    path = writes.todo_file_path(view)
+    return writes.plan_todo_add(
+        view,
+        _text(body, "text", required=True) or "",
+        plan=_text(body, "plan") or None,
+        due=_text(body, "due") or None,
+        by="user",
+        owner=owner,
+        # The first add creates the file, so there is nothing to compare against yet.
+        expected_sha256=_expected_sha(body, optional=not path.exists()),
+    )
+
+
+def _todo_done_builder(todo_id: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        done = body.get("done")
+        if not isinstance(done, bool):
+            raise _bad_value("done must be true or false")
+        return writes.plan_todo_done(
+            view, todo_id, undo=not done, expected_sha256=_expected_sha(body)
+        )
+
+    return build
 
 
 def _add_cell_html(ev: dict, view: ProjectView, run_app: bool) -> None:
@@ -613,7 +890,7 @@ def _image_response(view: ProjectView, name: str, request: Request) -> Response:
     return Response(payload, media_type=IMAGE_TYPES[extension], headers=headers)
 
 
-def build_pages_router() -> APIRouter:
+def build_pages_router(service: ResearchService) -> APIRouter:
     """Static GUI assets under `/research/` and the deep-link redirect."""
     router = APIRouter()
     assets = {p.name: p for p in STATIC_DIR.glob("*") if p.suffix in ASSET_TYPES}
@@ -623,11 +900,13 @@ def build_pages_router() -> APIRouter:
         return RedirectResponse("/research/")
 
     @router.get("/research/")
-    def research_index() -> FileResponse:
-        return FileResponse(
-            STATIC_DIR / "research.html",
-            media_type="text/html",
-            headers={**SECURITY_HEADERS, "Cache-Control": "no-cache"},
+    def research_index() -> HTMLResponse:
+        # The write token is templated in, never an inline script: the CSP stays as is.
+        page = (STATIC_DIR / "research.html").read_text(encoding="utf-8")
+        meta = f'<meta name="expnote-token" content="{service.write_token}">'
+        return HTMLResponse(
+            page.replace(TOKEN_PLACEHOLDER, meta),
+            headers={**SECURITY_HEADERS, "Cache-Control": "no-store"},
         )
 
     @router.get("/research/p/{rest:path}")
@@ -658,7 +937,7 @@ def mount_research(
     """Add the research GUI and API to `app` (reads the registry only)."""
     service = ResearchService(run_app=run_app, clock=clock)
     app.state.research = service
-    app.include_router(build_pages_router())
+    app.include_router(build_pages_router(service))
     app.include_router(build_router(service))
     return service
 

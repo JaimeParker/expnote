@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+from decisionkit import reseed, seed
 from minivault import (
     DECISION_HEADER,
     DECISIONS_PATH,
@@ -17,35 +18,6 @@ from minivault import (
 
 from expnote.research.checks import run_checks
 from expnote.research.snapshot import scan_vault
-from expnote.research.textkit import normalize_for_hash, sha256_text
-
-BODY_FULL = "\n## 决定\n\n做 A。\n\n## 理由\n\n因为 B。\n\n## 备选\n\n- C\n"
-
-
-def decision_file(
-    number: int,
-    *,
-    status="confirmed",
-    layer="研究",
-    body=BODY_FULL,
-    extra="",
-    confirmed_by="user",
-    stale_hash=False,
-    targets="",
-    plans='["PLAN-900A"]',
-) -> str:
-    digest = sha256_text(normalize_for_hash("x" if stale_hash else body))
-    confirmed = (
-        f"confirmed_by: {confirmed_by}\nconfirmed_on: 2026-10-22\n"
-        f"body_sha256: {digest}\n"
-        if status == "confirmed"
-        else ""
-    )
-    return (
-        f"---\nschema: 3\ntype: decision\nid: O2O-DEC-{number:04d}\nnumber: {number}\n"
-        f"date: 2026-10-22\ntitle: 决定 {number}\nstatus: {status}\nlayer: {layer}\n"
-        f"plans: {plans}\n{targets}{confirmed}{extra}---\n{body.lstrip(chr(10))}"
-    )
 
 
 def v3_plan(**overrides) -> str:
@@ -70,10 +42,9 @@ def v3_plan(**overrides) -> str:
 @pytest.fixture
 def vault(tmp_path):
     root, proj = build_vault(tmp_path)
-    # schema-3 world: decision files (125, 126) alongside the legacy table (1..8)
+    # schema-3 world: store decisions (125, 126) alongside the legacy table (1..8)
     write(proj / "plans/PLAN-900A--demo.md", v3_plan())
-    write(proj / "decisions/O2O-DEC-0125--批准.md", decision_file(125))
-    write(proj / "decisions/O2O-DEC-0126--结项.md", decision_file(126))
+    seed(125, 126)
     return root, proj
 
 
@@ -85,7 +56,7 @@ def found(result, code):
     return [f for f in result.findings if f.code == code]
 
 
-def test_schema3_plan_with_decision_files_has_no_fail(vault):
+def test_schema3_plan_with_stored_decisions_has_no_fail(vault):
     root, proj = vault
     result = check(root, proj)
     assert [f for f in result.findings if f.level == "FAIL"] == []
@@ -105,13 +76,11 @@ def test_plan_approval_by_unknown_or_proposed_decision(vault):
     )
     assert found(check(root, proj), "LIFE.PLAN_NO_APPROVAL")
     write(proj / "plans/PLAN-900A--demo.md", v3_plan())
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md", decision_file(125, status="proposed")
-    )
+    reseed(125, status="proposed")
     assert found(check(root, proj), "DEC.NOT_CONFIRMED")
 
 
-def test_legacy_table_and_decision_files_share_one_namespace(vault):
+def test_store_rows_win_over_a_legacy_table_row_of_the_same_number(vault):
     root, proj = vault
     write(
         proj / DECISIONS_PATH,
@@ -120,94 +89,78 @@ def test_legacy_table_and_decision_files_share_one_namespace(vault):
             (125, "2026-10-20", "表里也有 125", "x", "y", "confirmed", "研究")
         ),
     )
-    result = check(root, proj)
-    assert found(result, "DEC.NUMBER_DUPLICATE")
+    snap = scan_vault(make_context(root, proj))
+    assert snap.decisions[125].source == "db"
+    assert not found(check(root, proj), "DEC.NUMBER_DUPLICATE")
 
 
 def test_superseded_decision_needs_backreference(vault):
     root, proj = vault
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md",
-        decision_file(
-            125, status="superseded", extra='superseded_by: "O2O-DEC-0126"\n'
-        ),
-    )
+    reseed(125, status="superseded", superseded_by=126)
     result = check(root, proj)
     backref = found(result, "DEC.NO_BACKREF")
     assert backref and backref[0].level == "WARN"  # successor is past the cutover
-    write(
-        proj / "decisions/O2O-DEC-0126--结项.md",
-        decision_file(126, extra='supersedes: ["O2O-DEC-0125"]\n'),
-    )
+    reseed(126, supersedes=[125])
     assert not found(check(root, proj), "DEC.NO_BACKREF")
 
 
 def test_superseded_decision_without_successor_is_fail(vault):
     root, proj = vault
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md",
-        decision_file(
-            125, status="superseded", extra='superseded_by: "O2O-DEC-0190"\n'
-        ),
-    )
+    reseed(125, status="superseded", superseded_by=190)
     assert found(check(root, proj), "DEC.SUPERSEDED_NO_SUCCESSOR")
 
 
-def test_decision_file_gates(vault):
+def test_stored_decision_gates(vault):
     root, proj = vault
-    path = proj / "decisions/O2O-DEC-0125--批准.md"
-    write(path, decision_file(125, body="\n## 决定\n\n只有决定。\n"))
+    reseed(125, reason="", options="")
     result = check(root, proj)
     assert found(result, "DEC.SECTION_MISSING")
     assert found(result, "DEC.NO_OPTIONS")[0].level == "WARN"  # research layer
-    write(path, decision_file(125, layer="工程", body=BODY_FULL.split("## 备选")[0]))
+    reseed(125, layer="工程", options="")
     assert found(check(root, proj), "DEC.NO_OPTIONS")[0].level == "INFO"
-
-
-def test_decision_body_edit_after_confirmation_warns(vault):
-    root, proj = vault
-    write(proj / "decisions/O2O-DEC-0125--批准.md", decision_file(125, stale_hash=True))
-    assert found(check(root, proj), "DEC.BODY_CHANGED")
 
 
 def test_agent_for_user_confirmation(vault):
     root, proj = vault
-    path = proj / "decisions/O2O-DEC-0125--批准.md"
-    write(path, decision_file(125, confirmed_by="agent-for-user"))
+    reseed(125, confirmed_by="agent-for-user")
     assert found(check(root, proj), "DEC.AGENT_NO_AUTH")[0].level == "FAIL"
-    write(
-        path,
-        decision_file(
-            125, confirmed_by="agent-for-user", extra='authorization: "ok"\n'
-        ),
-    )
+    reseed(125, confirmed_by="agent-for-user", authorization="ok")
     assert found(check(root, proj), "DEC.AUTH_WEAK")
-    quote = 'authorization: "用户在对话中明确说：同意第一步执行"\n'
-    write(path, decision_file(125, confirmed_by="agent-for-user", extra=quote))
+    quote = "用户在对话中明确说：同意第一步执行"
+    reseed(125, confirmed_by="agent-for-user", authorization=quote)
     result = check(root, proj)
     assert not found(result, "DEC.AUTH_WEAK") and not found(result, "DEC.AGENT_NO_AUTH")
 
 
-def test_decision_id_must_match_number_and_vocab(vault):
+def test_stored_decision_layer_must_be_in_the_vocabulary(vault):
     root, proj = vault
-    text = decision_file(125).replace("number: 125", "number: 124")
-    write(proj / "decisions/O2O-DEC-0125--批准.md", text)
-    assert found(check(root, proj), "SCHEMA.BAD_VALUE")
-    write(proj / "decisions/O2O-DEC-0125--批准.md", decision_file(125, layer="其他"))
+    reseed(125, layer="其他")
     assert any(
         "layer" in f.message for f in found(check(root, proj), "SCHEMA.BAD_VALUE")
     )
 
 
-def test_legacy_decision_file_is_exempt_from_body_rules(vault):
+def test_confirmed_decision_needs_who_and_when(vault):
     root, proj = vault
-    text = decision_file(5, body="\n只有一句话。\n", extra="legacy: true\n").replace(
-        'plans: ["PLAN-900A"]', "plans: []"
-    )
-    write(proj / "decisions/O2O-DEC-0005--旧.md", text)
+    reseed(125, confirmed_by=None, confirmed_on=None)
+    fields = {f.data["field"] for f in found(check(root, proj), "SCHEMA.MISSING_FIELD")}
+    assert fields == {"confirmed_by", "confirmed_on"}
+
+
+def test_legacy_stored_decision_is_exempt_from_section_rules(vault):
+    root, proj = vault
+    seed(5, legacy=True, reason="", options="", plans=[], status_raw="有效")
     write(proj / DECISIONS_PATH, DECISION_HEADER)
     result = check(root, proj)
     assert not found(result, "DEC.SECTION_MISSING")
+
+
+def test_a_wikilink_to_a_stored_decision_id_resolves(vault):
+    root, proj = vault
+    write(proj / "别的笔记.md", "see [[O2O-DEC-0125]] and [[O2O-DEC-0199]]")
+    messages = [f.message for f in found(check(root, proj), "LINK.UNRESOLVED")]
+    assert any("O2O-DEC-0199" in m for m in messages)
+    assert not any("O2O-DEC-0125" in m for m in messages)
 
 
 def test_plan_terminal_states(vault):

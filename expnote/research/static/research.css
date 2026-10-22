@@ -612,6 +612,55 @@ a.hit-title:hover { color: var(--accent); }
 @media (min-width: 1800px) { .health-grid { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); } }
 .health-grid .panel-body { padding-top: 4px; }
 
+/* ---- write actions: confirm panel, diff, label editor, TODO add, toasts ------------------------------------------- */
+.row-actions { margin: 10px 0; min-width: 0; }
+.act-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.note-input, .todo-text, .cell-input {
+  font: inherit; font-size: 15px; color: var(--ink); background: var(--ground); border: 1px solid var(--rule);
+  border-radius: var(--r-sm); padding: 6px 10px; min-height: 34px; min-width: 0;
+}
+.note-input { flex: 1 1 14em; }
+.decision-actions .note-input { flex-basis: 100%; }
+.cell-input { width: 100%; min-width: 9em; }
+.todo-text { width: 100%; }
+.btn[disabled] { opacity: 0.5; cursor: default; }
+.btn[disabled]:hover { border-color: var(--rule); }
+.confirm-slot:empty { display: none; }
+.confirm-panel { border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--panel); padding: 12px 14px 10px; margin: 8px 0; min-width: 0; }
+.confirm-panel h3 { margin: 0 0 8px; }
+.confirm-buttons { display: flex; gap: 8px; margin-top: 10px; }
+.diff-file { margin: 6px 0; min-width: 0; }
+.diff-path { display: inline-block; margin-bottom: 4px; }
+.diff {
+  margin: 0; padding: 8px 0; max-height: 24em; overflow: auto; background: var(--ground); border: 1px solid var(--rule);
+  border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; white-space: pre;
+}
+.diff span { display: block; padding: 0 10px; }
+.diff .add { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.diff .del { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+.diff .hunk { color: var(--muted); }
+.write-error { border: 1px solid var(--red); border-radius: var(--r-md); padding: 10px 14px; margin: 6px 0; background: var(--panel); }
+.write-error .error-title { color: var(--red); }
+.write-error p { margin: 4px 0; }
+.gate-list { padding-left: 18px; list-style: disc; margin: 4px 0; }
+.countdown { margin-left: 8px; }
+.label-editor { min-width: 0; }
+.label-table th[scope="row"] { text-align: left; font-weight: 600; white-space: nowrap; }
+.label-editor .note-input { width: 100%; margin: 8px 0 0; }
+.todo-add { margin: 0 0 10px; }
+.todo-add-form { display: grid; gap: 10px; margin: 8px 0; padding: 12px 14px; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--panel); max-width: 40rem; }
+.todo-add-form[hidden] { display: none; }
+.todo-tick { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
+.toasts { position: fixed; right: var(--gut); bottom: 16px; z-index: 60; display: grid; gap: 8px; width: min(420px, calc(100vw - 32px)); }
+.toast { background: var(--panel); border: 1px solid var(--green); border-radius: var(--r-md); padding: 10px 12px; display: grid; gap: 4px; justify-items: start; }
+.toast[data-tone="bad"] { border-color: var(--red); }
+.toast-msg { display: flex; align-items: center; gap: 4px; width: 100%; font-weight: 600; }
+.toast-msg .btn { margin-left: auto; }
+.toast[data-tone="ok"] .toast-msg .icon:first-child { color: var(--green); }
+.toast[data-tone="bad"] .toast-msg .icon:first-child { color: var(--red); }
+.toast-audit { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; }
+.toast-audit code { overflow-wrap: anywhere; }
+
 /* ---- small screens ---------------------------------------------------------------------------------------------------- */
 @media (max-width: 1099.98px) {
   .topbar { position: static; flex-wrap: wrap; height: auto; padding: 8px 16px; gap: 6px 12px; }
@@ -667,3 +716,12 @@ a.hit-title:hover { color: var(--accent); }
   .fold-head::before, .queue-group summary::before { transition: none; }
   * { scroll-behavior: auto !important; }
 }
+
+/* ---- close plan dialog and decision history ---------------------------------------------------------------- */
+.plan-close .reason-label { display: grid; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 0.9em; }
+.plan-close .reason-input {
+  width: 100%; font: inherit; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 8px; resize: vertical;
+}
+.history-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.history-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }

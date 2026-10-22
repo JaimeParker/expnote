@@ -21,7 +21,7 @@ export function baseOf(hash) {
   return parts.join("/") + (query ? `?${query}` : "");
 }
 
-export const nav = { baseKey: null, view: null };
+export const nav = { baseKey: null, view: null, refresh: null };
 
 // Rewrite the address bar without rendering again. `push` adds a history entry.
 export function writeHash(hash, { push = false } = {}) {

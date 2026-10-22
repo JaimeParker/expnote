@@ -33,10 +33,8 @@ from expnote.research.textkit import (
     link_stem,
     markdown_tables,
     nfc,
-    normalize_for_hash,
     reserved_name_chars,
     section_text,
-    sha256_text,
     split_table_row,
     strip_code,
 )
@@ -48,7 +46,7 @@ NEW_CODES = frozenset(
         "PROSE.RAW_NUMBERS",
         "SCHEMA.OLD",
         "DEC.AUTH_WEAK",
-        "DEC.BODY_CHANGED",
+        "LIFE.PLAN_FORCED_CLOSE",
         "DEC.NO_OPTIONS",
         "FM.NESTED_MAP",
     }
@@ -147,7 +145,7 @@ def validate_fields(
 ) -> None:
     profile = snap.profile
     version = note.schema or ""
-    table = field_table(entity, version, profile.decision_layers)
+    table = field_table(entity, version)
     if table is None:
         return
     where = note.rel
@@ -225,14 +223,15 @@ def _decision_ok(
     gate_code: str,
     *,
     lenient: bool,
+    level: str = "FAIL",
 ) -> Decision | None:
     number = parse_decision_ref(value, snap.profile, lenient=lenient)
     if number is None:
-        sink.add("FAIL", gate_code, where, f"{what}: decision reference missing")
+        sink.add(level, gate_code, where, f"{what}: decision reference missing")
         return None
     row = snap.decisions.get(number)
     if row is None:
-        sink.add("FAIL", gate_code, where, f"{what}: decision #{number} does not exist")
+        sink.add(level, gate_code, where, f"{what}: decision #{number} does not exist")
         return None
     if row.status != "confirmed":
         sink.add(
@@ -266,9 +265,23 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
     members = snap.plan_members(note.get("id", ""))
     results = [m for m in members if snap.entity_type(m) == "result"]
     active = [r for r in results if _is_active_result(r)]
+    # A legacy plan may still wait for its single final result (drafted after the
+    # migration): the three result-count codes are WARN there, FAIL otherwise.
+    # A forced close (the user ended the plan early) turns the process gates into
+    # WARN: they stay visible but no longer block.
+    forced = note.is_true("forced_close")
+    gate_level = "WARN" if forced else "FAIL"
+    count_level = "WARN" if legacy or forced else "FAIL"
+    if forced:
+        sink.add(
+            "INFO",
+            "LIFE.PLAN_FORCED_CLOSE",
+            where,
+            "closed by the user without completing the lifecycle gates",
+        )
     if len(active) > 1:
         sink.add(
-            "FAIL",
+            count_level,
             "LIFE.RES_MULTIPLE_ACTIVE",
             where,
             "a plan may have one result that is not superseded/withdrawn: "
@@ -283,6 +296,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
             "status >= approved needs an approving decision",
             "LIFE.PLAN_NO_APPROVAL",
             lenient=lenient,
+            level=gate_level,
         )
     if rank >= order.index("running") and not legacy:
         frozen = [
@@ -293,7 +307,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
         ]
         if not frozen:
             sink.add(
-                "FAIL",
+                gate_level,
                 "LIFE.PLAN_NO_FROZEN_EXEC",
                 where,
                 "status >= running needs at least one frozen (frozen/running/done) "
@@ -302,7 +316,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
     if rank >= order.index("read-out"):
         if len(active) != 1:
             sink.add(
-                "FAIL",
+                count_level,
                 "LIFE.PLAN_RES_COUNT",
                 where,
                 "status >= read-out needs exactly one final result (found "
@@ -317,7 +331,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                     "label-na",
                 ):
                     sink.add(
-                        "FAIL",
+                        gate_level,
                         "LIFE.PLAN_EV_UNLABELLED",
                         where,
                         "status >= read-out needs every evidence page labelled; "
@@ -328,7 +342,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
         result = note.link_field("result")
         if result is None:
             sink.add(
-                "FAIL",
+                count_level,
                 "LIFE.PLAN_RESULT_MISSING",
                 where,
                 "status >= confirmed needs `result` pointing at the final result note",
@@ -343,7 +357,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                     "`result` does not point at a result note",
                 )
             elif target.get("status") != "confirmed":
-                level = "WARN" if legacy and lenient else "FAIL"
+                level = "WARN" if (legacy and lenient) or forced else "FAIL"
                 sink.add(
                     level,
                     "LIFE.PLAN_RESULT_NOT_CONFIRMED",
@@ -353,7 +367,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                 )
             if active and result not in {a.cstem for a in active}:
                 sink.add(
-                    "FAIL",
+                    gate_level,
                     "LIFE.PLAN_RESULT_NOT_ACTIVE",
                     where,
                     "`result` is not the plan's single active result",
@@ -691,25 +705,27 @@ def _check_result(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                     )
 
 
-def _check_decision_file(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
+def _check_stored_decision(
+    snap: VaultSnapshot, row: Decision, sink: FindingSink
+) -> None:
+    """Rules for a decision-store row (the store itself keeps text immutable)."""
     profile = snap.profile
-    where = note.rel
-    status = note.get("status")
-    legacy = note.is_true("legacy")
-    number = parse_decision_ref(note.get("number"), profile, lenient=False)
-    identifier = note.get("id")
-    if number is not None and isinstance(identifier, str):
-        expected = f"{profile.decision_id_prefix}-{number:04d}"
-        if identifier != expected:
-            sink.add(
-                "FAIL",
-                "SCHEMA.BAD_VALUE",
-                where,
-                f"`id` {identifier!r} should be {expected!r} for number {number}",
-            )
-    if status == "confirmed" and not legacy:
-        for key in ("confirmed_by", "confirmed_on", "body_sha256"):
-            if not note.get(key):
+    where = row.where
+    if profile.decision_layers and row.layer not in profile.decision_layers:
+        sink.add(
+            "FAIL",
+            "SCHEMA.BAD_VALUE",
+            where,
+            f"`layer` value {row.layer!r} is not one of "
+            f"{' / '.join(profile.decision_layers)}",
+            field="layer",
+        )
+    if row.status == "confirmed" and not row.legacy:
+        for key, value in (
+            ("confirmed_by", row.confirmed_by),
+            ("confirmed_on", row.confirmed_on),
+        ):
+            if not value:
                 sink.add(
                     "FAIL",
                     "SCHEMA.MISSING_FIELD",
@@ -717,43 +733,30 @@ def _check_decision_file(snap: VaultSnapshot, note: Note, sink: FindingSink) -> 
                     f"confirmed decision needs `{key}`",
                     field=key,
                 )
-    if status == "superseded" and not note.get("superseded_by"):
-        sink.add(
-            "FAIL",
-            "SCHEMA.MISSING_FIELD",
-            where,
-            "superseded decision needs `superseded_by`",
-            field="superseded_by",
+    if not row.legacy:
+        sections = (
+            (profile.heading_decision_required[:1], row.decision_text),
+            (profile.heading_decision_required[1:2], row.reason_text),
         )
-    exempt = legacy or (number is not None and number < profile.decision_strict_from)
-    if not exempt:
-        for heading in profile.heading_decision_required:
-            if (
-                find_section(note.body, lambda t, h=heading: t.strip().startswith(h))
-                is None
-            ):
+        for headings, text in sections:
+            if headings and not text.strip():
                 sink.add(
                     "FAIL",
                     "DEC.SECTION_MISSING",
                     where,
-                    f"missing the {heading!r} section",
+                    f"missing the {headings[0]!r} section",
                 )
         options = profile.heading_decision_options
-        if (
-            options
-            and find_section(note.body, lambda t: t.strip().startswith(options)) is None
-        ):
-            level = (
-                "WARN" if note.get("layer") in profile.options_warn_layers else "INFO"
-            )
+        if options and not row.options_text.strip():
+            level = "WARN" if row.layer in profile.options_warn_layers else "INFO"
             sink.add(
                 level,
                 "DEC.NO_OPTIONS",
                 where,
                 f"no {options!r} section listing considered options",
             )
-    if note.get("confirmed_by") == "agent-for-user":
-        authorization = str(note.get("authorization") or "").strip()
+    if row.confirmed_by == "agent-for-user":
+        authorization = (row.authorization or "").strip()
         if not authorization:
             sink.add(
                 "FAIL",
@@ -774,18 +777,6 @@ def _check_decision_file(snap: VaultSnapshot, note: Note, sink: FindingSink) -> 
                     where,
                     f"authorization {authorization!r} is shorter than 8 characters",
                 )
-    stored = note.get("body_sha256")
-    if (
-        status == "confirmed"
-        and stored
-        and sha256_text(normalize_for_hash(note.body)) != stored
-    ):
-        sink.add(
-            "WARN",
-            "DEC.BODY_CHANGED",
-            where,
-            "body changed after confirmation; amend by superseding",
-        )
 
 
 # ---- prose ---------------------------------------------------------------------
@@ -914,6 +905,8 @@ def _check_links(
     images_rel = snap.images_rel.casefold()
     unresolved = 0
     for note in scope:
+        if note.type == "project-profile":
+            continue  # its split.* words hold [[{appendix}]]-style format strings
         for embed, target in iter_links(note.text):
             hits = snap.resolve(target)
             if not hits:
@@ -969,6 +962,8 @@ def _check_decisions(
     tally: dict[str, int] = {}
     for number in sorted(snap.decisions):
         row = snap.decisions[number]
+        if row.source == "db":
+            _check_stored_decision(snap, row, sink)
         key = (row.status or "unmapped") + ("/legacy" if row.legacy else "")
         key += "/review" if row.review and row.legacy else ""
         tally[key] = tally.get(key, 0) + 1
@@ -1152,8 +1147,7 @@ def run_checks(snap: VaultSnapshot, plan_id: str | None = None) -> CheckResult:
             continue
         entity = note.type
         if (
-            field_table(entity or "", note.schema or "", profile.decision_layers)
-            is None
+            field_table(entity or "", note.schema or "") is None
         ):
             continue
         validate_fields(snap, note, entity, sink)
@@ -1171,16 +1165,13 @@ def run_checks(snap: VaultSnapshot, plan_id: str | None = None) -> CheckResult:
             _check_result(snap, note, sink)
             if not note.is_true("legacy"):
                 _check_prose(note.rel, note.body, profile, sink)
-        elif entity == "decision":
-            _check_decision_file(snap, note, sink)
     strict_from = profile.decision_strict_from
     for number in sorted(snap.decisions):
         decision = snap.decisions[number]
         if plan_id and number not in detail:
             continue
         if number >= strict_from and not decision.legacy:
-            body = decision.text if decision.source == "table" else decision.note.body
-            _check_prose(decision.where, body, profile, sink)
+            _check_prose(decision.where, decision.body_text, profile, sink)
     items = sorted(
         sink.items, key=lambda f: (LEVEL_RANK[f.level], f.code, f.where, f.message)
     )

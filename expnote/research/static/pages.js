@@ -14,6 +14,7 @@ import {
   runRef,
   todoRow,
 } from "/research/detail.js";
+import { openDecisionAction, planCloseAction, todoAddForm } from "/research/actions.js";
 import { planLanes, lanesLegend } from "/research/lanes.js";
 import { LISTS } from "/research/lists.js";
 import {
@@ -217,18 +218,21 @@ function runsPanel(ctx, home) {
   );
 }
 
-function waitingPanel(ctx, home, userTodos) {
-  const P = ctx.project;
+function waitingPanel(ctx, home, userTodos, manualFile) {
   const awaiting = home.decisions.awaiting;
   const empty = !awaiting.length && !userTodos.length;
+  const addForm = todoAddForm(ctx, manualFile);
   return panel(
     "Waiting on you",
-    empty
-      ? emptyState("Nothing waits on you.", "Decisions you need to approve and TODOs that are yours appear here.")
-      : [
-          awaiting.length ? [h("h3", null, "Decisions to approve"), h("ul", { class: "drows" }, awaiting.map((d) => decisionRow(ctx, { ...d, status: "proposed" })))] : null,
-          userTodos.length ? [h("h3", null, "Your TODOs"), h("ul", { class: "todos" }, userTodos.map((t) => todoRow(ctx, t, { showKind: true })))] : null,
-        ],
+    [
+      empty
+        ? emptyState("Nothing waits on you.", "Decisions you need to approve and TODOs that are yours appear here.")
+        : [
+            awaiting.length ? [h("h3", null, "Decisions to approve"), h("ul", { class: "drows" }, awaiting.map((d) => decisionRow(ctx, { ...d, status: "proposed" })))] : null,
+            userTodos.length ? [h("h3", null, "Your TODOs"), h("ul", { class: "todos" }, userTodos.map((t) => todoRow(ctx, t, { showKind: true, manualSha: manualFile.sha256 })))] : null,
+          ],
+      addForm,
+    ],
     { count: awaiting.length + userTodos.length, tone: empty ? "muted" : "warn", className: "waiting-panel" },
   );
 }
@@ -296,7 +300,7 @@ async function projectPage(ctx) {
     h(
       "div",
       { class: "overview-grid" },
-      h("div", { class: "col-left" }, waitingPanel(ctx, data, userTodos), queuePanel(ctx, data, agentTodos)),
+      h("div", { class: "col-left" }, waitingPanel(ctx, data, userTodos, todosBody.data.manualFile), queuePanel(ctx, data, agentTodos)),
       h(
         "section",
         { class: "panel lanes-panel" },
@@ -542,7 +546,7 @@ async function planPage(ctx) {
         info.legacy ? h("span", { class: "muted" }, "legacy page") : null,
       ),
       lifecycleRail(ctx, s, b),
-      h("div", { class: "actions", "data-slot": "page-actions" }),
+      h("div", { class: "actions", "data-slot": "page-actions" }, planCloseAction(ctx, info)),
     ),
     warnings,
     h(
@@ -584,7 +588,8 @@ async function decisionPage(ctx) {
   const body = await ctx.api(`${base(P)}/decisions/${enc(ctx.arg)}`);
   const d = body.data.decision;
   const node = h("div", { class: "page full-detail" }, h("nav", { class: "crumbs", "aria-label": "Breadcrumb" }, link(route.home(), "Research"), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.project(P), projectName(ctx)), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.decisions(P, { sel: d.id }), "Decisions")), decisionDetail(ctx, body.data));
-  return { node, title: `#${d.number} ${d.title || d.id}` };
+  const keys = { a: () => openDecisionAction("approve", d.id), r: () => openDecisionAction("reject", d.id) };
+  return { node, title: `#${d.number} ${d.title || d.id}`, keys };
 }
 
 async function evPage(ctx) {

@@ -21,6 +21,7 @@ from expnote.research.bundle import (
     write_spill,
 )
 from expnote.research.doctor import doctor_data, run_doctor
+from expnote.research.doctor_writes import run_doctor_writes
 from expnote.research.envelope import (
     CommandResult,
     run_command,
@@ -55,13 +56,13 @@ CursorOption = Annotated[
     str | None, typer.Option("--cursor", help="Continue from meta.nextCursor.")
 ]
 
-plan_app = typer.Typer(help="Plans: list, show, bundle.")
-decision_app = typer.Typer(help="Decisions: list, show.")
-exec_app = typer.Typer(help="Exec-plans: list, show.")
-ev_app = typer.Typer(help="Evidence pages: list.")
-res_app = typer.Typer(help="Results: list.")
-deviation_app = typer.Typer(help="Deviation register: list, show.")
-todo_app = typer.Typer(help="TODOs: derived and manual.")
+plan_app = typer.Typer(help="Plans: list, show, bundle, advance.")
+decision_app = typer.Typer(help="Decisions: list, show, new, set.")
+exec_app = typer.Typer(help="Exec-plans: list, show, freeze, advance.")
+ev_app = typer.Typer(help="Evidence pages: list, label, split.")
+res_app = typer.Typer(help="Results: list, confirm.")
+deviation_app = typer.Typer(help="Deviation register: list, show, add, close.")
+todo_app = typer.Typer(help="TODOs: derived and manual (add, done, adopt).")
 
 
 def _one_of(option: str, value: str | None, allowed: tuple[str, ...], optional=False):
@@ -671,22 +672,66 @@ def doctor_command(
     fix_list: Annotated[
         bool, typer.Option("--fix-list", help="List every affected path.")
     ] = False,
+    probe_sync: Annotated[
+        bool,
+        typer.Option(
+            "--probe-sync",
+            help="Write a dot-prefixed temp file and an ordinary file into the "
+            "project folder to test your sync client (needs --apply).",
+        ),
+    ] = False,
+    cleanup: Annotated[
+        bool, typer.Option("--cleanup", help="With --probe-sync: remove the probe.")
+    ] = False,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Delete stale .expnote.*.tmp files; with --probe-sync, write it.",
+        ),
+    ] = False,
     no_refresh: NoRefreshOption = False,
     as_json: JsonOption = False,
 ) -> None:
     """Environment and hygiene checks (never content; see `check`)."""
 
     def action() -> CommandResult:
+        if cleanup and not probe_sync:
+            raise ResearchError(
+                "USAGE_BAD_OPTION", "--cleanup goes with --probe-sync", exit_code=2
+            )
         checks, meta = run_doctor(project, refresh=not no_refresh)
         data = doctor_data(checks, fix_list)
-        return CommandResult(
-            data, meta=meta, exit_code=1 if data["summary"]["fail"] else 0
-        )
+        code = 1 if data["summary"]["fail"] else 0
+        if apply or probe_sync:
+            writes = run_doctor_writes(
+                project, apply=apply, probe_sync=probe_sync, cleanup=cleanup
+            )
+            data.update(writes.data)
+            if writes.exit_code:
+                data["dryRun"] = writes.exit_code == 4
+                code = writes.exit_code
+        return CommandResult(data, meta=meta, exit_code=code)
 
     def render(data: dict) -> str:
-        return "\n".join(
+        lines = [
             f"{c['status'].upper():5} {c['id']}: {c['message']}" for c in data["checks"]
-        )
+        ]
+        temps = data.get("staleTemps")
+        if temps:
+            verb = "removed" if temps["applied"] else "found (add --apply to remove)"
+            count = len(temps["removed"] if temps["applied"] else temps["found"])
+            lines.append(f"stale temp files {verb}: {count}")
+        probe = data.get("probe")
+        if probe and "removed" in probe:
+            lines.append(f"probe files removed: {len(probe['removed'])}")
+        elif probe:
+            lines += [
+                f"probe temp file:  {probe['tempFile']}",
+                f"probe plain file: {probe['plainFile']}",
+                probe["instructions"] if probe["applied"] else "dry-run: add --apply",
+            ]
+        return "\n".join(lines)
 
     run_command("doctor", as_json, action, render)
 

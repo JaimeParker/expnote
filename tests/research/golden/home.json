@@ -6,7 +6,7 @@
     "id": "O2O-DEC-0125",
     "layer": "研究",
     "number": 125,
-    "path": "10 Projects/Demo/decisions/O2O-DEC-0125--批准.md",
+    "path": null,
     "plans": [
      "PLAN-900A"
     ],
@@ -46,7 +46,7 @@
   "flags": [],
   "summary": {
    "fail": 0,
-   "ok": 17,
+   "ok": 18,
    "warn": 0
   }
  },
@@ -59,9 +59,9 @@
   "built": true,
   "conflictFiles": 0,
   "files": 17,
-  "linksResolved": 31,
-  "linksUnresolved": 3,
-  "notes": 16
+  "linksResolved": 30,
+  "linksUnresolved": 4,
+  "notes": 15
  },
  "plans": {
   "byStatus": {

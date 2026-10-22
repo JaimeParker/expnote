@@ -10,19 +10,16 @@ export class ApiError extends Error {
     super(error.message || "request failed");
     this.code = error.code || "ERROR";
     this.remediation = error.remediation || null;
+    this.details = error.details || {};
+    this.retryable = Boolean(error.retryable);
     this.status = status;
   }
 }
 
-export async function api(path, params = {}) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== null && value !== undefined && value !== "") query.set(key, String(value));
-  }
-  const url = `${API}${path}${query.toString() ? `?${query}` : ""}`;
+async function request(url, options = {}) {
   let response;
   try {
-    response = await fetch(url, { headers: { Accept: "application/json" } });
+    response = await fetch(url, { ...options, headers: { Accept: "application/json", ...(options.headers || {}) } });
   } catch (cause) {
     throw new ApiError({ code: "NETWORK", message: "The server did not answer.", remediation: "Is `expnote web` still running?" }, 0);
   }
@@ -34,6 +31,29 @@ export async function api(path, params = {}) {
   }
   if (!body.ok) throw new ApiError(body.error || {}, response.status);
   return body;
+}
+
+export async function api(path, params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return request(`${API}${path}${query.toString() ? `?${query}` : ""}`);
+}
+
+// The per-process write token is templated into the page as a <meta>; read it when a write happens.
+function writeToken() {
+  const meta = typeof document.querySelector === "function" ? document.querySelector('meta[name="expnote-token"]') : null;
+  return (meta && meta.getAttribute("content")) || "";
+}
+
+// A GUI write (design 7.2). The body carries `expectedSha256`; `dryRun: true` only plans.
+export async function post(path, body) {
+  return request(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Expnote-Token": writeToken() },
+    body: JSON.stringify(body),
+  });
 }
 
 export const state = { projects: [], features: {}, project: null };
@@ -66,6 +86,13 @@ function scrollToAnchor(hash) {
   if (target && target.scrollIntoView) target.scrollIntoView();
 }
 
+// After a write: rebuild the current page from fresh data without a loading flash.
+async function refreshPage() {
+  nav.baseKey = null;
+  await show({ silent: true });
+}
+nav.refresh = refreshPage;
+
 const laneLoaded = new Set();
 
 // Plan colours follow the plan list order, so fetch it once per project.
@@ -80,7 +107,7 @@ async function ensureLanes(project) {
   }
 }
 
-async function show() {
+async function show({ silent = false } = {}) {
   // `#section` inside a rendered note is an in-page anchor, not a route.
   const hash = window.location.hash;
   if (hash && !hash.startsWith("#/")) {
@@ -94,7 +121,7 @@ async function show() {
     return;
   }
   const token = ++navigation;
-  nav.view = null;
+  if (!silent) nav.view = null;
   const match = resolveRoute(parsed);
   state.project = match && match.ctx.project ? match.ctx.project : state.project;
   updateChrome(parsed);
@@ -103,17 +130,20 @@ async function show() {
     document.title = "Not found · expnote research";
     return;
   }
-  clear(main).append(skeleton(6));
+  // A refresh after a write keeps what is on screen until the fresh page is ready.
+  const scrolledTo = silent ? window.scrollY || 0 : 0;
+  if (!silent) clear(main).append(skeleton(6));
   main.setAttribute("aria-busy", "true");
   try {
     await ensureLanes(match.ctx.project);
-    const view = await match.page({ ...match.ctx, state, api });
+    const view = await match.page({ ...match.ctx, state, api, post });
     if (token !== navigation) return;
     clear(main).append(view.node);
     nav.view = view;
     nav.baseKey = baseOf(window.location.hash);
     document.title = `${view.title} · expnote research`;
-    if (!view.keepScroll) window.scrollTo(0, 0);
+    if (silent) window.scrollTo(0, scrolledTo);
+    else if (!view.keepScroll) window.scrollTo(0, 0);
   } catch (error) {
     if (token !== navigation) return;
     clear(main).append(errorBox(error, () => show()));
@@ -188,6 +218,7 @@ const KEYS = [
   ["Enter", "Open the selected item as a page"],
   ["Esc", "Close the preview, or leave the search box"],
   ["[  ]", "Previous and next tab on a plan"],
+  ["a  r", "Approve or reject the selected proposed decision (a preview comes first)"],
   ["?", "Show or hide this help"],
 ];
 
@@ -198,7 +229,7 @@ function buildHelp() {
     { class: "help", role: "dialog", "aria-label": "Keyboard shortcuts", hidden: true },
     h("div", { class: "help-head" }, h("h2", null, "Keyboard"), close),
     h("dl", null, KEYS.map(([keys, what]) => [h("dt", null, keys.split("  ").map((k) => h("kbd", null, k))), h("dd", null, what)])),
-    h("p", { class: "muted small" }, "Keys do nothing while you type in a field. This page is read-only."),
+    h("p", { class: "muted small" }, "Keys do nothing while you type in a field. Every change is previewed and needs your click on Apply."),
   );
   document.body.append(box);
   return { box, close };
@@ -258,7 +289,7 @@ function wireKeys() {
 
 async function start() {
   wireKeys();
-  window.addEventListener("hashchange", show);
+  window.addEventListener("hashchange", () => show());
   try {
     const body = await api("/projects");
     state.projects = body.data.projects;

@@ -231,7 +231,9 @@ def build_bundle(
             item = decision_item(view, decision)
             item["role"] = roles.get(decision.number, "other")
             item["why"] = why
-            rows.append(with_body(item, decision.note))
+            if include_body:
+                item["body"] = decision.body_text
+            rows.append(item)
         data["decisions"] = rows
     if "execPlans" in wanted:
         data["execPlans"] = [

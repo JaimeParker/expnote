@@ -284,3 +284,68 @@ def new_vault_id(registry: Registry, entry_id: str, vault_root: str) -> str:
         if _slashes(other.vault_root) == _slashes(vault_root):
             return other.vault_id
     return str(uuid.uuid4())
+
+
+def register_project(
+    *,
+    vault_root: Path,
+    project_dir: Path,
+    images_dir: Path,
+    profile_note: Path,
+    project_id: str | None = None,
+    name: str | None = None,
+    workspaces: list[str] | None = None,
+    alternates: list[str] | None = None,
+    quiet_window_seconds: int = 10,
+    vault_id: str | None = None,
+) -> tuple[dict, ResolvedProject]:
+    """Bind a project to its vault and profile note (the note must exist).
+
+    Shared by `project register` and `project init`. Returns the `data` block of
+    the command and the resolved project.
+    """
+    root = str(vault_root.expanduser().absolute())
+    paths = {
+        "--project-dir": str(project_dir.expanduser().absolute()),
+        "--images-dir": str(images_dir.expanduser().absolute()),
+        "--profile-note": str(profile_note.expanduser().absolute()),
+    }
+    for option, value in paths.items():
+        if not is_inside(value, root):
+            raise ResearchError(
+                "USAGE_PATH_OUTSIDE_VAULT",
+                f"{option} {value} lies outside --vault-root {root}",
+                exit_code=2,
+            )
+    note = read_profile_note(Path(paths["--profile-note"]))
+    profile = profile_or_raise(note, project_id)
+    registry = load_registry()
+    entry_id = project_id or profile.project_id
+    entry = ProjectEntry(
+        id=entry_id,
+        name=name or Path(paths["--project-dir"]).name,
+        vault_id=vault_id or new_vault_id(registry, entry_id, root),
+        vault_root=root,
+        vault_root_alternates=list(alternates or []),
+        project_dir=paths["--project-dir"],
+        images_dir=paths["--images-dir"],
+        profile_note=paths["--profile-note"],
+        workspaces=list(workspaces or []),
+        quiet_window_seconds=quiet_window_seconds,
+    )
+    resolved = revalidate(entry)
+    registry.projects[entry_id] = entry
+    if registry.active_project is None:
+        registry.active_project = entry_id
+    save_registry(registry)
+    data = {
+        "project": entry_id,
+        "absVaultRoot": str(resolved.vault_root),
+        "absProjectDir": str(resolved.project_dir),
+        "absImagesDir": str(resolved.images_dir),
+        "absProfileNote": str(resolved.profile_note),
+        "profileSha256": note.sha256,
+        "workspaces": entry.workspaces,
+        "profile": {"found": True, "parsed": True, "projectId": profile.project_id},
+    }
+    return data, resolved

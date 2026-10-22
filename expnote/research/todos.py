@@ -30,6 +30,7 @@ NEXT_PRIORITY = (
     "decision-confirmed-not-applied",
     "plan-gate-blocked",
     "legacy-no-final-res",
+    "final-res-pending",
     "deviation-open",
     "ev-unmapped",
     "stale-running-runs",
@@ -289,6 +290,36 @@ class _Derive:
             )
         ]
 
+    def final_res_pending(self, page: Note, members: list[Note]) -> list[dict]:
+        """Legacy plans with result cards but not exactly one active (final) one."""
+        if not is_legacy(self.view, page):
+            return []
+        if page.get("status") in ("draft", "superseded", "withdrawn"):
+            return []  # nothing to read out, or no result expected any more
+        gone = ("superseded", "withdrawn")
+        cards = [m for m in members if self.snap.entity_type(m) == "result"]
+        active = [
+            c for c in cards if normalized_result_status(self.view, c) not in gone
+        ]
+        if not cards or len(active) == 1:
+            return []  # nothing to merge yet, or already one final result
+        plan_id = str(page.get("id", ""))
+        return [
+            _item(
+                "final-res-pending",
+                "agent",
+                "warn",
+                plan_id,
+                f"legacy plan {plan_id} has {len(active)} active result(s), "
+                "not one final result",
+                "draft the final result, supersede its stage cards, propose the "
+                "confirming decision",
+                plan=plan_id,
+                command=f'expnote new res --plan {plan_id} --title "<title>" '
+                f"--apply{self.flag}",
+            )
+        ]
+
     def plans(self) -> list[dict]:
         items = []
         for page in self.pages:
@@ -301,6 +332,7 @@ class _Derive:
                 elif entity == "result":
                     items += self.result_confirmation(page, member)
             items += self.legacy_without_final_result(page, members)
+            items += self.final_res_pending(page, members)
         return items
 
     def gate_blocked(self) -> list[dict]:
@@ -353,9 +385,9 @@ class _Derive:
         today = self.view.today()
         items = []
         for decision in self.decisions:
-            review_by = decision.note.get("review_by") if decision.note else None
+            review_by = decision.review_by
             if (
-                isinstance(review_by, str)
+                review_by
                 and review_by <= today
                 and decision.status in ("proposed", "confirmed")
             ):

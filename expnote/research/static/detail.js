@@ -1,4 +1,5 @@
 // Renderers shared by full pages and master-detail previews: decisions, evidence, TODOs, notes.
+import { decisionActions, evLabelEditor, todoTick } from "/research/actions.js";
 import {
   chip,
   commandBlock,
@@ -88,11 +89,32 @@ const groupBy = (rows, keyOf) => {
   return groups;
 };
 
+const SECTION_TITLES = [
+  ["decided", "Decision"],
+  ["reason", "Reason"],
+  ["options", "Options considered"],
+  ["lands", "Lands in"],
+];
+
+// Who did what to the decision and when, oldest first (the store's event log).
+function historyBlock(history) {
+  const step = (e) => {
+    const from = e.before && e.before.status;
+    const to = e.after && e.after.status;
+    return from && to && from !== to ? `${from} to ${to}` : to || "";
+  };
+  return h(
+    "div",
+    { class: "block history", "data-section": "history" },
+    h("h3", null, "History"),
+    h("ol", { class: "history-list" }, history.map((e) => h("li", null, h("span", { class: "date" }, String(e.at || "").replace("T", " ").replace(/Z$/, "")), " ", h("strong", null, e.action), " ", h("span", { class: "muted" }, step(e)), " ", h("span", { class: "muted small" }, `by ${e.actor}`)))),
+  );
+}
+
 export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
   const P = ctx.project;
   const d = data.decision;
   const refs = data.refsIn;
-  const fm = d.frontmatter || {};
   const cited = refs.length
     ? [...groupBy(refs, (r) => r.type || "note").entries()].map(([type, list]) =>
         h(
@@ -103,9 +125,12 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
         ),
       )
     : emptyState("No note cites this decision.");
-  const textBlocks = d.decisionTextHtml
-    ? [h("div", { class: "block" }, prose(d.decisionTextHtml)), d.landsTextHtml ? h("div", { class: "block" }, h("h3", null, "Lands in"), prose(d.landsTextHtml)) : null]
-    : [d.html ? h("div", { class: "block" }, prose(d.html)) : emptyState("This decision has no text.")];
+  const textBlocks = d.sectionsHtml
+    ? SECTION_TITLES.filter(([key]) => d.sectionsHtml[key]).map(([key, title]) => h("div", { class: "block", "data-section": key }, h("h3", null, title), prose(d.sectionsHtml[key])))
+    : d.decisionTextHtml
+      ? [h("div", { class: "block" }, prose(d.decisionTextHtml)), d.landsTextHtml ? h("div", { class: "block" }, h("h3", null, "Lands in"), prose(d.landsTextHtml)) : null]
+      : [d.html ? h("div", { class: "block" }, prose(d.html)) : emptyState("This decision has no text.")];
+  if (d.history && d.history.length) textBlocks.push(historyBlock(d.history));
   return h(
     "article",
     { class: "detail" },
@@ -127,12 +152,14 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
           ["Supersedes", d.supersedes.length ? decisionLinks(P, d.supersedes) : null],
           ["Superseded by", d.supersededBy ? decisionLinks(P, [d.supersededBy]) : null],
           ["Confirmed by", d.confirmedBy],
+          ["Confirmed on", d.confirmedOn],
+          ["Authorization", d.authorization],
           ["Raw status", d.statusRaw && d.statusRaw !== d.status ? d.statusRaw : null],
-          ["Review by", fm.review_by || null],
-          ["Source", d.path],
-          ["Checksum", d.sha256 ? short(d.sha256) : null],
+          ["Review by", d.reviewBy || null],
+          ["Recorded via", d.source === "db" ? d.recordedVia : d.path],
+          ["Version", d.source === "db" ? String(d.version) : null],
         ]),
-        h("div", { class: "row-actions", "data-slot": "decision-actions" }),
+        h("div", { class: "row-actions", "data-slot": "decision-actions" }, decisionActions(ctx, d)),
         h("h3", null, "Cited by ", h("span", { class: "count" }, String(refs.length))),
         cited,
       ),
@@ -177,6 +204,7 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
   const label = e.labelTable;
   const fm = e.frontmatter || {};
   const figures = e.figures.map((name) => figureTile(P, name));
+  const editor = evLabelEditor(ctx, data);
   return h(
     "article",
     { class: "detail" },
@@ -200,10 +228,11 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
     section(
       "Labels",
       [
-        label ? dataTable({ header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]) }, { filledColumn: label.valueColumns[0] || 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]) }) : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
+        label && !editor ? dataTable({ header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]) }, { filledColumn: label.valueColumns[0] || 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]) }) : null,
+        label ? null : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
         e.remark ? h("div", { class: "remark" }, h("h4", null, "Remark"), h("pre", null, e.remark)) : null,
-        h("div", { class: "row-actions", "data-slot": "ev-label-actions" }),
-        h("p", { class: "muted small" }, "Read-only view. Labels are edited in Obsidian for now."),
+        h("div", { class: "row-actions", "data-slot": "ev-label-actions" }, editor),
+        editor ? null : h("p", { class: "muted small" }, "Labels can be edited here while the page is rendered and not yet labelled."),
       ],
       { id: "labels", tone: toneOf("label", e.labelState), count: names[e.labelState] || e.labelState },
     ),
@@ -255,12 +284,13 @@ export function kindPhrase(kind, count) {
   return text ? text[count === 1 ? 0 : 1] : kind;
 }
 
-export function todoRow(ctx, t, { showKind = false } = {}) {
+export function todoRow(ctx, t, { showKind = false, manualSha = null } = {}) {
   const target = todoTarget(ctx, t);
+  const tick = todoTick(ctx, t, manualSha);
   return h(
     "li",
     { class: "todo", "data-owner": t.owner, "data-severity": t.severity },
-    h("span", { class: "who", title: t.owner === "user" ? "Waiting on you" : "Agent work" }, icon(t.owner === "user" ? "user" : "bot")),
+    h("span", { class: "who", title: t.owner === "user" ? "Waiting on you" : "Agent work" }, tick || icon(t.owner === "user" ? "user" : "bot")),
     h(
       "div",
       { class: "todo-main" },

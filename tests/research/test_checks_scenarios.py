@@ -158,9 +158,10 @@ def test_new_codes_constant_matches_design():
         "PROSE.RAW_NUMBERS",
         "SCHEMA.OLD",
         "DEC.AUTH_WEAK",
-        "DEC.BODY_CHANGED",
         "DEC.NO_OPTIONS",
+        "LIFE.PLAN_FORCED_CLOSE",
     } <= NEW_CODES
+    assert "DEC.BODY_CHANGED" not in NEW_CODES
 
 
 def test_status_tail_marker_in_code_is_documentation(tmp_path):

@@ -1,5 +1,6 @@
 // Master-detail list pages: decisions, evidence, TODOs and search.
 // At >= 1100px the selected item opens in a preview pane (?sel=<id>); below that, rows open full pages.
+import { openDecisionAction, todoAddForm } from "/research/actions.js";
 import {
   base,
   decisionDetail,
@@ -122,7 +123,8 @@ async function decisionsPage(ctx) {
   draw();
   const node = h("div", { class: "page md-page" }, h("div", { class: "md-grid" }, h("div", { class: "md-side" }, heading, filterBox), list, md.node));
   md.start(params.get("sel"));
-  return { node, title: "Decisions", select: (id) => md.select(id, { write: false }), keys: md.keys };
+  const keys = { ...md.keys, a: () => openDecisionAction("approve", md.current()), r: () => openDecisionAction("reject", md.current()) };
+  return { node, title: "Decisions", select: (id) => md.select(id, { write: false }), keys };
 }
 
 // ---- EVIDENCE -----------------------------------------------------------------------------------
@@ -286,6 +288,8 @@ async function todosPage(ctx) {
   const heading = h("div", { class: "md-title" });
   const filterBox = h("div", { class: "facets" });
   const list = h("div", { class: "md-list" });
+  const manualSha = body.data.manualFile.sha256;
+  const addForm = todoAddForm(ctx, body.data.manualFile);
   const setFilter = (key) => (value) => {
     filters[key] = value;
     writeHash(hashFor(md.current()));
@@ -311,7 +315,7 @@ async function todosPage(ctx) {
     if (many) head.append(h("button", { type: "button", class: "btn small ghost", onclick: () => { store.set(key, false); drawList(); } }, "Collapse"));
     const ul = h("ul", { class: "todos" });
     for (const t of items) {
-      const row = todoRow(ctx, t);
+      const row = todoRow(ctx, t, { manualSha });
       md.bind(t.id, row);
       ul.append(row);
     }
@@ -321,7 +325,7 @@ async function todosPage(ctx) {
   function drawList() {
     const rows = shownRows();
     md.reset();
-    clear(list).append(h("div", { class: "row-actions", "data-slot": "todo-add" }));
+    clear(list).append(h("div", { class: "row-actions", "data-slot": "todo-add" }, addForm));
     if (!rows.length) {
       list.append(emptyState("Nothing here.", all.length ? "Clear a filter on the left." : "Derived items are computed from the notes; manual items come from the TODO note."));
       md.setOrder([]);

@@ -13,9 +13,9 @@ from pathlib import Path, PurePosixPath
 
 from expnote.research.decisions import (
     decision_concerns_plan,
-    decision_from_note,
     parse_decision_table,
     parse_deviation_log,
+    stored_decisions,
 )
 from expnote.research.model import Decision, DeviationRow, Note, parse_note
 from expnote.research.profile import Profile
@@ -63,7 +63,20 @@ class VaultSnapshot:
             return sorted(hits)
         if is_attachment_name(key, self.profile.attachment_exts):
             return self.attach_index.get(key, [])
-        return self.md_index.get(key, []) or self.alias_index.get(key, [])
+        hits = self.md_index.get(key, []) or self.alias_index.get(key, [])
+        if not hits and self.is_stored_decision(target):
+            return ["<decision>"]
+        return hits
+
+    def is_stored_decision(self, target: str) -> bool:
+        """`[[PREFIX-NNNN]]` naming a decision of the store (no note carries it)."""
+        match = re.fullmatch(
+            rf"{re.escape(self.profile.decision_id_prefix)}-(\d+)",
+            target.strip(),
+            re.I,
+        )
+        found = self.decisions.get(int(match.group(1))) if match else None
+        return found is not None and found.source == "db"
 
     # ---- registry lookups ----
     def note(self, cstem: str) -> Note | None:
@@ -186,32 +199,28 @@ def _read_text(path: Path) -> str | None:
 
 def build_decisions_and_deviations(
     profile: Profile,
-    registry: list[Note],
+    project_id: str,
     table_text: str | None,
     deviation_text: str | None,
 ) -> tuple[dict[int, Decision], list[tuple[str, str, str]], dict[str, DeviationRow]]:
-    """Pure part of the scan: decisions (table rows + files) and the deviation log."""
+    """Pure part of the scan: decisions (store rows over table rows) and deviations.
+
+    The decision store is the truth once it exists; the legacy table only fills the
+    numbers the store does not hold, so an unmigrated vault keeps working.
+    """
     decisions: dict[int, Decision] = {}
     problems: list[tuple[str, str, str]] = []
-
-    def add_decision(decision: Decision, where: str):
-        if decision.number in decisions:
-            problems.append(
-                ("DEC.NUMBER_DUPLICATE", where, f"#{decision.number} is duplicated")
-            )
-        decisions[decision.number] = decision
-
     table_name = profile.legacy_decision_table
     if table_text is not None and table_name:
         rows, table_problems = parse_decision_table(table_text, profile, table_name)
         problems += table_problems
         for row in rows:
-            add_decision(row, table_name)
-    for note in registry:
-        if note.type == "decision" and not note.fm_error:
-            decision = decision_from_note(note, profile)
-            if decision is not None:
-                add_decision(decision, note.rel)
+            if row.number in decisions:
+                problems.append(
+                    ("DEC.NUMBER_DUPLICATE", table_name, f"#{row.number} is duplicated")
+                )
+            decisions[row.number] = row
+    decisions.update(stored_decisions(project_id) or {})
 
     deviations: dict[str, DeviationRow] = {}
     if deviation_text is not None:
@@ -231,7 +240,7 @@ def scan_vault(context: ProjectContext) -> VaultSnapshot:
     table_text = _read_text(project_dir / table_name) if table_name else None
     deviation_text = _read_text(project_dir / profile.deviation_register)
     decisions, problems, deviations = build_decisions_and_deviations(
-        profile, registry, table_text, deviation_text
+        profile, context.entry.id, table_text, deviation_text
     )
 
     images_dir = resolved.images_dir

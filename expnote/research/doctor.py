@@ -142,6 +142,7 @@ def run_doctor(
         meta["index"] = stats.meta()
     if index_check:
         checks += _hygiene_checks(context, now or datetime.now().astimezone())
+    checks += _decision_store_checks(context)
     return checks, meta
 
 
@@ -275,6 +276,44 @@ def _index_checks(
     return True, stats
 
 
+def _decision_store_checks(context: ProjectContext) -> list[Check]:
+    """The decision store: where it is, how many rows, and is the export current."""
+    from expnote.research.decision_export import export_state
+    from expnote.research.writeback import WriteContext
+
+    target = context.resolved.project_dir / context.profile.decision_export
+    try:
+        state = export_state(
+            context.entry.id, WriteContext.for_project(context), target
+        )
+    except ResearchError as error:
+        return [Check("decision-store", "fail", error.message, error.remediation)]
+    if not state["exists"]:
+        return [
+            Check(
+                "decision-store",
+                "info",
+                "no decision store yet (created by the first `decision new` or "
+                "`migrate apply --step decisions`)",
+            )
+        ]
+    where = f"{state['rows']} decision(s) in {state['store']}"
+    if state["status"] == "in-sync":
+        return [_ok("decision-store", f"{where}; export {target.name} is current")]
+    message = {
+        "diverged": f"{where}; {target.name} was changed outside expnote",
+        "missing": f"{where}; {target.name} does not exist yet",
+        "stale": f"{where}; {target.name} is behind the store",
+    }[state["status"]]
+    remediation = (
+        "inspect it, then `expnote decision export --apply --force`"
+        if state["status"] == "diverged"
+        else "expnote decision export --apply"
+    )
+    code = f"EXPORT_{state['status'].upper()}"
+    return [Check("decision-store", "warn", f"{code}: {message}", remediation)]
+
+
 def _hygiene_checks(context: ProjectContext, now: datetime) -> list[Check]:
     profile = context.profile
     prefix = project_rel(context)
@@ -330,6 +369,7 @@ def _hygiene_checks(context: ProjectContext, now: datetime) -> list[Check]:
                 r["rel"]
                 for r in files
                 if TEMP_NAME.match(r["rel"].rsplit("/", 1)[-1])
+                and "/expnote-probe/" not in "/" + r["rel"]
                 and now_ns - r["mtime_ns"] > STALE_TEMP_SECONDS * 1e9
             ],
             "no stale expnote temp files",

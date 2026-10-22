@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from decisionkit import seed
 from minivault import (
     EV_PATH,
     EXEC_PATH,
@@ -16,7 +17,7 @@ from minivault import (
     write,
 )
 from readkit import data, invoke, payload, register, run
-from test_checks_schema3 import decision_file, v3_plan
+from test_checks_schema3 import v3_plan
 
 from expnote.cli import _AGENT_GUIDE
 from expnote.research.bundle import SECTIONS
@@ -66,7 +67,10 @@ def test_guide_agent_is_unchanged_and_research_is_an_envelope():
     assert body["ok"] and body["command"] == "guide research"
     assert body["data"]["topic"] == "research" and body["data"]["exitCodes"]["7"]
     text = invoke("guide", "research").stdout
-    assert "expnote next" in text and "not implemented yet" in text
+    assert "expnote next" in text and "not implemented yet" not in text
+    assert text.index("expnote project init") < text.index("expnote new plan")
+    runs = [s["run"] for w in body["data"]["workflows"].values() for s in w]
+    assert any(r.startswith("expnote project init") for r in runs)
     assert invoke("guide", "nonsense").exit_code != 0
 
 
@@ -136,26 +140,23 @@ def test_decisions_from_the_legacy_table(world):
     assert run("decision", "show", "abc")["_exit"] == 2
 
 
-def test_decisions_from_schema3_files_join_the_table(world):
-    root, proj = world
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md",
-        decision_file(125, status="proposed", plans='["PLAN-900B"]'),
-    )
+def test_store_decisions_join_the_table_and_show_their_sections(world):
+    seed(125, status="proposed", plans=["PLAN-900B"], lands="落到 [[别的笔记]]")
     rows = data("decision", "list")["decisions"]
     assert [d["number"] for d in rows][-2:] == [8, 125]
     new = rows[-1]
     assert (
-        new["source"] == "file"
+        new["source"] == "db"
         and new["status"] == "proposed"
         and new["plans"] == ["PLAN-900B"]
+        and new["version"] == 1
     )
-    assert new["path"].endswith("decisions/O2O-DEC-0125--批准.md")
     detail = data("decision", "show", "O2O-DEC-0125", "--include-body")["decision"]
-    assert detail["frontmatter"]["layer"] == "研究" and len(detail["sha256"]) == 64
-    assert "## 决定" in detail["body"]
-    only_files = data("decision", "list", "--status", "proposed")["decisions"]
-    assert [d["number"] for d in only_files] == [125]
+    assert detail["sections"]["reason"] == "因为 B。"
+    assert detail["history"][0]["action"] == "import"
+    assert "做 A。" in detail["body"] and "因为 B。" in detail["body"]
+    only_store = data("decision", "list", "--status", "proposed")["decisions"]
+    assert [d["number"] for d in only_store] == [125]
 
 
 def test_decision_show_lists_who_cites_it(world):
@@ -447,8 +448,8 @@ ITEM_KEYS = {
     "gates": {"current", "known", "currentUnmet", "next"},
     "decisions": {
         "id", "number", "date", "status", "statusRaw", "layer", "title", "plans",
-        "confirmedBy", "legacy", "source", "path", "supersedes", "supersededBy",
-        "role", "why",
+        "confirmedBy", "confirmedOn", "version", "recordedVia", "legacy", "source",
+        "path", "supersedes", "supersededBy", "role", "why",
     },
     "execPlans": {
         "id", "stem", "plan", "stage", "status", "legacy", "frozen",

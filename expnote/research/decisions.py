@@ -1,11 +1,12 @@
-"""Decisions (legacy table rows and decision files) and the deviation register."""
+"""Decisions (legacy table rows, store rows) and the deviation register."""
 
 from __future__ import annotations
 
 import dataclasses
 import re
 
-from expnote.research.model import Decision, DeviationRow, Note
+from expnote.research.decision_store import read_rows
+from expnote.research.model import Decision, DeviationRow
 from expnote.research.profile import Profile, StatusRule
 from expnote.research.schemas import (
     DECISION_COLUMN_FIELDS,
@@ -146,44 +147,48 @@ def parse_decision_table(
     return rows, problems
 
 
-def decision_from_note(note: Note, profile: Profile) -> Decision | None:
-    """A Decision from a decision file; None when the number cannot be read."""
-    number = parse_decision_ref(note.get("number"), profile, lenient=False)
-    if number is None:
-        number = parse_decision_ref(note.get("id"), profile, lenient=True)
-    if number is None:
-        return None
-    status = note.get("status")
-    targets = note.get("targets")
-    targets_text = " ".join(targets) if isinstance(targets, list) else ""
-    plans = note.get("plans")
-    supersedes = note.get("supersedes")
-    successor = parse_decision_ref(note.get("superseded_by"), profile, lenient=True)
+def decision_from_row(row: dict) -> Decision:
+    """A Decision from a decision-store row."""
+    targets = tuple(row["targets"])
+    parts = [" ".join(targets), row["decided"], row["reason"]]
+    parts += [row["options"], row["lands"]]
     return Decision(
-        number=number,
-        where=note.rel,
-        source="file",
-        status=status if status in DECISION_STATUS else None,
-        status_raw=status if isinstance(status, str) else "",
-        legacy=note.is_true("legacy"),
-        successor=successor,
-        decision_id=note.get("id") if isinstance(note.get("id"), str) else None,
-        layer=note.get("layer") if isinstance(note.get("layer"), str) else "",
-        date=note.get("date") if isinstance(note.get("date"), str) else "",
-        text=f"{targets_text}\n{note.body}",
-        decision_text=str(note.get("title") or ""),
-        lands_text=targets_text,
-        plans=tuple(plans) if isinstance(plans, list) else (),
-        supersedes=tuple(
-            n
-            for n in (
-                parse_decision_ref(v, profile, lenient=True)
-                for v in (supersedes if isinstance(supersedes, list) else [])
-            )
-            if n is not None
-        ),
-        note=note,
+        number=row["number"],
+        where=f"#{row['number']}",
+        source="db",
+        status=row["status"],
+        status_raw=row["status_raw"],
+        legacy=row["legacy"],
+        review=row["review"],
+        successor=row["superseded_by"],
+        decision_id=row["id"],
+        layer=row["layer"],
+        date=row["date"],
+        text="\n".join(p for p in parts if p),
+        decision_text=row["decided"],
+        lands_text="\n".join(p for p in (row["lands"], " ".join(targets)) if p),
+        plans=tuple(row["plans"]),
+        supersedes=tuple(row["supersedes"]),
+        title=row["title"],
+        reason_text=row["reason"],
+        options_text=row["options"],
+        lands_raw=row["lands"],
+        targets=targets,
+        confirmed_by=row["confirmed_by"],
+        confirmed_on=row["confirmed_on"],
+        authorization=row["authorization"],
+        review_by=row["review_by"],
+        version=row["version"],
+        recorded_via=row["source"],
     )
+
+
+def stored_decisions(project_id: str) -> dict[int, Decision] | None:
+    """Decisions of the project's store; None while it has not been created."""
+    loaded = read_rows(project_id)
+    if loaded is None:
+        return None
+    return {row["number"]: decision_from_row(row) for row in loaded[0]}
 
 
 def decision_concerns_plan(

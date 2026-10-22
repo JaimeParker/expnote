@@ -15,6 +15,7 @@ from expnote.research.checks import (
     rules_section,
     rules_sha256,
 )
+from expnote.research.decision_store import read_rows
 from expnote.research.decisions import parse_decision_ref
 from expnote.research.errors import ResearchError
 from expnote.research.model import Decision, DeviationRow, FindingSink, Note
@@ -231,19 +232,16 @@ def decision_plans(view: ProjectView) -> dict[int, list[str]]:
 
 
 def decision_item(view: ProjectView, decision: Decision) -> dict:
-    note = decision.note
-    if decision.source == "file" and note is not None:
-        title = _str(note.get("title")) or decision.decision_text
-        confirmed_by = _str(note.get("confirmed_by"))
-        superseded_by = _str(note.get("superseded_by"))
+    if decision.source == "db":
+        title = decision.title or decision.decision_text
     else:
         title = title_clause(decision.decision_text, _delimiters(view))
-        confirmed_by = None
-        superseded_by = (
-            f"{view.profile.decision_id_prefix}-{decision.successor:04d}"
-            if decision.successor is not None
-            else None
-        )
+    confirmed_by = decision.confirmed_by
+    superseded_by = (
+        f"{view.profile.decision_id_prefix}-{decision.successor:04d}"
+        if decision.successor is not None
+        else None
+    )
     plans = list(decision.plans)
     for plan_id in decision_plans(view).get(decision.number, []):
         if plan_id not in plans:
@@ -260,7 +258,10 @@ def decision_item(view: ProjectView, decision: Decision) -> dict:
         "confirmedBy": confirmed_by,
         "legacy": decision.legacy,
         "source": decision.source,
-        "path": view.vault_rel(note) if note is not None else _table_path(view),
+        "version": decision.version,
+        "recordedVia": decision.recorded_via or None,
+        "confirmedOn": decision.confirmed_on,
+        "path": _table_path(view) if decision.source == "table" else None,
         "supersedes": [
             f"{view.profile.decision_id_prefix}-{n:04d}" for n in decision.supersedes
         ],
@@ -324,16 +325,47 @@ def decision_detail(view: ProjectView, ident: str, include_body: bool) -> dict:
         )
     item = decision_item(view, decision)
     detail: dict = {"decision": item, "refsIn": decision_refs_in(view, number)}
-    note = decision.note
-    if note is not None:
-        item["frontmatter"] = note.fm
-        item["sha256"] = view.file_sha256(note.rel)
+    if decision.source == "db":
+        item["sections"] = {
+            "decided": decision.decision_text,
+            "reason": decision.reason_text,
+            "options": decision.options_text,
+            "lands": decision.lands_raw,
+        }
+        item.update(
+            targets=list(decision.targets),
+            authorization=decision.authorization,
+            reviewBy=decision.review_by,
+            history=decision_history(view, number),
+        )
     else:
         item["decisionText"] = decision.decision_text
         item["landsText"] = decision.lands_text
     if include_body:
-        item["body"] = note.body if note is not None else decision.text
+        item["body"] = _decision_body(decision)
     return detail
+
+
+def _decision_body(decision: Decision) -> str:
+    return decision.body_text
+
+
+def decision_history(view: ProjectView, number: int) -> list[dict]:
+    loaded = read_rows(view.project_id)
+    if loaded is None:
+        return []
+    return [
+        {
+            "seq": e["seq"],
+            "at": e["at"],
+            "actor": e["actor"],
+            "action": e["action"],
+            "before": e["before"],
+            "after": e["after"],
+        }
+        for e in loaded[1]
+        if e["number"] == number
+    ]
 
 
 def decision_refs_in(view: ProjectView, number: int) -> list[dict]:

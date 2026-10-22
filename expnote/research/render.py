@@ -148,7 +148,17 @@ class LinkResolver:
             if kind == "evidence":
                 return LinkTarget(page_url(pid, "ev", row["stem"]), "evidence")
             return LinkTarget(page_url(pid, "note", row["stem"]), "note")
+        decision = self._stored_decision(stem)
+        if decision is not None:
+            return LinkTarget(page_url(pid, "decision", decision), "decision")
         return self._run_or_missing(stem)
+
+    def _stored_decision(self, stem: str) -> str | None:
+        """Id of the store decision a `[[PREFIX-NNNN]]` link names, if there is one."""
+        snap = self.view.snapshot
+        if not snap.is_stored_decision(stem):
+            return None
+        return stem.strip().upper()
 
     def _listed_plan(self, row) -> bool:
         archived = set(row["rel"].split("/")[:-1]) & self.view.profile.archive_dir_names

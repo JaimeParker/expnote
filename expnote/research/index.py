@@ -1005,7 +1005,7 @@ def snapshot_from_index(
         else _read_text(project_dir / profile.deviation_register)
     )
     decisions, problems, deviations = build_decisions_and_deviations(
-        profile, registry, table_text, deviation_text
+        profile, context.entry.id, table_text, deviation_text
     )
     return VaultSnapshot(
         profile=profile,

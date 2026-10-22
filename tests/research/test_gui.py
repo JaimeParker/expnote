@@ -1,4 +1,4 @@
-"""The read-only research GUI: API, rendering, security and mounting."""
+"""The research GUI reads: API, rendering, security, mounting (writes: separate)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from decisionkit import seed
 from fastapi.testclient import TestClient
 from minivault import (
     EV_PATH,
@@ -20,7 +21,6 @@ from minivault import (
     write,
 )
 from readkit import data, index_rows, register, run, vault_id
-from test_checks_schema3 import decision_file
 
 from expnote.research.web_routes import create_research_app, research_available
 from expnote.web import create_app
@@ -36,7 +36,7 @@ description: 富文本
 # 富文本
 
 链接 [[PLAN-900A--demo]]、别名 [[PLAN-900A--demo|演示计划]]、缺失 [[没有这个笔记]]。
-决策 [[O2O-DEC-0125--批准]]，旧式 [[决策记录]] #2、#3 与 [[决策记录|总表]] #5。
+决策 [[O2O-DEC-0125]]，旧式 [[决策记录]] #2、#3 与 [[决策记录|总表]] #5。
 运行 [[abcd1234]]，文档 [[doc00001]]，未知 [[zzzz9999]]。
 
 ![[o2o_demo.png|200]] ![[不存在.png]]
@@ -83,9 +83,7 @@ def world(tmp_path):
         proj / "ops/执行日志.md",
         "---\ntype: execution-log\n---\n# 日志\n\n[[PLAN-900A--demo]]\n",
     )
-    write(
-        proj / "decisions/O2O-DEC-0125--批准.md", decision_file(125, status="proposed")
-    )
+    seed(125, status="proposed", lands="落到 [[PLAN-900A--demo]]")
     write(proj / "待办.md", TODO_FILE)
     make_workspace(
         "w1",
@@ -107,6 +105,7 @@ def world(tmp_path):
         ],
     )
     register(root, proj, "--workspace", "w1")
+    assert run("decision", "export", "--apply")["_exit"] == 0  # the seeded rows' backup
     return root, proj
 
 
@@ -229,7 +228,10 @@ def test_decisions_filters_detail_and_refs(client):
     refs = detail["refsIn"]
     assert refs and all("href" in r for r in refs)
     filed = ok(client, f"{P}/decisions/O2O-DEC-0125")["data"]["decision"]
-    assert len(filed["sha256"]) == 64 and "<h2" in filed["html"]
+    assert filed["version"] == 1 and filed["source"] == "db"
+    assert set(filed["sectionsHtml"]) == {"decided", "reason", "options", "lands"}
+    assert "因为 B。" in filed["sectionsHtml"]["reason"]
+    assert [h["action"] for h in filed["history"]] == ["import"]
     assert client.get(f"{P}/decisions/999").status_code == 404
 
 
@@ -560,10 +562,12 @@ def test_no_endpoint_changes_a_file_in_the_vault(world):
         assert client.get(path).status_code == 200, path
     for method in ("post", "put", "patch", "delete"):
         for path in (f"{P}/decisions/2", f"{P}/todos", f"{P}/ev/x/labels"):
-            assert getattr(client, method)(path).status_code in (404, 405), (
-                method,
-                path,
-            )
+            # The only POST routes are the 7.2 write set, which refuse a request
+            # without the token (test_gui_writes.py covers them in depth).
+            gated = method == "post" and path.endswith(("/todos", "/labels"))
+            assert getattr(client, method)(path).status_code in (
+                (403,) if gated else (404, 405)
+            ), (method, path)
     assert snapshot_tree(root) == before
 
 

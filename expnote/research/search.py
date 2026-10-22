@@ -62,6 +62,44 @@ def _first_match_line(text: str, offset: int, terms: list[str]) -> tuple[int, st
     return offset + 1, next((row.strip() for row in lines if row.strip()), "")
 
 
+def _decision_hits(view: ProjectView, terms: list[str], filters: SearchFilters):
+    """Store decisions matching the terms (all of them, case-folded) and filters."""
+    if filters.note_type not in (None, "decision"):
+        return []
+    if filters.linked_to or filters.backlinks_of:
+        return []
+    wanted = [t.casefold() for t in terms]
+    hits = []
+    for number in sorted(view.snapshot.decisions):
+        decision = view.snapshot.decisions[number]
+        if decision.source != "db":
+            continue
+        if filters.plan and filters.plan not in decision.plans:
+            continue
+        if filters.status and decision.status != filters.status:
+            continue
+        ident = decision.decision_id or str(number)
+        fields = [decision.title, decision.decision_text, decision.reason_text]
+        fields += [decision.options_text, decision.lands_raw]
+        text = "\n".join(f for f in fields if f)
+        folded = f"{ident}\n{text}".casefold()
+        if not all(t in folded for t in wanted):
+            continue
+        line, snippet = _first_match_line(text, 0, terms)
+        hits.append(
+            {
+                "stem": ident,
+                "path": ident,
+                "type": "decision",
+                "entityId": ident,
+                "status": decision.status,
+                "line": line,
+                "snippet": f"{ident}:{line}: {truncate(snippet, SNIPPET_LIMIT)}",
+            }
+        )
+    return hits
+
+
 def search_notes(
     view: ProjectView,
     query: str,
@@ -138,9 +176,13 @@ def search_notes(
         raise ResearchError(
             "USAGE_BAD_QUERY", f"search failed: {error}", exit_code=2
         ) from None
-    page, next_cursor = paginate(rows, limit, cursor)
+    decision_hits = _decision_hits(view, terms, filters)
+    page, next_cursor = paginate([*rows, *decision_hits], limit, cursor)
     hits = []
     for row in page:
+        if isinstance(row, dict):
+            hits.append(row)
+            continue
         offset = row["fm_raw"].count("\n")
         full = row["fm_raw"] + row["body"]
         if link_filter and no_text:
@@ -163,7 +205,7 @@ def search_notes(
         )
     return {
         "matchMode": mode,
-        "total": len(rows),
+        "total": len(rows) + len(decision_hits),
         "hits": hits,
         "_nextCursor": next_cursor,
     }

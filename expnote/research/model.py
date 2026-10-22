@@ -137,11 +137,11 @@ class DeviationRow:
 
 @dataclasses.dataclass
 class Decision:
-    """One decision, from a legacy table row or a decision file."""
+    """One decision, from a legacy table row or the decision store."""
 
     number: int
-    where: str  # "#N" for table rows, project-relative path for files
-    source: str  # "table" | "file"
+    where: str  # "#N"
+    source: str  # "table" | "db"
     status: str | None
     status_raw: str
     legacy: bool
@@ -155,7 +155,26 @@ class Decision:
     lands_text: str = ""
     plans: tuple[str, ...] = ()
     supersedes: tuple[int, ...] = ()
-    note: Note | None = None
+    title: str = ""  # store rows only; table rows derive it from decision_text
+    reason_text: str = ""
+    options_text: str = ""
+    lands_raw: str = ""  # the lands text alone (lands_text also holds the targets)
+    targets: tuple[str, ...] = ()
+    confirmed_by: str | None = None
+    confirmed_on: str | None = None
+    authorization: str | None = None
+    review_by: str | None = None
+    version: int = 0
+    recorded_via: str = ""  # store rows: migrated | cli | chat | gui
+
+    @property
+    def body_text(self) -> str:
+        """The prose of the decision (what the number-in-prose heuristic reads)."""
+        if self.source == "table":
+            return self.text
+        parts = (self.decision_text, self.reason_text)
+        parts += (self.options_text, self.lands_raw)
+        return "\n\n".join(p for p in parts if p)
 
     def cites_stem(self, cstem: str) -> bool:
         return any(fold(link_stem(t)) == cstem for _, t in iter_links(self.text))

@@ -21,8 +21,10 @@ def _step(run: str, note: str = "", available: bool = True) -> dict:
 RESEARCH_GUIDE = {
     "topic": "research",
     "principles": [
-        "Markdown notes in the vault are the truth for plans, decisions, evidence "
-        "and results; the index is rebuildable and lives outside the vault",
+        "Markdown notes in the vault are the truth for plans, evidence and results; "
+        "decisions are records in a SQLite store outside the vault (text never "
+        "changes: supersede instead) with a JSONL backup export in the vault; the "
+        "index is rebuildable and lives outside the vault",
         "Every command takes --project ID (default: the active project) and --json",
         "--json prints one envelope: ok, schemaVersion, command, data, warnings, meta",
         "Reads refresh the index first (--no-refresh skips it); they never write "
@@ -64,29 +66,52 @@ RESEARCH_GUIDE = {
         "run": "from the profile (runs.id_regex), linked as [[run id]]",
     },
     "workflows": {
+        "first time (set up a vault project)": [
+            _step(
+                "expnote project init --project-dir <PROJECT_FOLDER_IN_VAULT> "
+                "--images-dir <FIGURES_FOLDER_IN_VAULT>",
+                "dry-run: shows the profile note it would create (or reuses the "
+                "one in the folder), the registry entry and the next commands; the "
+                "vault root is the nearest folder with .obsidian/ (--vault-root "
+                "overrides); --id/--name default to the folder",
+            ),
+            _step(
+                "expnote project init --project-dir <PROJECT_FOLDER_IN_VAULT> "
+                "--images-dir <FIGURES_FOLDER_IN_VAULT> --apply",
+                "creates the profile note if missing, registers the project and "
+                "makes it active when none is; running it again changes nothing",
+            ),
+            _step(
+                "expnote check --project <ID> --json", "FAIL 0 means the vault is sound"
+            ),
+            _step("expnote web", "the localhost GUI"),
+        ],
         "start a plan": [
             _step(
                 'expnote new plan --id <PLAN_ID> --title "<TITLE>" --apply',
                 "then write the body",
-                available=False,
+                available=True,
             ),
             _step(
                 'expnote decision new --title "<TITLE>" --layer <LAYER> '
-                '--plans <PLAN_ID> --targets "[[<PLAN_NOTE>]]" --apply',
-                "creates a proposed decision",
-                available=False,
+                '--decided "<WHAT>" --reason "<WHY>" --plans <PLAN_ID> '
+                '--targets "[[<PLAN_NOTE>]]" --apply',
+                "records a proposed decision; add --status confirmed "
+                '--authorization "<USER_WORDS>" when the user already said yes in '
+                "chat",
+                available=True,
             ),
             _step(
                 "expnote decision set <DECISION_ID> --status confirmed "
                 '--authorization "<USER_WORDS>" --apply',
                 "only after the user approved; or the user clicks in the GUI",
-                available=False,
+                available=True,
             ),
             _step(
                 "expnote plan advance <PLAN_ID> --to approved "
                 "--decision <DECISION_ID> --apply",
                 "",
-                available=False,
+                available=True,
             ),
         ],
         "run a stage": [
@@ -94,18 +119,18 @@ RESEARCH_GUIDE = {
                 "expnote new exec --plan <PLAN_ID> --stage <STAGE> "
                 "--title <TITLE> --apply",
                 "write the rules section",
-                available=False,
+                available=True,
             ),
             _step(
                 "expnote exec freeze <EXEC_ID> --rules-decision <DECISION_ID> --apply",
                 "stores the rules hash; editing the rules afterwards needs a "
                 "registered deviation",
-                available=False,
+                available=True,
             ),
             _step(
                 "expnote plan advance <PLAN_ID> --to running --apply",
                 "",
-                available=False,
+                available=True,
             ),
             _step(
                 "register runs with the workspace commands (run add / run update)",
@@ -119,7 +144,7 @@ RESEARCH_GUIDE = {
                 "expnote new ev --plan <PLAN_ID> --exec <EXEC_ID> "
                 "--title <TITLE> --apply",
                 "creates the evidence page and its appendix",
-                available=False,
+                available=True,
             ),
             _step("expnote check --plan <PLAN_ID> --json", "FAIL must be 0"),
         ],
@@ -127,18 +152,26 @@ RESEARCH_GUIDE = {
             _step(
                 "expnote new res --plan <PLAN_ID> --title <TITLE> --apply",
                 "write the final result",
-                available=False,
+                available=True,
             ),
             _step(
                 "expnote res confirm <RES_ID> --decision <DECISION_ID> "
                 "--deviation-impact <none|weak|moderate|affects> --apply",
                 "needs a confirmed decision that links the result",
-                available=False,
+                available=True,
             ),
             _step(
                 "expnote plan advance <PLAN_ID> --to read-out --apply",
                 "then --to confirmed, then --to closed --decision <DECISION_ID>",
-                available=False,
+                available=True,
+            ),
+            _step(
+                'expnote plan close <PLAN_ID> --reason "<WHY>" '
+                '--authorization "<USER_WORDS>" --apply',
+                "the user's shortcut: records a confirmed decision and closes the "
+                "plan; add --force when the final result is missing or unconfirmed "
+                "(check keeps a WARN)",
+                available=True,
             ),
         ],
     },
@@ -152,15 +185,17 @@ RESEARCH_GUIDE = {
         "deviation-open",
         "plan-gate-blocked",
         "legacy-no-final-res",
+        "final-res-pending",
         "decision-review-due",
         "sync-conflict-file",
         "stale-running-runs",
         "ev-unmapped",
     ],
     "exitCodes": EXIT_CODES,
-    "availability": "steps with available=false belong to the write set and are "
-    "not implemented yet; until then edit the notes directly and keep check at "
-    "FAIL 0",
+    "availability": "every writing command is a dry-run until --apply (exit 4 "
+    "means nothing was written); confirmations by CLI need --authorization with "
+    "the user's own words (exit 7 without it); exit 5 means the note changed, was "
+    "edited a moment ago or is held open: re-read and retry",
 }
 
 
