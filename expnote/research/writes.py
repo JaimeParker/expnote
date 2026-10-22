@@ -12,6 +12,7 @@ import dataclasses
 import re
 from collections.abc import Callable
 from datetime import UTC
+from pathlib import Path
 
 from expnote.research import entities
 from expnote.research.checks import (
@@ -51,6 +52,8 @@ from expnote.research.writeback import (
     WriteContext,
     apply_changes,
     plan_changes,
+    rename_path,
+    vault_rel,
 )
 
 DRY_RUN_EXIT = 4
@@ -82,6 +85,8 @@ class WritePlan:
     # Fills data that only exists once the edits ran (an allocated id).
     finalize: Callable[[dict], None] | None = None
     store_op: StoreOp | None = None
+    # (source, target) notes moved after the edits are applied (`plan adopt`).
+    renames: list[tuple[Path, Path]] = dataclasses.field(default_factory=list)
 
 
 def execute_plan(
@@ -107,12 +112,15 @@ def execute_plan(
             command=command, apply=apply, no_quiet=no_quiet,
             confirm_command=confirm_command,
         )  # fmt: skip
-    if not changes:
+    if not changes and not plan.renames:
         data.update(changes=[], applied=False, dryRun=False)
         return CommandResult(data, plan.warnings, meta)
     if not apply:
         data.update(
-            changes=[c.as_dict() for c in changes],
+            changes=[
+                *(c.as_dict() for c in changes),
+                *(_rename_preview(context, s, t) for s, t in plan.renames),
+            ],
             applied=False,
             dryRun=True,
             confirmCommand=confirm_command,
@@ -125,8 +133,39 @@ def execute_plan(
         authorization=plan.authorization,
         no_quiet=no_quiet,
     )
-    data.update(changes=result.applied, applied=True, dryRun=False)
-    return CommandResult(data, [*plan.warnings, *result.warnings], meta)
+    applied = list(result.applied)
+    warnings = [*plan.warnings, *result.warnings]
+    for source, target in plan.renames:
+        try:
+            moved = rename_path(context, source, target, command=command)
+        except ResearchError as error:
+            error.details["applied"] = [a["path"] for a in applied]
+            error.remediation = (
+                error.remediation or "run the same command again: it finishes the move"
+            )
+            raise
+        applied.append({**_rename_preview(context, source, target), **moved})
+    if plan.renames and context.reindex is not None:
+        try:
+            context.reindex()
+        except ResearchError as error:
+            warnings.append({"code": "REINDEX_FAILED", "message": error.message})
+    data.update(changes=applied, applied=True, dryRun=False)
+    return CommandResult(data, warnings, meta)
+
+
+def _rename_preview(context: WriteContext, source: Path, target: Path) -> dict:
+    """A change row for a move, shaped like `Change.as_dict` (no diff to show)."""
+    return {
+        "path": vault_rel(context, target),
+        "absPath": str(target),
+        "op": "rename",
+        "address": f"from:{vault_rel(context, source)}",
+        "beforeSha256": None,
+        "afterSha256": None,
+        "unifiedDiff": "",
+        "diffTruncated": False,
+    }
 
 
 def export_target(view: ProjectView):

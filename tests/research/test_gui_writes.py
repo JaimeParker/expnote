@@ -1,4 +1,4 @@
-"""The GUI write set (design 7.2): token/origin gate, dry-run, CAS, quiet, audit."""
+"""The GUI write set: token/origin gate, dry-run, CAS, quiet, audit."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
-from minivault import DEVIATIONS_9COL, DEVIATIONS_PATH, snapshot_tree
+from minivault import DEVIATIONS_9COL, DEVIATIONS_PATH, snapshot_tree, write
 from writekit import (
     audit_records,
     edit_profile,
@@ -169,10 +169,10 @@ def test_origin_and_host_must_be_the_local_server(world):
     assert snapshot_tree(world.root) == before
 
 
-# ---- the write set is exactly 7.2 --------------------------------------------------
+# ---- the write set is exactly this list --------------------------------------------
 
 
-def test_only_the_section_7_2_endpoints_can_write(world):
+def test_only_the_listed_endpoints_can_write(world):
     writable = {
         (method.upper(), path)
         for path, methods in world.app.openapi()["paths"].items()
@@ -184,6 +184,7 @@ def test_only_the_section_7_2_endpoints_can_write(world):
         ("POST", f"{prefix}/decisions/{{ident}}/approve"),
         ("POST", f"{prefix}/decisions/{{ident}}/reject"),
         ("POST", f"{prefix}/plans/{{plan_id}}/close"),
+        ("POST", f"{prefix}/plans/adopt"),
         ("POST", f"{prefix}/deviations/{{ident}}/close"),
         ("POST", f"{prefix}/ev/{{stem}}/labels"),
         ("POST", f"{prefix}/todos"),
@@ -774,3 +775,105 @@ def test_deviation_close_on_a_changed_register_is_a_conflict(world):
     response = post(world, "/deviations/D-02/close", {"expectedSha256": stale})
     error_of(response, 409, "CAS_MISMATCH")
     assert snapshot_tree(world.root) == before and new_audit(world) == []
+
+
+# ---- adopt a draft as a plan ---------------------------------------------------------
+
+DRAFT_REL = "plans/预热想法.md"
+DRAFT_TEXT = "# 预热想法\n\n问题 [[别的笔记]]\n"
+
+
+def make_draft(world):
+    path = world.proj / DRAFT_REL
+    write(path, DRAFT_TEXT)
+    write(world.proj / "链接.md", "见 [[预热想法|草稿]]\n")
+    for made in (path, world.proj / "链接.md"):
+        set_mtime(made, 3600)
+    return path
+
+
+def adopt_post(world, path, **extra):
+    body = {
+        "note": f"10 Projects/Demo/{DRAFT_REL}",
+        "id": "PLAN-901",
+        "expectedSha256": sha(path),
+        **extra,
+    }
+    return post(world, "/plans/adopt", body)
+
+
+def draft_todos(world):
+    todos = world.client.get(f"{P}/todos", params={"kind": "plan-draft-unadopted"})
+    return todos.json()["data"]["todos"]
+
+
+def test_adopt_needs_the_token_origin_and_a_local_host(world):
+    path = make_draft(world)
+    before = snapshot_tree(world.root)
+    body = {"note": DRAFT_REL, "id": "PLAN-901", "expectedSha256": sha(path)}
+    for token in (False, "wrong", ""):
+        error_of(post(world, "/plans/adopt", body, token=token), 403, "FORBIDDEN_TOKEN")
+    evil = post(world, "/plans/adopt", body, headers={"Origin": "http://evil"})
+    error_of(evil, 403, "FORBIDDEN_ORIGIN")
+    rebinding = TestClient(world.app, base_url="http://evil.example:8812")
+    response = rebinding.post(
+        f"{P}/plans/adopt", json=body, headers={"X-Expnote-Token": world.token}
+    )
+    error_of(response, 403, "FORBIDDEN_ORIGIN")
+    assert snapshot_tree(world.root) == before and new_audit(world) == []
+    dry = {**body, "dryRun": True}
+    local = post(world, "/plans/adopt", dry, headers={"Origin": BASE})
+    assert local.status_code == 200
+
+
+def test_adopt_validates_its_input(world):
+    path = make_draft(world)
+    before = snapshot_tree(world.root)
+    good = {"note": DRAFT_REL, "id": "PLAN-901", "expectedSha256": sha(path)}
+    error_of(post(world, "/plans/adopt", {**good, "id": None}), 422, "USAGE_BAD_VALUE")
+    error_of(post(world, "/plans/adopt", {**good, "note": 5}), 422, "USAGE_BAD_VALUE")
+    error_of(post(world, "/plans/adopt", {**good, "title": 5}), 422, "USAGE_BAD_VALUE")
+    no_sha = {k: v for k, v in good.items() if k != "expectedSha256"}
+    error_of(post(world, "/plans/adopt", no_sha), 422, "USAGE_MISSING_OPTION")
+    error_of(post(world, "/plans/adopt", {**good, "id": "x"}), 422, "USAGE_BAD_ID")
+    taken = {**good, "id": "PLAN-900A"}
+    error_of(post(world, "/plans/adopt", taken), 409, "ID_EXISTS")
+    error_of(post(world, "/plans/adopt", {**good, "note": "nope"}), 404, "NOT_FOUND")
+    stale = {**good, "expectedSha256": "0" * 64}
+    error_of(post(world, "/plans/adopt", stale), 409, "CAS_MISMATCH")
+    assert snapshot_tree(world.root) == before and new_audit(world) == []
+
+
+def test_adopt_previews_then_writes_as_the_gui(world):
+    path = make_draft(world)
+    [item] = draft_todos(world)
+    assert item["sha256"] == sha(path) and item["suggestedId"] == "PLAN-901"
+    assert item["path"] == f"10 Projects/Demo/{DRAFT_REL}"
+    before = snapshot_tree(world.root)
+    dry = adopt_post(world, path, dryRun=True, title="预热")
+    assert dry.status_code == 200, dry.text
+    data = dry.json()["data"]
+    assert data["dryRun"] is True and data["moved"] is True
+    assert [c["op"] for c in data["changes"]] == ["adopt", "retarget-links", "rename"]
+    assert data["missingSections"][0] == "1. Question"
+    assert snapshot_tree(world.root) == before and new_audit(world) == []
+    done = adopt_post(world, path, title="预热")
+    assert done.status_code == 200, done.text
+    target = world.proj / "plans/PLAN-901--预热.md"
+    assert target.exists() and not path.exists()
+    assert read(target).endswith(DRAFT_TEXT)
+    assert read(world.proj / "链接.md") == "见 [[PLAN-901--预热|草稿]]\n"
+    records = new_audit(world)
+    assert {r["payload"]["actor"] for r in records} == {"gui"}
+    assert {r["payload"]["command"] for r in records} == {"plan adopt"}
+    ops = {r["payload"]["op"] for r in records}
+    assert ops == {"adopt", "retarget-links", "rename"}
+    assert draft_todos(world) == []
+    plans = world.client.get(f"{P}/plans").json()["data"]["plans"]
+    assert "PLAN-901" in [p["id"] for p in plans]
+    again = post(
+        world,
+        "/plans/adopt",
+        {"note": "PLAN-901--预热", "id": "PLAN-901", "expectedSha256": sha(target)},
+    )
+    assert again.status_code == 200 and again.json()["data"]["alreadyStandard"] is True

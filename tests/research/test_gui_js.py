@@ -39,6 +39,8 @@ def server(world):  # noqa: F811
         '---\nschema: 3\ntype: plan\nid: PLAN-900C\ntitle: "PLAN-900C"\n'
         "status: draft\n---\n# 开放计划\n",
     )
+    write(proj / "plans/想法草稿.md", "# 想法草稿\n\n一段想法。\n")
+    set_mtime(proj / "plans/想法草稿.md", 3600)
     long_content = "子协议 B 逐位相同：" + "窗口小于 horizon，" * 20 + "结尾"
     register = proj / "ops/偏离登记.md"
     register.write_text(

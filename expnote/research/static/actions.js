@@ -1,4 +1,4 @@
-// The GUI write actions of design 7.2: approve/reject a proposed decision, close a plan, close a deviation, save EV labels, add and tick TODOs.
+// The GUI write actions: approve/reject a proposed decision, close a plan, adopt a draft as a plan, close a deviation, save EV labels, add and tick TODOs.
 // Every change is previewed first (the server's dry-run diff) and applied only from an explicit click.
 // Text from the vault or the user only ever goes through text nodes here.
 import { nav } from "/research/nav.js";
@@ -112,6 +112,9 @@ function countdown(box, button, ms) {
 // ---- the diff -----------------------------------------------------------------------------------
 
 function diffBlock(change) {
+  if (change.op === "rename") {
+    return h("div", { class: "diff-file" }, h("p", { class: "small" }, "Moves ", h("code", null, String(change.address || "").replace(/^from:/, "")), " to ", h("code", { class: "diff-path" }, change.path)));
+  }
   const lines = String(change.unifiedDiff || "").split("\n");
   const shown = lines.filter((line) => !line.startsWith("--- ") && !line.startsWith("+++ "));
   const pre = h(
@@ -124,8 +127,8 @@ function diffBlock(change) {
 
 // ---- confirm panel: dry-run diff, then Apply / Cancel ----------------------------------------------
 
-// `send(dryRun)` posts the action. `success(data)` names the result for the toast.
-export function openConfirm(slot, { title, send, success, onApplied = refresh, onClose = () => {} }) {
+// `send(dryRun)` posts the action. `success(data)` names the result for the toast. `details(data)` may add nodes under the diffs.
+export function openConfirm(slot, { title, send, success, details = null, onApplied = refresh, onClose = () => {} }) {
   const body = h("div", { class: "confirm-body" });
   const applyButton = h("button", { type: "button", class: "btn primary", disabled: true }, "Apply");
   const cancelButton = h("button", { type: "button", class: "btn" }, "Cancel");
@@ -154,6 +157,7 @@ export function openConfirm(slot, { title, send, success, onApplied = refresh, o
         cancelButton.textContent = "Close";
       } else {
         append(body, changes.map(diffBlock));
+        if (details) append(body, [details(envelope.data)]);
         applyButton.removeAttribute("disabled");
       }
       for (const w of envelope.warnings || []) body.append(h("p", { class: "muted small" }, `${w.code}: ${w.message}`));
@@ -578,4 +582,69 @@ export function deviationCloseAction(ctx, deviation) {
     if (disposition.focus) disposition.focus();
   };
   return h("div", { class: "deviation-close" }, h("button", { type: "button", class: "btn primary", onclick: open }, icon("check"), "Close deviation"), slot);
+}
+
+// ---- adopt a draft as a plan -------------------------------------------------------------------------------------
+
+// What the server says an adoption would do besides the diffs: the move, the links that follow, the template sections the draft lacks.
+function adoptSummary(data) {
+  if (data.alreadyStandard && !data.moved) return h("p", { class: "muted" }, `${data.path} already is the plan ${data.id}.`);
+  const missing = data.missingSections || [];
+  return h(
+    "div",
+    { class: "adopt-summary" },
+    data.linkEdits ? h("p", { class: "small" }, `${data.linkEdits} link${data.linkEdits === 1 ? "" : "s"} in ${data.linkFiles} note${data.linkFiles === 1 ? "" : "s"} will follow the new name.`) : null,
+    h("p", { class: "small" }, "The text of the note is not changed."),
+    missing.length ? h("div", { class: "block" }, h("h3", null, "Sections the plan template has and your draft lacks"), h("ul", { class: "gate-list" }, missing.map((name) => h("li", null, name)))) : h("p", { class: "ok-line" }, icon("check"), " The draft has every section of the plan template."),
+  );
+}
+
+// "Adopt as plan" for a `plan-draft-unadopted` TODO: id and title, then the server's dry run, then Apply.
+export function planAdoptAction(ctx, t) {
+  if (t.kind !== "plan-draft-unadopted" || !t.path || !t.sha256) return null;
+  const slot = h("div", { class: "confirm-slot" });
+  const url = `${projectPath(ctx.project)}/plans/adopt`;
+  const open = () => {
+    const planId = h("input", { type: "text", name: "id", value: t.suggestedId || "", "aria-label": "Plan id", placeholder: "Plan id", maxlength: "80", autocomplete: "off" });
+    const title = h("input", { type: "text", name: "title", value: t.suggestedTitle || "", "aria-label": "Plan title", maxlength: "200", autocomplete: "off" });
+    const review = h("button", { type: "button", class: "btn primary" }, "Review change");
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const confirmSlot = h("div", { class: "confirm-slot" });
+    const typed = (input) => (input.value ?? input.getAttribute("value") ?? "").trim();
+    const lock = (locked) => {
+      for (const control of [planId, title, review]) (locked ? control.setAttribute("disabled", "") : control.removeAttribute("disabled"));
+    };
+    review.addEventListener("click", () => {
+      lock(true);
+      openConfirm(confirmSlot, {
+        title: `Adopt ${t.stem} as a plan`,
+        send: (dryRun) => ctx.post(url, { note: t.path, id: typed(planId), title: typed(title) || undefined, expectedSha256: t.sha256, dryRun }),
+        success: (result) => `${result.id} adopted`,
+        details: adoptSummary,
+        onClose: () => {
+          lock(false);
+          if (planId.focus) planId.focus();
+        },
+      });
+    });
+    cancel.addEventListener("click", () => clear(slot));
+    const panel = h(
+      "section",
+      { class: "confirm-panel", role: "group", "aria-label": `Adopt ${t.stem} as a plan` },
+      h("h3", null, `Adopt ${t.stem} as a plan`),
+      h("label", { class: "field" }, h("span", null, "Plan id"), planId),
+      h("label", { class: "field" }, h("span", null, "Title"), title),
+      h("div", { class: "confirm-buttons" }, review, cancel),
+      confirmSlot,
+    );
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        clear(slot);
+      }
+    });
+    clear(slot).append(panel);
+    if (planId.focus) planId.focus();
+  };
+  return h("div", { class: "plan-adopt" }, h("button", { type: "button", class: "btn primary", onclick: open }, icon("check"), "Adopt as plan"), slot);
 }

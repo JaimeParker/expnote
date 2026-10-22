@@ -34,8 +34,8 @@ RESEARCH_GUIDE = {
         "through commands",
         "Never invent a user decision: confirmations need the user's own words "
         "(--authorization) or a click in the GUI",
-        "The GUI writes only: approve/reject a decision, close a plan, save EV "
-        "labels, add/tick a TODO, close a deviation",
+        "The GUI writes only: approve/reject a decision, close a plan, adopt a "
+        "draft as a plan, save EV labels, add/tick a TODO, close a deviation",
     ],
     "essentialCommands": [
         _step("expnote next --json", "what is actionable now, with exact commands"),
@@ -92,6 +92,14 @@ RESEARCH_GUIDE = {
             _step(
                 'expnote new plan --id <PLAN_ID> --title "<TITLE>" --apply',
                 "then write the body",
+                available=True,
+            ),
+            _step(
+                "expnote plan adopt <NOTE> --id <PLAN_ID> --apply",
+                "alternative: start from your own draft note; completes its "
+                "frontmatter, moves it to the plans folder under the plan name, "
+                "follows the links and never edits the body (dry-run first; "
+                "`expnote plan next-id` gives a free id)",
                 available=True,
             ),
             _step(
@@ -192,6 +200,7 @@ RESEARCH_GUIDE = {
         "sync-conflict-file",
         "stale-running-runs",
         "ev-unmapped",
+        "plan-draft-unadopted",
     ],
     "exitCodes": EXIT_CODES,
     "availability": "every writing command is a dry-run until --apply (exit 4 "

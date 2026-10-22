@@ -733,7 +733,7 @@ a.hit-title:hover { color: var(--accent); }
 .todo-detail .block { margin-top: 14px; }
 .todo-detail .todo-actions { margin: 14px 0 0; }
 .todo-detail .todo-actions .btn { text-decoration: none; }
-.todo-detail .deviation-close { width: 100%; }
+.todo-detail .deviation-close, .todo-detail .plan-adopt { width: 100%; }
 .todo-detail .todo-decision h3 { overflow-wrap: anywhere; }
 .deviation-row .kv dd > .prose { flex: 1 1 100%; min-width: 0; }
 .deviation-row .kv dd > .prose > :first-child { margin-top: 0; }

@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from expnote.research import entities
+from expnote.research import adopt, entities
 from expnote.research.bundle import (
     DEFAULT_MAX_BYTES,
     SECTIONS,
@@ -56,7 +56,7 @@ CursorOption = Annotated[
     str | None, typer.Option("--cursor", help="Continue from meta.nextCursor.")
 ]
 
-plan_app = typer.Typer(help="Plans: list, show, bundle, advance.")
+plan_app = typer.Typer(help="Plans: list, show, bundle, advance, adopt, next-id.")
 decision_app = typer.Typer(help="Decisions: list, show, new, set.")
 exec_app = typer.Typer(help="Exec-plans: list, show, freeze, advance.")
 ev_app = typer.Typer(help="Evidence pages: list, label, split.")
@@ -250,6 +250,30 @@ def plan_list(
         limit=limit,
         cursor=cursor,
     )
+
+
+@plan_app.command("next-id")
+def plan_next_id(
+    project: ProjectOption = None,
+    no_refresh: NoRefreshOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """The next free plan id (rule in the output; `id` is null if none fits)."""
+
+    def build(view: ProjectView) -> dict:
+        return {"id": adopt.next_plan_id(view), "rule": adopt.NEXT_ID_RULE}
+
+    def action() -> CommandResult:
+        with open_view(project, refresh=not no_refresh) as view:
+            return CommandResult(build(view), meta=view.meta())
+
+    def render(data: dict) -> str:
+        return data["id"] or (
+            "no id to suggest: there is no plan to continue from, or the next id "
+            "would not fit ids.plan_regex"
+        )
+
+    run_command("plan next-id", as_json, action, render)
 
 
 @plan_app.command("show")

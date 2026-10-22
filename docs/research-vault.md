@@ -292,6 +292,50 @@ Other schedules, other model sizes.
 EOF
 ```
 
+**Start from your own draft.** If you already wrote the idea as a plain note, you do
+not have to retype it. `plan adopt` turns it into a standard plan and leaves your
+text alone:
+
+```bash
+expnote plan next-id                                           # a free id, e.g. PLAN-002
+expnote plan adopt "plans/my draft.md" --id PLAN-002           # dry-run (exit 4)
+expnote plan adopt "plans/my draft.md" --id PLAN-002 --apply
+```
+
+`NOTE` is a path (relative to the vault or to the project folder) or the note's name.
+The command
+
+- completes the frontmatter: it sets `schema: 3`, `type: plan`, `id` and `title`
+  (`--title`, else the draft's `title`, else its first `#` heading, else the file
+  name), keeps every other key and value, and adds the keys the plan template has
+  and the draft lacks (`created`, `owner`, ...). A `status` that is not a plan status
+  becomes `draft`, and the old value is kept as `legacy_status`;
+- never edits the body. It lists the template's section headings the draft does not
+  have (`missingSections`, numbering ignored) so you can add them by hand;
+- moves the note into the plans folder under the `names.plan` pattern and rewrites the
+  wikilinks that point at it everywhere in the vault (`[[draft]]`,
+  `[[draft|alias]]`, `[[draft#heading]]`, embeds, frontmatter links);
+- is one audited write (compare-and-swap on every file, quiet window, journal), like
+  any other write command.
+
+It refuses an id that does not match `ids.plan_regex` (exit 2), an id another plan
+already has or a target name that is taken (exit 5), and a note whose `type` is
+something other than `plan`. A note that already is the plan with that id and sits at
+its target path is a no-op (exit 0). One that has the id but sits elsewhere gets only
+the remaining move and link rewrite, so running the same command again finishes an
+adopt that stopped halfway (the frontmatter was written, the rename failed). `plan next-id` takes the most common id prefix, its highest number plus one,
+zero-padded like the existing ids. When the project has no plan yet (choose the first
+id yourself) or the result would not match `ids.plan_regex`, `id` is `null` in
+`--json` and a short explanation is printed otherwise.
+
+Notes in the plans folder that are not standard plans show up as the TODO
+`plan-draft-unadopted` (archive and template folders and `scan.ignore_globs` are
+skipped, so list an index note there if you keep one). A plan that already is
+standard is never flagged, even when its file name differs from `names.plan`; the
+move of an interrupted adopt is finished by repeating the command. In the GUI, its detail pane has
+"Adopt as plan": an id (the next free one) and a title, a preview of the change
+(including the missing sections), then Apply.
+
 ### 5.2 Decision, approval, advance
 
 ```bash
@@ -587,7 +631,8 @@ expnote plan close PLAN-002 --reason "Dropped: out of scope for this study." --f
 `expnote todo list` merges *derived* items, computed from the state of the notes and
 never stored (a decision waiting for approval, unlabelled evidence, an open
 deviation, a result waiting for confirmation, a decision review date that has come,
-sync-conflict files, runs stuck in `running`, ...), with *manual* ones in the TODO
+a draft in the plans folder that is not a plan yet, sync-conflict files, runs stuck in
+`running`, ...), with *manual* ones in the TODO
 note. Items are split by owner, the user's first. `expnote next` prints the same
 queue with the exact command for each step.
 
@@ -782,5 +827,6 @@ every hygiene check and `INFO` for the rest. Open `expnote web` and go to
 `/research/#/p/demo`: the Overview shows plans and their decisions on a
 timeline, what waits on you, the agent queue, recent runs and the latest decisions;
 the other tabs are Decisions, Evidence, TODOs, Search and Health. The GUI writes
-only: approve or reject a decision, close a plan, save evidence labels, add or tick
-a TODO, close a deviation. Everything else is read-only, so the vault stays yours.
+only: approve or reject a decision, close a plan, adopt a draft as a plan, save
+evidence labels, add or tick a TODO, close a deviation. Everything else is read-only,
+so the vault stays yours.

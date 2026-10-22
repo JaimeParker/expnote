@@ -52,11 +52,18 @@ def render_write(data: dict) -> str:
         lines.append(f"{change['op']}  {change['path']}  [{change['address']}]")
         if change.get("unifiedDiff"):
             lines.append(change["unifiedDiff"])
+    if data.get("missingSections"):
+        lines.append(
+            "sections the template has and the draft lacks (not added): "
+            + "; ".join(data["missingSections"])
+        )
     if data.get("dryRun"):
         lines.append("dry-run: nothing was written. To apply, run:")
         lines.append(f"  {data.get('confirmCommand')}")
     elif data.get("applied"):
         lines.append(f"applied {len(data['changes'])} change(s)")
+    elif data.get("alreadyStandard"):
+        lines.append(f"{data['path']} is already the plan {data['id']}: nothing to do")
     else:
         lines.append("no changes needed")
     return "\n".join(lines)

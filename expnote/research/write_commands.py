@@ -15,7 +15,7 @@ from typing import Annotated
 
 import typer
 
-from expnote.research import entities, newnote, split, writes
+from expnote.research import adopt, entities, newnote, split, writes
 from expnote.research.cliutil import confirm_command, render_write
 from expnote.research.commands import (
     NoRefreshOption,
@@ -488,6 +488,43 @@ def plan_close(
             reason=reason,
             force=force,
             authorization=authorization,
+            expected_sha256=expected_sha256,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
+@plan_app.command("adopt")
+def plan_adopt(
+    note: Annotated[
+        str,
+        typer.Argument(
+            metavar="NOTE",
+            help="Path (vault- or project-relative) or name of the draft.",
+        ),
+    ],
+    plan_id: Annotated[str, typer.Option("--id", help="Plan id (see plan next-id).")],
+    title: Annotated[
+        str | None,
+        typer.Option("--title", help="Default: the note's title, first H1 or name."),
+    ] = None,
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Make a hand-written draft a standard plan: frontmatter, name, links."""
+    run_write(
+        "plan adopt",
+        lambda view: adopt.plan_plan_adopt(
+            view,
+            note,
+            plan_id=plan_id,
+            title=title,
             expected_sha256=expected_sha256,
         ),
         project=project,

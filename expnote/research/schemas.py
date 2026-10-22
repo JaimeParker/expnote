@@ -135,6 +135,7 @@ def _v3_tables() -> dict[str, dict[str, Field]]:
     plan["approved_decision"] = decision_id
     plan["closed_decision"] = decision_id
     plan["superseded_by"] = Field("link", False, "coordinator")
+    plan["legacy_status"] = Field("str", False, "migration")
     tables["exec-plan"]["rules_decision"] = decision_id
     tables["evidence"]["legacy_status"] = Field("str", False, "migration")
     result = tables["result"]

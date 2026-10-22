@@ -192,7 +192,7 @@ for (const t of todoList) {
   const bare = t.kind === "deviation-open" ? t.ref : t.message;
   check(`TODO ${t.kind} ${t.ref}: pane names owner, kind, level and the message`, text.includes(bare) && text.includes(t.kind) && text.includes(t.owner) && (t.source === "manual" || text.includes(t.severity)), text.slice(0, 200));
   check(`TODO ${t.kind} ${t.ref}: the command is copyable`, !t.command || (pane().byClass("command").length === 1 && pane().byClass("command")[0].textContent.includes(t.command) && pane().byClass("command")[0].byTag("button").length === 1));
-  const actionable = t.kind === "deviation-open" || t.source === "manual" || t.kind === "ev-unlabelled";
+  const actionable = t.kind === "deviation-open" || t.source === "manual" || t.kind === "ev-unlabelled" || t.kind === "plan-draft-unadopted";
   check(`TODO ${t.kind} ${t.ref}: no action bar unless there is an action`, actionable || pane().byClass("todo-actions").length === 0);
   const row = main.byClass("todo").find((r) => r.getAttribute("data-id") === t.id);
   const rowLink = row && row.byClass("row-link")[0];
@@ -250,6 +250,41 @@ if (longDeviation) {
   const closed = (await api(`${P}/deviations/${enc(longDeviation.ref)}`)).data.deviation;
   check("applying closes the deviation through the write endpoint", closed.status === "closed" && closed.disposition.includes("已处理"), JSON.stringify(closed));
   check("the page refreshes to say the TODO is gone", main.textContent.includes("This TODO is gone"), main.textContent.slice(0, 200));
+}
+const draftTodo = todoList.find((t) => t.kind === "plan-draft-unadopted");
+check("an unadopted-draft TODO exists", draftTodo);
+if (draftTodo) {
+  await go(selHash(draftTodo));
+  await afterFetch();
+  const adoptButton = buttonLike(pane(), "Adopt as plan");
+  check("draft TODO offers Adopt as plan and a link to the note", adoptButton && pane().byTag("a").some((a) => (a.getAttribute("href") || "").includes(enc(draftTodo.stem))));
+  check("the next free id travels with the TODO", /^[A-Za-z]+-\d+$/.test(draftTodo.suggestedId || "") && draftTodo.suggestedTitle, JSON.stringify(draftTodo));
+  adoptButton.dispatch("click");
+  const field = (name) => pane().byTag("input").find((i) => i.getAttribute("name") === name);
+  const read = (input) => input.value ?? input.getAttribute("value");
+  check("the dialog prefills the id and the title", field("id") && read(field("id")) === draftTodo.suggestedId && read(field("title")) === draftTodo.suggestedTitle, pane().textContent);
+  field("id").value = "PLAN-950";
+  field("title").value = "草稿 <b>x</b>";
+  buttonLike(pane(), "Review change").dispatch("click");
+  await afterFetch();
+  const adoptDiff = pane().byClass("diff").map((n) => n.textContent).join("\n");
+  check("the dry run shows the new frontmatter as text", adoptDiff.includes('+id: "PLAN-950"') && adoptDiff.includes("草稿 <b>x</b>") && pane().byTag("b").length === 0, adoptDiff);
+  check("the dry run names the move", pane().textContent.includes("Moves") && pane().textContent.includes("PLAN-950--"), pane().textContent);
+  check("the dry run lists the template sections the draft lacks", pane().textContent.includes("Sections the plan template has") && pane().textContent.includes("3. What to test"), pane().textContent);
+  check("the dry run changed nothing", (await api(`${P}/plans`)).data.plans.every((p) => p.id !== "PLAN-950"));
+  buttonLike(pane().byClass("confirm-panel")[1], "Cancel").dispatch("click");
+  check("Cancel leaves the dialog editable", !field("id").hasAttribute("disabled"));
+  buttonLike(pane(), "Review change").dispatch("click");
+  await afterFetch();
+  const adoptApply = buttonLike(pane().byClass("confirm-panel")[1], "Apply");
+  check("Apply is offered after the review", adoptApply && !adoptApply.hasAttribute("disabled"));
+  adoptApply.dispatch("click");
+  await afterFetch();
+  await new Promise((r) => setTimeout(r, 100));
+  const adopted = (await api(`${P}/plans`)).data.plans.find((p) => p.id === "PLAN-950");
+  check("applying adopts the draft through the write endpoint", adopted && adopted.title === "草稿 <b>x</b>", JSON.stringify(adopted));
+  const left = (await api(`${P}/todos`)).data.todos.filter((t) => t.kind === "plan-draft-unadopted");
+  check("the draft TODO is gone afterwards", left.length === 0, JSON.stringify(left));
 }
 const proposedTodo = todoList.find((t) => t.kind === "decision-proposed");
 check("a proposed-decision TODO exists", proposedTodo);

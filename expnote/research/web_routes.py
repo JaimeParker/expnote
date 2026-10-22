@@ -1,8 +1,8 @@
 """HTTP surface of the research layer (GUI pages and `/api/research`).
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
-GET except the seven GUI writes of design section 7.2 (decision approve/reject, plan
-close, EV labels, TODO add/tick, deviation close); those need the per-process token
+GET except the eight GUI writes (decision approve/reject, plan close, plan adopt, EV
+labels, TODO add/tick, deviation close); those need the per-process token
 and a loopback Origin/Host, and go through `writes.py` and `writeback.py` with actor
 `gui`. Responses carry the research CSP.
 """
@@ -32,7 +32,7 @@ from fastapi.responses import (
     Response,
 )
 
-from expnote.research import entities, writes
+from expnote.research import adopt, entities, writes
 from expnote.research.bundle import (
     build_bundle,
     byte_size,
@@ -625,7 +625,7 @@ def build_router(service: ResearchService) -> APIRouter:
         except ResearchError as error:
             return _failure("image", error)
 
-    # ---- GUI writes (design section 7.2: exactly these seven) ----------------------
+    # ---- GUI writes (exactly these eight) ------------------------------------------
 
     async def gui_write(
         request: Request,
@@ -675,6 +675,10 @@ def build_router(service: ResearchService) -> APIRouter:
         return await gui_write(
             request, project_id, "plan close", _plan_close_builder(plan_id)
         )
+
+    @router.post(f"{api}/projects/{{project_id}}/plans/adopt")
+    async def plan_adopt(project_id: str, request: Request):
+        return await gui_write(request, project_id, "plan adopt", _plan_adopt_builder)
 
     @router.post(f"{api}/projects/{{project_id}}/deviations/{{ident}}/close")
     async def deviation_close(project_id: str, ident: str, request: Request):
@@ -785,6 +789,16 @@ def _plan_close_builder(plan_id: str):
         )
 
     return build
+
+
+def _plan_adopt_builder(view: ProjectView, body: dict) -> writes.WritePlan:
+    return adopt.plan_plan_adopt(
+        view,
+        _text(body, "note", required=True) or "",
+        plan_id=_text(body, "id", required=True) or "",
+        title=_text(body, "title") or None,
+        expected_sha256=_expected_sha(body),
+    )
 
 
 def _deviation_close_builder(ident: str):

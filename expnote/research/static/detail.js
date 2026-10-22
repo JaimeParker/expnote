@@ -1,5 +1,5 @@
 // Renderers shared by full pages and master-detail previews: decisions, evidence, TODOs, notes.
-import { decisionActions, deviationCloseAction, evLabelEditor, todoDoneButton, todoTick } from "/research/actions.js";
+import { decisionActions, deviationCloseAction, evLabelEditor, planAdoptAction, todoDoneButton, todoTick } from "/research/actions.js";
 import {
   chip,
   commandBlock,
@@ -299,6 +299,7 @@ const KIND_TEXT = {
   "res-awaiting-confirmation": ["result awaits confirmation", "results await confirmation"],
   "stale-running-runs": ["run looks stale", "runs look stale"],
   "sync-conflict-file": ["sync conflict file", "sync conflict files"],
+  "plan-draft-unadopted": ["draft in the plans folder is not a plan yet", "drafts in the plans folder are not plans yet"],
   manual: ["manual item", "manual items"],
 };
 
@@ -386,7 +387,7 @@ function aboutPairs(ctx, t, skipReference) {
 export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h1" } = {}) {
   const { deviation = null, decisions = [] } = extras;
   const title = deviation ? `Deviation ${deviation.id} is ${deviation.status}` : t.message;
-  const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, todoDoneButton(ctx, t, manualSha)].filter(Boolean);
+  const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, planAdoptAction(ctx, t), todoDoneButton(ctx, t, manualSha)].filter(Boolean);
   const evLink = t.kind === "ev-unlabelled" ? h("a", { class: "btn primary", href: route.ev(ctx.project, t.ref) }, "Open the label editor", icon("chevron")) : null;
   return h(
     "article",

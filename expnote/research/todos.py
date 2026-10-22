@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shlex
 
+from expnote.research import adopt
 from expnote.research.entities import (
     decision_id,
     decision_plans,
@@ -430,6 +432,30 @@ class _Derive:
             for (rel,) in rows
         ]
 
+    def unadopted_plan_drafts(self) -> list[dict]:
+        drafts = adopt.unadopted_plan_drafts(self.view)
+        if not drafts:
+            return []
+        next_id = adopt.next_plan_id(self.view)
+        return [
+            _item(
+                "plan-draft-unadopted",
+                "user",
+                "info",
+                note.rel,
+                f"{note.rel} sits in the plans folder but is not a standard plan",
+                "adopt it as a plan: pick an id; the note keeps its text",
+                command=f"expnote plan adopt {shlex.quote(note.rel)} "
+                f"--id {next_id or '<PLAN_ID>'} --apply" + self.flag,
+                stem=note.stem,
+                path=self.view.vault_rel(note),
+                sha256=self.view.file_sha256(note.rel),
+                suggestedId=next_id,
+                suggestedTitle=adopt.suggested_title(self.view, note),
+            )
+            for note in drafts
+        ]
+
     def stale_runs(self) -> tuple[list[dict], list[dict]]:
         names = linked_workspaces(self.view.context)
         stale, problems = (
@@ -472,6 +498,7 @@ def derived_todos(
         *derive.open_deviations(),
         *derive.reviews_due(),
         *derive.conflict_files(),
+        *derive.unadopted_plan_drafts(),
     ]
     warnings: list[dict] = []
     if include_runs:

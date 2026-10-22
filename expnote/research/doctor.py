@@ -491,7 +491,8 @@ def _untyped_plans_check(profile, prefix: str, plan_rows) -> Check:
         odd,
         "every note with type: plan has a plan id",
         "note(s) with type: plan but no plan id (left out of `plan list`)",
-        "give them a plan id, or change their type",
+        "give them a plan id (`expnote plan adopt <note> --id <PLAN_ID>`), or "
+        "change their type",
     )
 
 
