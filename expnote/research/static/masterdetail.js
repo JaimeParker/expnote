@@ -74,6 +74,15 @@ export function masterDetail({ load, fullHref, hashFor, hint }) {
     rows.set(id, row);
     row.setAttribute("data-id", id);
     if (id === current) row.setAttribute("aria-current", "true");
+    // Enter on a focused row link selects that row; once it is selected, Enter falls through to "open the page".
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || id === current || !isMaster()) return;
+      const onLink = event.target.closest && event.target.closest(".row-link");
+      if (!onLink) return;
+      event.preventDefault();
+      event.stopPropagation();
+      select(id, { push: true });
+    });
     row.addEventListener("click", (event) => {
       if (!isMaster() || event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
       const inner = event.target.closest ? event.target.closest("a, button, input, label, select, textarea") : null;

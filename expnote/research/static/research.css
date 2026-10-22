@@ -718,10 +718,24 @@ a.hit-title:hover { color: var(--accent); }
 }
 
 /* ---- close plan dialog and decision history ---------------------------------------------------------------- */
-.plan-close .reason-label { display: grid; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 0.9em; }
-.plan-close .reason-input {
+.plan-close .reason-label, .deviation-close .reason-label { display: grid; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 0.9em; }
+.plan-close .reason-input, .deviation-close .reason-input {
   width: 100%; font: inherit; color: var(--ink); background: var(--panel);
   border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 8px; resize: vertical;
 }
 .history-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
 .history-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+
+/* ---- TODO detail: the whole item, its entity, its actions ---------------------------------------------------- */
+.md-list .todo { cursor: pointer; }
+.md-list .todo:hover { background: color-mix(in srgb, var(--rule) 25%, transparent); }
+.md-list .todo:focus-within { background: var(--tint); }
+.todo-detail .block { margin-top: 14px; }
+.todo-detail .todo-actions { margin: 14px 0 0; }
+.todo-detail .todo-actions .btn { text-decoration: none; }
+.todo-detail .deviation-close { width: 100%; }
+.todo-detail .todo-decision h3 { overflow-wrap: anywhere; }
+.deviation-row .kv dd > .prose { flex: 1 1 100%; min-width: 0; }
+.deviation-row .kv dd > .prose > :first-child { margin-top: 0; }
+.deviation-row .kv dd > .prose > :last-child { margin-bottom: 0; }
+.copy-word { font-size: 12.5px; }

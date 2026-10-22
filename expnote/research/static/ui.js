@@ -88,6 +88,7 @@ export const route = {
   evList: (p, query) => `#/p/${enc(p)}/ev${qs(query)}`,
   ev: (p, stem) => `#/p/${enc(p)}/ev/${enc(stem)}`,
   todos: (p, query) => `#/p/${enc(p)}/todos${qs(query)}`,
+  todo: (p, id) => `#/p/${enc(p)}/todo/${enc(id)}`,
   search: (p, query) => `#/p/${enc(p)}/search${qs(query)}`,
   note: (p, stem) => `#/p/${enc(p)}/note/${enc(stem)}`,
   health: (p) => `#/p/${enc(p)}/health`,
@@ -306,22 +307,48 @@ export function prose(html, className = "") {
   return box;
 }
 
-export function copyButton(text, label = "Copy") {
-  const button = h("button", { type: "button", class: "btn small ghost", title: label, "aria-label": label }, icon("copy"));
+// Select a node's text so Ctrl+C works when the clipboard API is unavailable.
+function selectContents(node) {
+  try {
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || !document.createRange) return false;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Copies `text`. `fallback` is the node to select when the clipboard API refuses; `word` shows a visible label.
+export function copyButton(text, label = "Copy", { fallback = null, word = null } = {}) {
+  const caption = word ? h("span", { class: "copy-word" }, word) : null;
+  const button = h("button", { type: "button", class: "btn small ghost", title: label, "aria-label": label }, icon("copy"), caption);
+  const settle = (done, failed) => {
+    if (caption) caption.textContent = done ? "Copied" : failed ? "Press Ctrl+C" : word;
+    if (done) button.setAttribute("data-done", "true");
+    setTimeout(() => {
+      button.removeAttribute("data-done");
+      if (caption) caption.textContent = word;
+    }, done ? 1200 : 4000);
+  };
   button.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(text);
-      button.setAttribute("data-done", "true");
-      setTimeout(() => button.removeAttribute("data-done"), 1200);
+      settle(true, false);
     } catch {
-      /* clipboard unavailable: the command stays selectable */
+      /* clipboard unavailable: select the text instead so Ctrl+C works */
+      settle(false, Boolean(fallback && selectContents(fallback)));
     }
   });
   return button;
 }
 
 export function commandBlock(text) {
-  return h("div", { class: "command" }, h("code", null, text), copyButton(text, "Copy command"));
+  const code = h("code", null, text);
+  return h("div", { class: "command" }, code, copyButton(text, "Copy command", { fallback: code, word: "Copy" }));
 }
 
 // ---- small formatters ---------------------------------------------------------------------

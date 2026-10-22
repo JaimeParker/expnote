@@ -157,6 +157,7 @@ class _Derive:
                     f"draft plan {plan_id} waits for a decision: {ids}",
                     "decide the proposed decision(s)",
                     plan=plan_id,
+                    decisions=[self.decision_id(d) for d in waiting],
                 )
             )
         if not page.get("approved_decision"):
@@ -200,6 +201,8 @@ class _Derive:
                         f"rules of {exec_id} wait for the user ({did})",
                         "decide the rules decision",
                         plan=plan_id,
+                        decision=did,
+                        stem=member.stem,
                     )
                 )
             elif decision.status == "confirmed":
@@ -214,6 +217,7 @@ class _Derive:
                         plan=plan_id,
                         role="rules",
                         decision=did,
+                        stem=member.stem,
                         command=f"expnote exec freeze {exec_id} "
                         f"--rules-decision {did} --apply" + self.flag,
                     )
@@ -244,6 +248,8 @@ class _Derive:
                         f"result {res_id} waits for the user ({did})",
                         "decide the confirming decision",
                         plan=plan_id,
+                        decision=did,
+                        stem=member.stem,
                     )
                 )
             elif decision.status == "confirmed" and not is_legacy(self.view, member):
@@ -258,6 +264,7 @@ class _Derive:
                         plan=plan_id,
                         role="result",
                         decision=did,
+                        stem=member.stem,
                         command=(
                             f"expnote res confirm {res_id} --decision {did} "
                             f"{IMPACT_CHOICES} --apply{self.flag}"

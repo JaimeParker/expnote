@@ -94,6 +94,7 @@ def test_decision_proposed_and_awaiting_approval(vault):
     )
     awaiting = found[("plan-awaiting-approval", "PLAN-900C")]
     assert awaiting["owner"] == "user" and "O2O-DEC-0125" in awaiting["message"]
+    assert awaiting["decisions"] == ["O2O-DEC-0125"]  # the GUI offers them inline
 
 
 def test_ev_unlabelled_and_ev_unmapped(vault):
@@ -127,8 +128,14 @@ def test_exec_rules_unconfirmed_and_res_awaiting_confirmation(vault):
         targets=["[[RES--PLAN-900C 判读]]"],
     )  # fmt: skip
     found = kinds()
-    assert found[("exec-rules-unconfirmed", "PLAN-900C-S1")]["owner"] == "user"
-    assert found[("res-awaiting-confirmation", "RES-PLAN-900C")]["plan"] == "PLAN-900C"
+    rules = found[("exec-rules-unconfirmed", "PLAN-900C-S1")]
+    assert rules["owner"] == "user"
+    assert rules["decision"] == "O2O-DEC-0125"
+    assert rules["stem"] == "执行方案--PLAN-900C S1"
+    result = found[("res-awaiting-confirmation", "RES-PLAN-900C")]
+    assert result["plan"] == "PLAN-900C"
+    assert result["decision"] == "O2O-DEC-0126"
+    assert result["stem"] == "RES--PLAN-900C 判读"
 
 
 def test_confirmed_decisions_not_yet_applied_carry_the_exact_command(vault):

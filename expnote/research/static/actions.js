@@ -1,4 +1,4 @@
-// The GUI write actions of design 7.2: approve/reject a proposed decision, close a plan, save EV labels, add and tick TODOs.
+// The GUI write actions of design 7.2: approve/reject a proposed decision, close a plan, close a deviation, save EV labels, add and tick TODOs.
 // Every change is previewed first (the server's dry-run diff) and applied only from an explicit click.
 // Text from the vault or the user only ever goes through text nodes here.
 import { nav } from "/research/nav.js";
@@ -485,26 +485,97 @@ export function todoAddForm(ctx, manualFile) {
   return h("div", { class: "todo-add" }, openButton, form);
 }
 
+// Mark a manual TODO done (or open again). Throws the API error; the caller says what went wrong.
+async function setTodoDone(ctx, t, manualSha, done) {
+  const envelope = await ctx.post(`${projectPath(ctx.project)}/todos/${enc(t.id)}/done`, { done, expectedSha256: manualSha });
+  const first = (envelope.data.changes || [])[0];
+  toast(done ? "TODO ticked" : "TODO re-opened", { journal: first ? first.journal || first.path : null });
+  await refresh();
+}
+
+function toastWriteError(error) {
+  const info = describeError(error);
+  toast(info.message, { tone: "bad", action: info.reload ? { label: "Reload", run: () => window.location.reload() } : null });
+}
+
 // A checkbox for a manual TODO line. A failed write puts the box back and says why.
 export function todoTick(ctx, t, manualSha) {
   if (t.source !== "manual" || !manualSha) return null;
-  const P = ctx.project;
   const box = h("input", { type: "checkbox", class: "todo-tick", "aria-label": `Mark done: ${t.message}`, checked: t.state === "done" ? true : null });
   box.addEventListener("click", (event) => event.stopPropagation());
   box.addEventListener("change", async () => {
     const done = Boolean(box.checked);
     box.setAttribute("disabled", "");
     try {
-      const envelope = await ctx.post(`${projectPath(P)}/todos/${enc(t.id)}/done`, { done, expectedSha256: manualSha });
-      const first = (envelope.data.changes || [])[0];
-      toast(done ? "TODO ticked" : "TODO re-opened", { journal: first ? first.journal || first.path : null });
-      await refresh();
+      await setTodoDone(ctx, t, manualSha, done);
     } catch (error) {
       box.checked = !done;
-      const info = describeError(error);
-      toast(info.message, { tone: "bad", action: info.reload ? { label: "Reload", run: () => window.location.reload() } : null });
+      toastWriteError(error);
     }
     box.removeAttribute("disabled");
   });
   return box;
+}
+
+// The same action as a button for the detail pane: "Mark done", or "Open again" for a ticked item.
+export function todoDoneButton(ctx, t, manualSha) {
+  if (t.source !== "manual" || !manualSha) return null;
+  const done = t.state !== "done";
+  const button = h("button", { type: "button", class: done ? "btn primary" : "btn" }, icon("check"), done ? "Mark done" : "Open again");
+  button.addEventListener("click", async () => {
+    button.setAttribute("disabled", "");
+    try {
+      await setTodoDone(ctx, t, manualSha, done);
+    } catch (error) {
+      toastWriteError(error);
+      button.removeAttribute("disabled");
+    }
+  });
+  return button;
+}
+
+// ---- close a deviation ---------------------------------------------------------------------------------------
+
+const oneLine = (text) => text.replace(/\s*\n\s*/g, " ").trim();
+
+// "Close deviation": a textarea holding the current disposition, then the server's dry-run diff and Apply.
+// `deviation` is the deviation payload of `GET .../deviations/{id}`; there is nothing to do once it is closed.
+export function deviationCloseAction(ctx, deviation) {
+  if (deviation.status === "closed" || !deviation.registerSha256) return null;
+  const slot = h("div", { class: "confirm-slot" });
+  const url = `${projectPath(ctx.project)}/deviations/${enc(deviation.id)}/close`;
+  const open = () => {
+    const disposition = h("textarea", { class: "reason-input", rows: "3", "aria-label": "Disposition", maxlength: "1000" }, deviation.disposition || "");
+    disposition.value = deviation.disposition || "";
+    const review = h("button", { type: "button", class: "btn primary" }, "Review change");
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const confirmSlot = h("div", { class: "confirm-slot" });
+    const typed = () => oneLine(disposition.value ?? disposition.textContent ?? "");
+    const lock = (locked) => {
+      for (const control of [disposition, review]) (locked ? control.setAttribute("disabled", "") : control.removeAttribute("disabled"));
+    };
+    review.addEventListener("click", () => {
+      lock(true);
+      openConfirm(confirmSlot, {
+        title: `Close deviation ${deviation.id}`,
+        send: (dryRun) => ctx.post(url, { expectedSha256: deviation.registerSha256, disposition: typed(), dryRun }),
+        success: () => `Deviation ${deviation.id} closed`,
+        onClose: () => {
+          lock(false);
+          if (disposition.focus) disposition.focus();
+        },
+      });
+    });
+    cancel.addEventListener("click", () => clear(slot));
+    const panel = h("section", { class: "confirm-panel", role: "group", "aria-label": `Close deviation ${deviation.id}` }, h("h3", null, `Close deviation ${deviation.id}`), h("label", { class: "reason-label" }, "Disposition (how it was settled)", disposition), h("div", { class: "confirm-buttons" }, review, cancel), confirmSlot);
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        clear(slot);
+      }
+    });
+    clear(slot).append(panel);
+    if (disposition.focus) disposition.focus();
+  };
+  return h("div", { class: "deviation-close" }, h("button", { type: "button", class: "btn primary", onclick: open }, icon("check"), "Close deviation"), slot);
 }

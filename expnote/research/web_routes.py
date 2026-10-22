@@ -1,10 +1,10 @@
 """HTTP surface of the research layer (GUI pages and `/api/research`).
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
-GET except the six GUI writes of design section 7.2 (decision approve/reject, plan
-close, EV labels, TODO add/tick); those need the per-process token and a loopback
-Origin/Host, and go through `writes.py` and `writeback.py` with actor `gui`. Responses
-carry the research CSP.
+GET except the seven GUI writes of design section 7.2 (decision approve/reject, plan
+close, EV labels, TODO add/tick, deviation close); those need the per-process token
+and a loopback Origin/Host, and go through `writes.py` and `writeback.py` with actor
+`gui`. Responses carry the research CSP.
 """
 
 from __future__ import annotations
@@ -407,6 +407,22 @@ def build_router(service: ResearchService) -> APIRouter:
                 ref["href"] = resolver.note(ref["stem"]).href
             return _ok("decision", data, view)
 
+    # ---- deviations -----------------------------------------------------------------
+
+    @router.get(f"{api}/projects/{{project_id}}/deviations/{{ident}}")
+    @_guarded("deviation show")
+    def deviation(project_id: str, ident: str, refresh: bool = False) -> JSONResponse:
+        with service.view(project_id, refresh) as view:
+            data = entities.deviation_detail(view, ident)
+            item = data["deviation"]
+            fields = ("experiment", "content", "impact", "disposition", "cards")
+            rendered = render_inline_cells(
+                [item[f] for f in fields], view, run_app=service.run_app
+            )
+            item["html"] = dict(zip(fields, rendered, strict=True))
+            item["registerSha256"] = view.file_sha256(view.profile.deviation_register)
+            return _ok("deviation show", data, view)
+
     # ---- evidence -------------------------------------------------------------------
 
     @router.get(f"{api}/projects/{{project_id}}/ev")
@@ -609,7 +625,7 @@ def build_router(service: ResearchService) -> APIRouter:
         except ResearchError as error:
             return _failure("image", error)
 
-    # ---- GUI writes (design section 7.2: exactly these six) ------------------------
+    # ---- GUI writes (design section 7.2: exactly these seven) ----------------------
 
     async def gui_write(
         request: Request,
@@ -658,6 +674,12 @@ def build_router(service: ResearchService) -> APIRouter:
     async def plan_close(project_id: str, plan_id: str, request: Request):
         return await gui_write(
             request, project_id, "plan close", _plan_close_builder(plan_id)
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/deviations/{{ident}}/close")
+    async def deviation_close(project_id: str, ident: str, request: Request):
+        return await gui_write(
+            request, project_id, "deviation close", _deviation_close_builder(ident)
         )
 
     @router.post(f"{api}/projects/{{project_id}}/ev/{{stem}}/labels")
@@ -759,6 +781,18 @@ def _plan_close_builder(plan_id: str):
             force=force,
             authorization=_text(body, "note"),
             by_user=True,
+            expected_sha256=_expected_sha(body),
+        )
+
+    return build
+
+
+def _deviation_close_builder(ident: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        return writes.plan_deviation_close(
+            view,
+            ident,
+            disposition=_text(body, "disposition"),
             expected_sha256=_expected_sha(body),
         )
 

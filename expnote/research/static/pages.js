@@ -694,6 +694,7 @@ export const PAGES = {
   ev: (ctx) => (ctx.arg ? evPage(ctx) : LISTS.ev(ctx)),
   decisions: LISTS.decisions,
   todos: LISTS.todos,
+  todo: LISTS.todo,
   search: LISTS.search,
   note: notePage,
   health: healthPage,

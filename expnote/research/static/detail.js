@@ -1,5 +1,5 @@
 // Renderers shared by full pages and master-detail previews: decisions, evidence, TODOs, notes.
-import { decisionActions, evLabelEditor, todoTick } from "/research/actions.js";
+import { decisionActions, deviationCloseAction, evLabelEditor, todoDoneButton, todoTick } from "/research/actions.js";
 import {
   chip,
   commandBlock,
@@ -257,8 +257,31 @@ export function todoTarget(ctx, t) {
     case "legacy-no-final-res":
       return route.plan(P, t.ref);
     default:
-      return t.plan ? route.plan(P, t.plan) : null;
+      return t.plan ? route.plan(P, t.plan) : t.stem ? route.note(P, t.stem) : null;
   }
+}
+
+// Kinds whose proposed decision(s) the user settles with Approve / Reject.
+const DECIDABLE_KINDS = new Set(["decision-proposed", "plan-awaiting-approval", "exec-rules-unconfirmed", "res-awaiting-confirmation"]);
+
+export function todoDecisionIds(t) {
+  if (t.owner !== "user" || !DECIDABLE_KINDS.has(t.kind)) return [];
+  if (t.kind === "decision-proposed") return [t.ref];
+  return t.decisions || (t.decision ? [t.decision] : []);
+}
+
+// What a TODO's detail needs beyond the item itself: the deviation row, the proposed decisions. Missing pieces are skipped.
+export async function todoExtras(ctx, t) {
+  const P = ctx.project;
+  const fetched = async (path) => {
+    try {
+      return (await ctx.api(`${base(P)}${path}`)).data;
+    } catch {
+      return null;
+    }
+  };
+  const [deviation, decisions] = await Promise.all([t.kind === "deviation-open" ? fetched(`/deviations/${enc(t.ref)}`) : null, Promise.all(todoDecisionIds(t).map((id) => fetched(`/decisions/${enc(id)}`)))]);
+  return { deviation: deviation ? deviation.deviation : null, decisions: decisions.filter(Boolean) };
 }
 
 // What a group of TODOs of one kind means, in the singular and the plural.
@@ -284,8 +307,9 @@ export function kindPhrase(kind, count) {
   return text ? text[count === 1 ? 0 : 1] : kind;
 }
 
-export function todoRow(ctx, t, { showKind = false, manualSha = null } = {}) {
-  const target = todoTarget(ctx, t);
+// `href` is where the row's own link goes (a list page passes its selection link); by default the item's page, or its detail page.
+export function todoRow(ctx, t, { showKind = false, manualSha = null, href = null } = {}) {
+  const target = href || todoTarget(ctx, t) || (t.id ? route.todo(ctx.project, t.id) : null);
   const tick = todoTick(ctx, t, manualSha);
   return h(
     "li",
@@ -309,26 +333,82 @@ export function todoRow(ctx, t, { showKind = false, manualSha = null } = {}) {
   );
 }
 
-export function todoDetail(ctx, t, { heading = "h1" } = {}) {
-  const target = todoTarget(ctx, t);
+const OWNER_TEXT = { user: "Waiting on you", agent: "Agent work" };
+
+function decisionBlock(ctx, data) {
+  const d = data.decision;
+  const text = (d.sectionsHtml && d.sectionsHtml.decided) || d.decisionTextHtml;
+  return h(
+    "div",
+    { class: "block todo-decision" },
+    h("h3", null, link(route.decision(ctx.project, d.id), `#${d.number} ${d.title || d.id}`), " ", d.status !== "confirmed" ? statusChip("decision", d.status) : null),
+    text ? prose(text) : null,
+    h("div", { class: "row-actions", "data-slot": "decision-actions" }, decisionActions(ctx, d)),
+  );
+}
+
+// The deviation register row, whole: every column, with the cell text rendered (links, code).
+function deviationRow(ctx, dev) {
+  const cell = (key) => prose(dev.html[key]);
+  return h(
+    "div",
+    { class: "block deviation-row", "data-section": "deviation" },
+    h("h3", null, "Register row"),
+    kv([
+      ["ID", dev.id],
+      ["Date", dev.date],
+      ["Experiment", cell("experiment")],
+      ["Content", cell("content")],
+      ["Impact", cell("impact")],
+      ["Disposition", dev.disposition ? cell("disposition") : h("span", { class: "muted" }, "none yet")],
+      ["Related cards", dev.cards ? cell("cards") : null],
+      ["Status", statusWord(toneOf("deviation", dev.status), dev.status)],
+      ["Found at", dev.found],
+    ]),
+  );
+}
+
+// What the item is about, each as a link where the GUI has a page for it.
+function aboutPairs(ctx, t, skipReference) {
+  const P = ctx.project;
+  const decisions = t.kind === "decision-proposed" || t.kind === "decision-review-due" ? [t.ref] : t.decisions || (t.decision ? [t.decision] : []);
+  return [
+    ["Plan", t.plan ? planTag(P, t.plan) : null],
+    ["Decision", decisions.length ? decisions.map((id, i) => [i ? ", " : "", link(route.decision(P, id), id)]) : null],
+    ["Evidence", t.kind.startsWith("ev-") ? link(route.ev(P, t.ref), t.ref, icon("chevron")) : null],
+    ["Note", t.stem ? link(route.note(P, t.stem), t.stem, icon("chevron")) : null],
+    ["Runs", t.runs && t.runs.length ? t.runs.map((id) => [runRef(ctx, id), " "]) : null],
+    ["Reference", skipReference ? null : h("code", null, t.ref)],
+  ];
+}
+
+// Everything a TODO is about and everything that can be done with it, kind by kind.
+export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h1" } = {}) {
+  const { deviation = null, decisions = [] } = extras;
+  const title = deviation ? `Deviation ${deviation.id} is ${deviation.status}` : t.message;
+  const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, todoDoneButton(ctx, t, manualSha)].filter(Boolean);
+  const evLink = t.kind === "ev-unlabelled" ? h("a", { class: "btn primary", href: route.ev(ctx.project, t.ref) }, "Open the label editor", icon("chevron")) : null;
   return h(
     "article",
-    { class: "detail" },
+    { class: "detail todo-detail" },
     h(
       "header",
       { class: "detail-head" },
-      h("div", { class: "detail-ident" }, icon(t.owner === "user" ? "user" : "bot"), h("span", null, t.owner === "user" ? "Waiting on you" : "Agent work"), t.severity ? statusWord(toneOf("severity", t.severity), t.severity) : null, t.due ? statusWord("warn", `due ${t.due}`) : null),
-      h(heading, { class: "detail-title" }, t.message),
+      h("div", { class: "detail-ident" }, icon(t.owner === "user" ? "user" : "bot"), h("span", null, OWNER_TEXT[t.owner] || t.owner), t.source !== "manual" && t.severity ? statusWord(toneOf("severity", t.severity), t.severity) : null, t.due ? statusWord("warn", `due ${t.due}`) : null, t.state === "done" ? statusWord("ok", "done") : null),
+      h(heading, { class: "detail-title" }, title),
     ),
     kv([
-      ["Kind", kindPhrase(t.kind, 1)],
+      ["Kind", [kindPhrase(t.kind, 1), " ", h("code", null, t.kind)]],
+      ["Owner", t.owner],
+      ["Level", t.source === "manual" ? null : t.severity],
       ["Source", t.source],
-      ["Reference", t.ref],
-      ["Plan", t.plan ? planTag(ctx.project, t.plan) : null],
+      ...aboutPairs(ctx, t, Boolean(deviation)),
       ["Next action", t.action],
     ]),
-    target ? h("p", null, link(target, "Go to the item", icon("chevron"))) : null,
-    t.command ? commandBlock(t.command) : null,
+    deviation ? deviationRow(ctx, deviation) : null,
+    decisions.map((data) => decisionBlock(ctx, data)),
+    actions.length || evLink ? h("div", { class: "act-bar todo-actions" }, actions, evLink) : null,
+    t.command ? h("div", { class: "block" }, h("h3", null, "Command"), commandBlock(t.command)) : null,
   );
 }
 

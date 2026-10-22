@@ -34,6 +34,8 @@ RESEARCH_GUIDE = {
         "through commands",
         "Never invent a user decision: confirmations need the user's own words "
         "(--authorization) or a click in the GUI",
+        "The GUI writes only: approve/reject a decision, close a plan, save EV "
+        "labels, add/tick a TODO, close a deviation",
     ],
     "essentialCommands": [
         _step("expnote next --json", "what is actionable now, with exact commands"),

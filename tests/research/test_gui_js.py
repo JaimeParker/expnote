@@ -15,6 +15,7 @@ import pytest
 import uvicorn
 from minivault import EV_PAGE, EV_PATH, write
 from test_gui import FIXED_NOW, world  # noqa: F401 - fixture
+from writekit import set_mtime
 
 from expnote.research.web_routes import create_research_app
 
@@ -38,6 +39,15 @@ def server(world):  # noqa: F811
         '---\nschema: 3\ntype: plan\nid: PLAN-900C\ntitle: "PLAN-900C"\n'
         "status: draft\n---\n# 开放计划\n",
     )
+    long_content = "子协议 B 逐位相同：" + "窗口小于 horizon，" * 20 + "结尾"
+    register = proj / "ops/偏离登记.md"
+    register.write_text(
+        register.read_text(encoding="utf-8")
+        + f"| D-03 | 2026-10-05 | PLAN-900A S1 | {long_content} | 弱 | 维持 | "
+        "[[RES--PLAN-900A 判读]] |\n",
+        encoding="utf-8",
+    )
+    set_mtime(register, 3600)  # outside the quiet window, so the GUI may write it
     app = create_research_app(clock=lambda: FIXED_NOW)
     app.state.research.refresh_interval = 0
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
@@ -71,7 +81,7 @@ def test_every_page_renders_without_errors(server):
     assert any(n.startswith("plan PLAN-900A") for n in names)
     assert any(n.startswith("ev ") for n in names)
     assert report["pages"] >= 15
-    assert report["checks"] >= 35  # the write-action panels, errors and toasts
+    assert report["checks"] >= 60  # the write-action panels, errors and toasts
     by_name = {r["name"]: r for r in report["results"]}
     # master-detail pages render the selected item in the preview pane
     for name in ("decisions-sel", "ev-sel", "ev-figures", "todos"):

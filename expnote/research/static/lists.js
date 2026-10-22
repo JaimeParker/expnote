@@ -10,7 +10,9 @@ import {
   labels,
   notePreview,
   planPreview,
+  projectName,
   todoDetail,
+  todoExtras,
   todoRow,
   todoTarget,
 } from "/research/detail.js";
@@ -23,6 +25,7 @@ import {
   highlight,
   icon,
   imageUrl,
+  isMaster,
   link,
   monthLabel,
   planSwatch,
@@ -276,10 +279,11 @@ async function todosPage(ctx) {
   const byId = new Map(all.map((t) => [t.id, t]));
   const md = masterDetail({
     hashFor,
-    fullHref: (id) => (byId.get(id) && todoTarget(ctx, byId.get(id))) || route.todos(P),
+    fullHref: (id) => (byId.get(id) && todoTarget(ctx, byId.get(id))) || route.todo(P, id),
     load: async (id) => {
       if (!byId.has(id)) throw Object.assign(new Error("This item is no longer listed."), { code: "NOT_FOUND" });
-      return { kind: "TODO", node: todoDetail(ctx, byId.get(id), { heading: "h2" }) };
+      const t = byId.get(id);
+      return { kind: "TODO", node: todoDetail(ctx, t, { extras: await todoExtras(ctx, t), manualSha: body.data.manualFile.sha256, heading: "h2" }) };
     },
     hint: [h("p", null, "Select a TODO to see what it needs."), h("p", { class: "muted small" }, "j and k move, Enter opens the item, Esc closes.")],
   });
@@ -315,7 +319,8 @@ async function todosPage(ctx) {
     if (many) head.append(h("button", { type: "button", class: "btn small ghost", onclick: () => { store.set(key, false); drawList(); } }, "Collapse"));
     const ul = h("ul", { class: "todos" });
     for (const t of items) {
-      const row = todoRow(ctx, t, { manualSha });
+      // Wide screens select the row in the preview pane; narrow ones open the item's own page.
+      const row = todoRow(ctx, t, { manualSha, href: isMaster() ? hashFor(t.id) : todoTarget(ctx, t) || route.todo(P, t.id) });
       md.bind(t.id, row);
       ul.append(row);
     }
@@ -359,8 +364,20 @@ async function todosPage(ctx) {
   }
   draw();
   const node = h("div", { class: "page md-page" }, h("div", { class: "md-grid" }, h("div", { class: "md-side" }, heading, filterBox), list, md.node));
-  md.start(params.get("sel"));
-  return { node, title: "TODOs", select: (id) => md.select(id, { write: false }), keys: md.keys };
+  // After a write the selected item may be gone: fall back to the first row instead of an error.
+  md.start(byId.has(params.get("sel")) ? params.get("sel") : null);
+  return { node, title: "TODOs", select: (id) => md.select(byId.has(id) ? id : null, { write: false }), keys: md.keys };
+}
+
+// One TODO as a full page: where the rows of a narrow screen lead, and the target of "Open page" for items with no page of their own.
+async function todoPage(ctx) {
+  const P = ctx.project;
+  const body = await ctx.api(`${base(P)}/todos`, { include_done: "true" });
+  const t = body.data.todos.find((item) => item.id === ctx.arg);
+  const crumbs = h("nav", { class: "crumbs", "aria-label": "Breadcrumb" }, link(route.home(), "Research"), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.project(P), projectName(ctx)), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.todos(P, t ? { sel: t.id } : {}), "TODOs"));
+  if (!t) return { node: h("div", { class: "page full-detail" }, crumbs, emptyState("This TODO is gone: it was done or its cause is resolved.", link(route.todos(P), "Back to the TODOs"))), title: "TODO" };
+  const detail = todoDetail(ctx, t, { extras: await todoExtras(ctx, t), manualSha: body.data.manualFile.sha256, heading: "h1" });
+  return { node: h("div", { class: "page full-detail" }, crumbs, detail), title: "TODO" };
 }
 
 // ---- SEARCH -------------------------------------------------------------------------------------
@@ -465,4 +482,4 @@ async function searchPage(ctx) {
   return { node, title: current.q ? `Search: ${current.q}` : "Search", select: (id) => md.select(id, { write: false }), keys: md.keys };
 }
 
-export const LISTS = { decisions: decisionsPage, ev: evListPage, todos: todosPage, search: searchPage };
+export const LISTS = { decisions: decisionsPage, ev: evListPage, todos: todosPage, todo: todoPage, search: searchPage };

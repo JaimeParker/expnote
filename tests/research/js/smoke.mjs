@@ -181,6 +181,103 @@ await afterFetch();
 check("TODO page has the add form and a tick on manual items", buttonLike(main, "Add TODO") && main.byClass("todo-tick").length >= 1);
 buttonLike(main, "Add TODO").dispatch("click");
 check("add form opens", !main.byClass("todo-add-form")[0].hasAttribute("hidden"));
+// ---- TODO detail pane: every kind shows the whole item and only the actions that exist ----------------------------
+const todoList = (await api(`${P}/todos`)).data.todos;
+const selHash = (t) => `#/p/${enc(project)}/todos?sel=${enc(t.id)}`;
+const pane = () => main.byClass("preview-body")[0];
+for (const t of todoList) {
+  await go(selHash(t));
+  await afterFetch();
+  const text = pane() ? pane().textContent : "";
+  const bare = t.kind === "deviation-open" ? t.ref : t.message;
+  check(`TODO ${t.kind} ${t.ref}: pane names owner, kind, level and the message`, text.includes(bare) && text.includes(t.kind) && text.includes(t.owner) && (t.source === "manual" || text.includes(t.severity)), text.slice(0, 200));
+  check(`TODO ${t.kind} ${t.ref}: the command is copyable`, !t.command || (pane().byClass("command").length === 1 && pane().byClass("command")[0].textContent.includes(t.command) && pane().byClass("command")[0].byTag("button").length === 1));
+  const actionable = t.kind === "deviation-open" || t.source === "manual" || t.kind === "ev-unlabelled";
+  check(`TODO ${t.kind} ${t.ref}: no action bar unless there is an action`, actionable || pane().byClass("todo-actions").length === 0);
+  const row = main.byClass("todo").find((r) => r.getAttribute("data-id") === t.id);
+  const rowLink = row && row.byClass("row-link")[0];
+  check(`TODO ${t.kind} ${t.ref}: the row is a link to its selection`, rowLink && rowLink.tagName === "A" && new URLSearchParams((rowLink.getAttribute("href") || "").split("?")[1]).get("sel") === t.id, rowLink && rowLink.getAttribute("href"));
+}
+const longDeviation = todoList.find((t) => t.kind === "deviation-open" && t.message.endsWith("…"));
+check("a deviation with long content exists", longDeviation);
+if (longDeviation) {
+  const full = (await api(`${P}/deviations/${enc(longDeviation.ref)}`)).data.deviation;
+  await go(selHash(longDeviation));
+  await afterFetch();
+  const text = pane().textContent;
+  const rowBlock = pane().byClass("deviation-row")[0];
+  check("deviation pane renders the whole register row, untruncated", rowBlock && text.includes(full.content) && !text.includes("…"), text.slice(0, 300));
+  check("deviation row shows id, date, experiment, impact, disposition, cards, status", ["ID", "Date", "Experiment", "Impact", "Disposition", "Related cards", "Status"].every((k) => rowBlock.byTag("dt").some((d) => d.textContent === k)));
+  check("related cards are links", rowBlock.byClass("prose").some((n) => n.innerHTML.includes('href="#/p/')));
+  const closeButton = buttonLike(pane(), "Close deviation");
+  check("deviation pane offers Close deviation", closeButton);
+  closeButton.dispatch("click");
+  const area = pane().byTag("textarea")[0];
+  check("the dialog prefills the current disposition", area && area.value === full.disposition && full.disposition !== "", area && area.value);
+  area.value = "已处理 <b>x</b>";
+  buttonLike(pane(), "Review change").dispatch("click");
+  await afterFetch();
+  const diffText = pane().byClass("diff").map((n) => n.textContent).join("\n");
+  check("the dry run shows the new disposition as text and the closed marker", diffText.includes("已处理 <b>x</b>") && diffText.includes("关闭") && pane().byTag("b").length === 0, diffText);
+  buttonLike(pane().byClass("confirm-panel")[1] || pane(), "Cancel").dispatch("click");
+  check("Cancel leaves the dialog editable", !area.hasAttribute("disabled"));
+  const copyCalls = [];
+  navigator.clipboard.writeText = async (value) => copyCalls.push(value);
+  const copyButtonNode = pane().byClass("command")[0].byTag("button")[0];
+  copyButtonNode.dispatch("click");
+  await new Promise((r) => setTimeout(r, 20));
+  check("Copy writes the command to the clipboard", copyCalls[0] === longDeviation.command && copyButtonNode.getAttribute("data-done") === "true", copyCalls.join());
+  navigator.clipboard.writeText = async () => { throw new Error("denied"); };
+  let selected = null;
+  window.getSelection = () => ({ removeAllRanges() {}, addRange(range) { selected = range; } });
+  document.createRange = () => ({ selectNodeContents(node) { this.node = node; } });
+  copyButtonNode.dispatch("click");
+  await new Promise((r) => setTimeout(r, 20));
+  check("a refused clipboard falls back to selecting the command", selected && selected.node && selected.node.tagName === "CODE" && copyButtonNode.byClass("copy-word")[0].textContent === "Press Ctrl+C");
+  await go(`#/p/${enc(project)}/todo/${enc(longDeviation.id)}`);
+  await afterFetch();
+  const page = main.byClass("full-detail")[0];
+  check("the full page of a TODO renders the same detail under an h1", page && main.byTag("h1")[0].textContent.includes(longDeviation.ref) && main.byClass("deviation-row").length === 1);
+  buttonLike(main, "Close deviation").dispatch("click");
+  main.byTag("textarea")[0].value = "已处理";
+  buttonLike(main, "Review change").dispatch("click");
+  await afterFetch();
+  const apply = buttonLike(main.byClass("confirm-panel")[1], "Apply");
+  check("Apply is offered after the review", apply && !apply.hasAttribute("disabled"));
+  apply.dispatch("click");
+  await afterFetch();
+  await new Promise((r) => setTimeout(r, 100));
+  const closed = (await api(`${P}/deviations/${enc(longDeviation.ref)}`)).data.deviation;
+  check("applying closes the deviation through the write endpoint", closed.status === "closed" && closed.disposition.includes("已处理"), JSON.stringify(closed));
+  check("the page refreshes to say the TODO is gone", main.textContent.includes("This TODO is gone"), main.textContent.slice(0, 200));
+}
+const proposedTodo = todoList.find((t) => t.kind === "decision-proposed");
+check("a proposed-decision TODO exists", proposedTodo);
+if (proposedTodo) {
+  await go(selHash(proposedTodo));
+  await afterFetch();
+  check("decision TODO offers Approve and Reject and a link to the decision", buttonLike(pane(), "Approve") && buttonLike(pane(), "Reject") && pane().byTag("a").some((a) => (a.getAttribute("href") || "") === `#/p/${enc(project)}/decision/${enc(proposedTodo.ref)}`));
+  buttonLike(pane(), "Reject").dispatch("click");
+  await afterFetch();
+  check("Reject from the TODO pane opens the confirm", pane().byClass("confirm-panel")[0].textContent.includes("Reject decision"));
+}
+const labelTodo = todoList.find((t) => t.kind === "ev-unlabelled");
+if (labelTodo) {
+  await go(selHash(labelTodo));
+  await afterFetch();
+  const editor = pane().byTag("a").find((a) => a.textContent.includes("label editor"));
+  check("ev TODO links to the label editor of the page", editor && editor.getAttribute("href") === `#/p/${enc(project)}/ev/${enc(labelTodo.ref)}`);
+}
+const manualTodo = todoList.find((t) => t.source === "manual");
+if (manualTodo) {
+  await go(selHash(manualTodo));
+  await afterFetch();
+  check("manual TODO offers Mark done", buttonLike(pane(), "Mark done"));
+}
+await go(`#/p/${enc(project)}/todos?sel=${enc("derived:deviation-open:D-99")}`);
+await afterFetch();
+check("a selection that no longer exists falls back instead of showing an error", main.byClass("error-box").length === 0);
+
 await go(`#/p/${enc(project)}`);
 await afterFetch();
 check("overview Waiting panel has Add TODO and ticks", main.byClass("waiting-panel")[0] && buttonLike(main.byClass("waiting-panel")[0], "Add TODO") && main.byClass("waiting-panel")[0].byClass("todo-tick").length >= 1);

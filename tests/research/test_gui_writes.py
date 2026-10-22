@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
-from minivault import snapshot_tree
+from minivault import DEVIATIONS_9COL, DEVIATIONS_PATH, snapshot_tree
 from writekit import (
     audit_records,
     edit_profile,
@@ -184,6 +184,7 @@ def test_only_the_section_7_2_endpoints_can_write(world):
         ("POST", f"{prefix}/decisions/{{ident}}/approve"),
         ("POST", f"{prefix}/decisions/{{ident}}/reject"),
         ("POST", f"{prefix}/plans/{{plan_id}}/close"),
+        ("POST", f"{prefix}/deviations/{{ident}}/close"),
         ("POST", f"{prefix}/ev/{{stem}}/labels"),
         ("POST", f"{prefix}/todos"),
         ("POST", f"{prefix}/todos/{{todo_id}}/done"),
@@ -669,3 +670,107 @@ def test_todo_tick_untick_and_the_second_tick_is_a_no_op(world):
         409,
         "CAS_MISMATCH",
     )
+
+
+# ---- deviation register ------------------------------------------------------------
+
+
+def register_sha(world):
+    return sha(world.proj / DEVIATIONS_PATH)
+
+
+def register_row(world, ident="D-02"):
+    lines = read(world.proj / DEVIATIONS_PATH).split("\n")
+    return next(ln for ln in lines if ln.startswith(f"| {ident} "))
+
+
+def close_deviation(world, ident="D-02", **extra):
+    body = {"expectedSha256": register_sha(world), **extra}
+    return post(world, f"/deviations/{ident}/close", body)
+
+
+def test_deviation_detail_carries_the_whole_row_and_the_sha_to_close_at(world):
+    shown = world.client.get(f"{P}/deviations/D-01").json()["data"]["deviation"]
+    assert shown["id"] == "D-01" and shown["status"] == "closed"
+    assert shown["disposition"] == "已关闭" and shown["experiment"] == "PLAN-900A S1"
+    assert shown["registerSha256"] == register_sha(world)
+    assert set(shown["html"]) == {
+        "experiment",
+        "content",
+        "impact",
+        "disposition",
+        "cards",
+    }
+    assert 'href="#/p/off2on/' in shown["html"]["cards"]  # related cards are links
+    error_of(world.client.get(f"{P}/deviations/D-99"), 404, "NOT_FOUND")
+
+
+def test_deviation_close_needs_the_token_origin_and_sha(world):
+    before = snapshot_tree(world.root)
+    good = {"expectedSha256": register_sha(world), "dryRun": True}
+    for token in (False, "wrong", ""):
+        response = post(world, "/deviations/D-02/close", good, token=token)
+        error_of(response, 403, "FORBIDDEN_TOKEN")
+    evil = post(world, "/deviations/D-02/close", good, headers={"Origin": "http://evil"})
+    error_of(evil, 403, "FORBIDDEN_ORIGIN")
+    rebinding = TestClient(world.app, base_url="http://evil.example:8812")
+    response = rebinding.post(
+        f"{P}/deviations/D-02/close",
+        json=good,
+        headers={"X-Expnote-Token": world.token},
+    )
+    error_of(response, 403, "FORBIDDEN_ORIGIN")
+    no_sha = {"dryRun": True}
+    error_of(post(world, "/deviations/D-02/close", no_sha), 422, "USAGE_MISSING_OPTION")
+    bad_text = {**good, "disposition": 5}
+    error_of(post(world, "/deviations/D-02/close", bad_text), 422, "USAGE_BAD_VALUE")
+    multiline = {**good, "disposition": "a\nb"}
+    error_of(
+        post(world, "/deviations/D-02/close", multiline), 422, "USAGE_MULTILINE_VALUE"
+    )
+    error_of(close_deviation(world, "D-99"), 404, "NOT_FOUND")
+    assert snapshot_tree(world.root) == before and new_audit(world) == []
+    local = post(world, "/deviations/D-02/close", good, headers={"Origin": BASE})
+    assert local.status_code == 200
+
+
+def test_deviation_close_replaces_the_disposition_and_leaves_an_audit_trail(world):
+    dry = close_deviation(world, disposition="已处理：见 PLAN-900A", dryRun=True)
+    assert dry.status_code == 200 and dry.json()["data"]["changes"]
+    assert "维持" in register_row(world) and new_audit(world) == []
+    done = close_deviation(world, disposition="已处理：见 PLAN-900A")
+    assert done.status_code == 200, done.text
+    row = register_row(world)
+    assert "已处理：见 PLAN-900A 关闭" in row and "维持" not in row
+    shown = world.client.get(f"{P}/deviations/D-02").json()["data"]["deviation"]
+    assert shown["status"] == "closed"
+    todos = world.client.get(f"{P}/todos", params={"kind": "deviation-open"})
+    assert todos.json()["data"]["todos"] == []
+    records = new_audit(world)
+    assert len(records) == 1
+    assert records[0]["payload"]["actor"] == "gui"
+    assert records[0]["payload"]["command"] == "deviation close"
+    assert close_deviation(world, disposition="已处理：见 PLAN-900A").json()["data"][
+        "changes"
+    ] == []  # closing twice is a no-op
+
+
+def test_deviation_close_with_a_status_column_sets_it_and_the_disposition(world):
+    path = world.proj / DEVIATIONS_PATH
+    path.write_text(DEVIATIONS_9COL, encoding="utf-8")
+    set_mtime(path, 3600)
+    done = close_deviation(world, disposition="已处理")
+    assert done.status_code == 200, done.text
+    row = register_row(world)
+    assert "| 已处理 |" in row and "| closed |" in row
+
+
+def test_deviation_close_on_a_changed_register_is_a_conflict(world):
+    stale = register_sha(world)
+    path = world.proj / DEVIATIONS_PATH
+    path.write_text(read(path) + "\n", encoding="utf-8")
+    set_mtime(path, 3600)
+    before = snapshot_tree(world.root)
+    response = post(world, "/deviations/D-02/close", {"expectedSha256": stale})
+    error_of(response, 409, "CAS_MISMATCH")
+    assert snapshot_tree(world.root) == before and new_audit(world) == []
