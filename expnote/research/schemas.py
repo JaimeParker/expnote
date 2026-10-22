@@ -71,6 +71,8 @@ _V2: dict[str, dict[str, Field]] = {
         "result": Field("link", False, "coordinator"),
         "legacy": Field("bool", False, "coordinator"),
         "forced_close": Field("bool", False, "cli"),
+        "reopened_on": Field("date", False, "coordinator"),
+        "earlier_cycle": Field("links", False, "coordinator", quoted=True),
     },
     "exec-plan": {
         "schema": Field("int", True, "engine"),
@@ -84,6 +86,8 @@ _V2: dict[str, dict[str, Field]] = {
         "rules_decision": Field("int", False, "coordinator"),
         "rules_sha256": Field("sha256", False, "engine"),
         "frozen_on": Field("date", False, "engine"),
+        "approved_by": Field("enum", False, "engine", ("agent", "user")),
+        "new_rules": Field("bool", False, "coordinator"),
         "rules_amended_by": Field("strs", False, "coordinator", quoted=True),
         "legacy": Field("bool", False, "coordinator"),
     },

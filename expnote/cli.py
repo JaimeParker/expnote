@@ -61,7 +61,15 @@ from expnote.workspace import (
     write_workspace_config,
 )
 
-app = typer.Typer(help="Local-first experiment notes.")
+app = typer.Typer(
+    help="Local-first experiment notes in two parts: a run registry (SQLite: "
+    "topics, runs, artifacts, analysis docs, MOCs, benchmarks) and a research "
+    "layer over an Obsidian vault (plans, exec-plans, decisions, evidence, "
+    "results, deviations, TODOs).",
+    epilog="Research agents start here: `expnote guide research --json`, then "
+    "`expnote next --project <id> --json`. Every research write is a dry run "
+    "(exit 4) unless --apply is given. Run-registry agents: `expnote guide agent`.",
+)
 topic_app = typer.Typer(help="Manage experiment topics.")
 run_app = typer.Typer(help="Manage experiment runs.")
 relation_app = typer.Typer(help="Manage run relations.")
@@ -72,42 +80,82 @@ moc_topic_app = typer.Typer(help="Manage topics inside a SQL MOC.")
 benchmark_app = typer.Typer(help="Manage benchmark tasks x algos matrices.")
 benchmark_task_app = typer.Typer(help="Manage tasks inside a benchmark.")
 benchmark_algo_app = typer.Typer(help="Manage algos inside a benchmark.")
-markdown_app = typer.Typer(help="Manage Markdown projections.")
+markdown_app = typer.Typer(
+    help="Manage Markdown projections (refused for registered research vaults)."
+)
 markdown_table_app = typer.Typer(help="Manage Markdown MOC section tables.")
-sync_app = typer.Typer(help="Sync projections.")
+sync_app = typer.Typer(
+    help="Sync projections (refused for registered research vaults)."
+)
 import_app = typer.Typer(help="Import external metadata.")
 workspace_app = typer.Typer(help="Manage expnote workspaces.")
 
-app.add_typer(topic_app, name="topic")
-app.add_typer(run_app, name="run")
-app.add_typer(relation_app, name="relation")
-app.add_typer(artifact_app, name="artifact")
-app.add_typer(doc_app, name="doc")
-app.add_typer(moc_app, name="moc")
+app.add_typer(topic_app, name="topic", rich_help_panel="Run registry")
+app.add_typer(run_app, name="run", rich_help_panel="Run registry")
+app.add_typer(relation_app, name="relation", rich_help_panel="Run registry")
+app.add_typer(artifact_app, name="artifact", rich_help_panel="Run registry")
+app.add_typer(doc_app, name="doc", rich_help_panel="Run registry")
+app.add_typer(moc_app, name="moc", rich_help_panel="Run registry")
 moc_app.add_typer(moc_topic_app, name="topic")
-app.add_typer(benchmark_app, name="benchmark")
+app.add_typer(benchmark_app, name="benchmark", rich_help_panel="Run registry")
 benchmark_app.add_typer(benchmark_task_app, name="task")
 benchmark_app.add_typer(benchmark_algo_app, name="algo")
-app.add_typer(markdown_app, name="markdown")
+app.add_typer(markdown_app, name="markdown", rich_help_panel="Run registry")
 markdown_app.add_typer(markdown_table_app, name="table")
-app.add_typer(sync_app, name="sync")
-app.add_typer(import_app, name="import")
-app.add_typer(workspace_app, name="workspace")
-app.add_typer(research_cli.project_app, name="project")
-app.add_typer(research_cli.migrate_app, name="migrate")
-app.command("check")(research_cli.check_command)
-app.command("reindex")(research_commands.reindex_command)
-app.command("search")(research_commands.search_command)
-app.command("next")(research_commands.next_command)
-app.command("doctor")(research_commands.doctor_command)
-app.add_typer(research_commands.plan_app, name="plan")
-app.add_typer(research_commands.decision_app, name="decision")
-app.add_typer(research_commands.exec_app, name="exec")
-app.add_typer(research_commands.ev_app, name="ev")
-app.add_typer(research_commands.res_app, name="res")
-app.add_typer(research_commands.deviation_app, name="deviation")
-app.add_typer(research_commands.todo_app, name="todo")
-app.add_typer(research_write_commands.new_app, name="new")
+app.add_typer(sync_app, name="sync", rich_help_panel="Run registry")
+app.add_typer(import_app, name="import", rich_help_panel="Setup and maintenance")
+app.add_typer(workspace_app, name="workspace", rich_help_panel="Setup and maintenance")
+app.add_typer(
+    research_cli.project_app, name="project", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_cli.migrate_app, name="migrate", rich_help_panel="Research layer (vault)"
+)
+app.command("check", rich_help_panel="Research layer (vault)")(
+    research_cli.check_command
+)
+app.command("reindex", rich_help_panel="Research layer (vault)")(
+    research_commands.reindex_command
+)
+app.command("search", rich_help_panel="Research layer (vault)")(
+    research_commands.search_command
+)
+app.command("next", rich_help_panel="Research layer (vault)")(
+    research_commands.next_command
+)
+app.command("doctor", rich_help_panel="Research layer (vault)")(
+    research_commands.doctor_command
+)
+app.add_typer(
+    research_commands.plan_app, name="plan", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_commands.decision_app,
+    name="decision",
+    rich_help_panel="Research layer (vault)",
+)
+app.add_typer(
+    research_commands.exec_app, name="exec", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_commands.ev_app, name="ev", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_commands.res_app, name="res", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_commands.deviation_app,
+    name="deviation",
+    rich_help_panel="Research layer (vault)",
+)
+app.add_typer(
+    research_commands.todo_app, name="todo", rich_help_panel="Research layer (vault)"
+)
+app.add_typer(
+    research_write_commands.new_app,
+    name="new",
+    rich_help_panel="Research layer (vault)",
+)
 
 
 WorkspaceOption = Annotated[
@@ -441,8 +489,7 @@ _AGENT_GUIDE = {
             "run_id": "a7zf90k7",
             "purpose": "Train SAC on StackCube seed=1",
             "relation": (
-                "Baseline for [[k2m9p3qw]] (higher actor-LR ablation "
-                "on the same env)"
+                "Baseline for [[k2m9p3qw]] (higher actor-LR ablation on the same env)"
             ),
             "result": "78% success at 1M steps",
             "analysis": (
@@ -628,9 +675,7 @@ def _run_creation_warnings(
             (topic_id, run_data["id"]),
         ).fetchone()
     if missing:
-        warnings.append(
-            "run is missing topic schema metadata: " + ", ".join(missing)
-        )
+        warnings.append("run is missing topic schema metadata: " + ", ".join(missing))
     if manual_metadata_count >= 3 and sibling is not None and cloned_from is None:
         warnings.append(
             "this topic already has runs; consider "
@@ -832,8 +877,7 @@ def _render_agent_guide() -> str:
             "not the current bottleneck. Next: rerun at 2M steps with "
             "image observations to confirm 78% is a real plateau and "
             "not an early stop.",
-            "- Metadata: algo=sac, env_id=StackCube-v1, seed=1, "
-            "total_steps=1000000",
+            "- Metadata: algo=sac, env_id=StackCube-v1, seed=1, total_steps=1000000",
             "- status: finished",
             "Run record checklist:",
         ]
@@ -915,12 +959,15 @@ def _resolve_topic_id(
     return _topic_id(conn, topic, moc_id=moc_id)
 
 
-@app.command("guide")
+@app.command("guide", rich_help_panel="Setup and maintenance")
 def guide(
     topic: Annotated[str, typer.Argument(help="Guide topic.")] = "agent",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    """Show a built-in guide."""
+    """Show a built-in guide: `agent` (run registry) or `research` (vault workflow).
+
+    Example: expnote guide research --json
+    """
     if topic == "research":
         research_commands.guide_research(json_output)
         return
@@ -929,7 +976,7 @@ def guide(
     _emit(_AGENT_GUIDE if json_output else _render_agent_guide(), json_output)
 
 
-@app.command()
+@app.command(rich_help_panel="Setup and maintenance")
 def init(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
@@ -1936,9 +1983,7 @@ def run_update(
         )
     warnings = []
     if missing:
-        warnings.append(
-            "run is missing topic schema metadata: " + ", ".join(missing)
-        )
+        warnings.append("run is missing topic schema metadata: " + ", ".join(missing))
     _emit_with_warnings(data, warnings, json_output)
 
 
@@ -4059,7 +4104,7 @@ def markdown_sync_command(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Setup and maintenance")
 def validate(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,
@@ -4072,6 +4117,10 @@ def validate(
     ] = 2,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
+    """Check a run-registry workspace: counts, stale running runs, missing metadata.
+
+    Read-only. Research notes are checked with `expnote check`.
+    """
     ctx = _workspace_context(workspace, workspace_dir)
     root = ctx.root
     state_dir = ctx.workspace_dir
@@ -4106,7 +4155,7 @@ def validate(
     _emit(result, json_output)
 
 
-@app.command()
+@app.command(rich_help_panel="Setup and maintenance")
 def web(
     workspace: WorkspaceOption = None,
     workspace_dir: WorkspaceDirOption = None,

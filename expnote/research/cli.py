@@ -28,9 +28,10 @@ from expnote.research.registry import (
 )
 
 project_app = typer.Typer(
-    help="Research projects: registry bindings and profile. "
-    "First step for a vault project: `expnote project init --project-dir PATH "
-    "--images-dir PATH` (dry-run; add --apply), then `expnote check`."
+    help="Research projects: init, register, list, show, use, rebind (registry "
+    "bindings and profile).",
+    epilog="First step for a vault project: `expnote project init --project-dir "
+    "PATH --images-dir PATH` (dry-run; add --apply), then `expnote check`.",
 )
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Print the JSON envelope.")]

@@ -626,6 +626,45 @@ expnote plan close PLAN-002 --reason "Dropped: out of scope for this study." --f
   --authorization "Yes, drop it." --no-quiet --apply
 ```
 
+**An approved plan always has a next step.** `expnote next` shows, for each plan in
+`approved`: `plan-needs-exec` when it has no exec-plan (write it with `new exec`);
+`exec-awaiting-freeze` for a draft exec-plan no decision cites: freeze it yourself,
+`expnote exec freeze <EXEC_ID> --self-approve --no-new-rules --apply`, when it adds no
+judgement rules beyond the approved plan (this records a confirmed decision "by agent"
+and writes `approved_by: agent`, `new_rules: false`), otherwise propose the rules
+decision for the user (`approved_by: user`, `new_rules: true`; `check` fails
+`LIFE.EXEC_RULES_NOT_USER` when an agent decision backs an exec-plan that says
+`new_rules: true`). New judgement rules always need the user and formal runs wait for
+them; engineering preparation (implementation, material checks, smoke tests) never
+does, and `plan-prep-while-rules-pending` says so while the user decides; the existing
+steps cover a pending or confirmed decision (`exec freeze` after the user confirms); and `plan-ready-to-run` once an exec-plan is
+frozen (start the runs per the exec-plan, then `plan advance PLAN-001 --to running`).
+
+**Reopening a plan.** A closed or confirmed plan can start a new cycle. First the
+user confirms a decision that concerns the plan, then:
+
+```bash
+expnote plan reopen PLAN-001 --decision DEMO-DEC-0007          # dry-run (exit 4)
+expnote plan reopen PLAN-001 --decision DEMO-DEC-0007 --apply
+```
+
+The plan goes back to `approved` (`approved_decision` is the new decision,
+`closed_decision` and `result` are cleared, `forced_close` is dropped), gets
+`reopened_on`, and `earlier_cycle` lists every note of the finished cycle (it
+accumulates over repeated reopens). The body is untouched. The gates then look at the
+current cycle only: the new cycle needs its own frozen exec-plan, evidence and
+ONE new final result. That result must link the earlier cycle's active result(s)
+(`check` warns `LIFE.REOPEN_RES_NOT_MERGED` otherwise), and `res confirm` marks
+those earlier results `superseded`. The GUI shows "Reopened <date>" and tags
+earlier-cycle notes; reopening itself is CLI only.
+
+A plan reopened by editing the frontmatter by hand is flagged by
+`LIFE.PLAN_REOPEN_UNMARKED` (and the `plan-reopen-unmarked` TODO). Mark it with
+`plan reopen PLAN-001 --decision <its approved_decision> --mark-existing`: members
+dated before the decision (`frozen_on` for exec-plans, else `created`) go to the
+earlier cycle, later ones stay current; the dry-run prints the split. Members with
+no date must be placed with `--earlier <stem>` (repeatable).
+
 ### 5.8 TODOs
 
 `expnote todo list` merges *derived* items, computed from the state of the notes and

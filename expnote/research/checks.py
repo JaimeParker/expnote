@@ -27,6 +27,7 @@ from expnote.research.textkit import (
     HTML_COMMENT_RE,
     WIKILINK_RE,
     find_section,
+    fold,
     hash_section,
     is_attachment_name,
     iter_links,
@@ -47,6 +48,8 @@ NEW_CODES = frozenset(
         "SCHEMA.OLD",
         "DEC.AUTH_WEAK",
         "LIFE.PLAN_FORCED_CLOSE",
+        "LIFE.REOPEN_RES_NOT_MERGED",
+        "LIFE.PLAN_REOPEN_UNMARKED",
         "DEC.NO_OPTIONS",
         "FM.NESTED_MAP",
     }
@@ -255,6 +258,47 @@ def _supported(note: Note) -> bool:
     return note.schema in SUPPORTED_SCHEMAS
 
 
+def _check_reopen(
+    snap: VaultSnapshot,
+    note: Note,
+    members: list[Note],
+    earlier_members: list[Note],
+    active: list[Note],
+    sink: FindingSink,
+) -> None:
+    where = note.rel
+    if note.get("reopened_on") or earlier_members:
+        pending = [
+            r
+            for r in earlier_members
+            if snap.entity_type(r) == "result" and _is_active_result(r)
+        ]
+        for result in active:
+            linked = {fold(link_stem(t)) for _, t in iter_links(result.body)}
+            missing = [r for r in pending if r.cstem not in linked]
+            if missing:
+                sink.add(
+                    "WARN",
+                    "LIFE.REOPEN_RES_NOT_MERGED",
+                    result.rel,
+                    "the reopened plan's result does not link the earlier-cycle "
+                    "result(s) it must merge: "
+                    + ", ".join(sorted(r.stem for r in missing)),
+                )
+    elif (
+        not note.is_true("legacy")
+        and note.get("status") in ("draft", "approved", "running")
+        and any(r.get("status") == "confirmed" for r in active)
+    ):
+        sink.add(
+            "WARN",
+            "LIFE.PLAN_REOPEN_UNMARKED",
+            where,
+            f"a {note.get('status')} plan holds a confirmed result but has no "
+            "`reopened_on`: mark the reopen (`plan reopen --mark-existing`)",
+        )
+
+
 def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
     where = note.rel
     lenient = note.schema == "3"
@@ -262,9 +306,11 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
     legacy = note.is_true("legacy")
     order = ("draft", "approved", "running", "read-out", "confirmed", "closed")
     rank = order.index(status) if status in order else -1
-    members = snap.plan_members(note.get("id", ""))
+    plan_id = note.get("id", "")
+    members, earlier_members = snap.plan_cycle_members(plan_id)
     results = [m for m in members if snap.entity_type(m) == "result"]
     active = [r for r in results if _is_active_result(r)]
+    _check_reopen(snap, note, members, earlier_members, active, sink)
     # A legacy plan may still wait for its single final result (drafted after the
     # migration): the three result-count codes are WARN there, FAIL otherwise.
     # A forced close (the user ended the plan early) turns the process gates into
@@ -424,7 +470,7 @@ def _check_exec_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None
             f"missing the rules section (heading starting {profile.heading_rules!r})",
         )
     if status in ("frozen", "running", "done") and not legacy:
-        _decision_ok(
+        rules_row = _decision_ok(
             snap,
             note.get("rules_decision"),
             sink,
@@ -433,6 +479,18 @@ def _check_exec_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None
             "LIFE.EXEC_NO_RULES_DECISION",
             lenient=note.schema == "3",
         )
+        if (
+            note.get("new_rules") == "true"
+            and rules_row is not None
+            and rules_row.confirmed_by == "agent"
+        ):
+            sink.add(
+                "FAIL",
+                "LIFE.EXEC_RULES_NOT_USER",
+                where,
+                "new_rules is true: the rules decision must be confirmed by the "
+                "user, not by the agent",
+            )
         stored = note.get("rules_sha256")
         if not stored:
             sink.add(
@@ -1146,9 +1204,7 @@ def run_checks(snap: VaultSnapshot, plan_id: str | None = None) -> CheckResult:
                 )
             continue
         entity = note.type
-        if (
-            field_table(entity or "", note.schema or "") is None
-        ):
+        if field_table(entity or "", note.schema or "") is None:
             continue
         validate_fields(snap, note, entity, sink)
         if entity == "plan":

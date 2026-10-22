@@ -65,8 +65,15 @@ AuthorizationOption = Annotated[
     ),
 ]
 
-new_app = typer.Typer(help="Create notes from templates (dry-run unless --apply).")
-ev_label_app = typer.Typer(help="User labels of an evidence page (user-only).")
+new_app = typer.Typer(
+    help="Create notes from templates: plan, exec, ev, res, decision, profile "
+    "(dry-run unless --apply).",
+    epilog="Example: `expnote new exec --plan <PLAN_ID> --stage <STAGE> "
+    '--title "<TITLE>" --apply`.',
+)
+ev_label_app = typer.Typer(
+    help="User labels of an evidence page (user-only): show, set, commit."
+)
 ev_app.add_typer(ev_label_app, name="label")
 
 
@@ -410,9 +417,7 @@ def decision_restore(
             with store.transaction():
                 restore_rows(store, rows, events, replace=replace)
             try:
-                _, record = sync_export(
-                    store, wctx, target, command="decision restore"
-                )
+                _, record = sync_export(store, wctx, target, command="decision restore")
             except ResearchError as error:
                 if error.code != "EXPORT_DIVERGED":
                     raise
@@ -497,6 +502,57 @@ def plan_close(
     )
 
 
+@plan_app.command("reopen")
+def plan_reopen(
+    plan_id: Annotated[str, typer.Argument(metavar="ID")],
+    decision: Annotated[
+        str, typer.Option("--decision", help="Confirmed decision that reopens it.")
+    ],
+    mark_existing: Annotated[
+        bool,
+        typer.Option(
+            "--mark-existing",
+            help="Mark a plan that was reopened by hand (approved/running, no "
+            "reopened_on); --decision is its approved_decision.",
+        ),
+    ] = False,
+    earlier: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--earlier",
+            help="With --mark-existing: place this member in the earlier cycle "
+            "(repeatable; needed for members without a date).",
+        ),
+    ] = None,
+    authorization: AuthorizationOption = None,
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Start a new cycle of a closed/confirmed plan (needs a confirmed decision).
+
+    Example: expnote plan reopen <PLAN_ID> --decision <DECISION_ID> --apply
+    """
+    run_write(
+        "plan reopen",
+        lambda view: writes.plan_plan_reopen(
+            view,
+            plan_id,
+            decision=decision,
+            mark_existing=mark_existing,
+            earlier=tuple(earlier or ()),
+            authorization=authorization,
+            expected_sha256=expected_sha256,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
 @plan_app.command("adopt")
 def plan_adopt(
     note: Annotated[
@@ -543,13 +599,32 @@ def exec_freeze(
     amend: Annotated[
         str | None, typer.Option("--amend", help="Registered deviation id.")
     ] = None,
+    self_approve: Annotated[
+        bool,
+        typer.Option(
+            "--self-approve",
+            help="Agent path: record a confirmed 'no new judgement rules' decision "
+            "and freeze (needs --no-new-rules).",
+        ),
+    ] = False,
+    no_new_rules: Annotated[
+        bool,
+        typer.Option(
+            "--no-new-rules",
+            help="Assert the exec-plan adds no judgement rules beyond the plan.",
+        ),
+    ] = False,
     expected_sha256: ExpectedOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Store the rules hash and freeze an exec-plan (re-freeze with --amend)."""
+    """Store the rules hash and freeze an exec-plan (re-freeze with --amend).
+
+    Two paths: --rules-decision <user-confirmed decision>, or, when the exec-plan
+    adds no new judgement rules, --self-approve --no-new-rules (agent).
+    """
     run_write(
         "exec freeze",
         lambda view: writes.plan_exec_freeze(
@@ -557,6 +632,8 @@ def exec_freeze(
             ident,
             rules_decision=rules_decision,
             amend=amend,
+            self_approve=self_approve,
+            no_new_rules=no_new_rules,
             expected_sha256=expected_sha256,
         ),
         project=project,

@@ -25,7 +25,7 @@ from expnote.research.writeback import project_state_dir
 STORE_SCHEMA = 1
 STORE_FILE = "decisions.sqlite"
 BUSY_TIMEOUT_SECONDS = 15
-CONFIRMERS = ("user", "agent-for-user", "legacy")
+CONFIRMERS = ("user", "agent-for-user", "agent", "legacy")
 SOURCES = ("migrated", "cli", "chat", "gui")
 FLOW = {
     "proposed": ("confirmed", "rejected"),

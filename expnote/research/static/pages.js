@@ -144,6 +144,16 @@ async function indexPage(ctx) {
 
 const ACTIVE_ORDER = ["awaiting-approval", "running", "approved", "read-out", "draft"];
 
+// Marks a note of a plan's finished cycle (before it was reopened).
+function cycleTag(item) {
+  return item.earlierCycle ? h("span", { class: "tag-earlier" }, "earlier cycle") : null;
+}
+
+// Who approved an exec-plan's rules: the agent (no new judgement rules) or the user.
+function approvedTag(item) {
+  return item.approvedBy ? h("span", { class: `tag-approved by-${item.approvedBy}` }, `approved by ${item.approvedBy}`) : null;
+}
+
 function planRow(ctx, p) {
   const P = ctx.project;
   return h(
@@ -409,9 +419,9 @@ function railTabs(ctx, shown, b) {
   const evidence = b.evidence.map((e) =>
     h(
       "li",
-      { class: "ev-row" },
+      { class: e.earlierCycle ? "ev-row earlier-cycle" : "ev-row" },
       figureThumb(P, e.figures[0]),
-      h("div", { class: "ev-main" }, link(route.ev(P, e.stem), e.stem), h("div", { class: "d-meta" }, statusChip("ev", e.status), e.labelState !== "na" ? statusChip("label", e.labelState, names) : null, e.figures.length ? h("span", { class: "muted" }, plural(e.figures.length, "figure")) : null, e.appendix ? link(route.note(P, e.appendix.stem), "appendix") : null)),
+      h("div", { class: "ev-main" }, link(route.ev(P, e.stem), e.stem), h("div", { class: "d-meta" }, statusChip("ev", e.status), e.labelState !== "na" ? statusChip("label", e.labelState, names) : null, e.figures.length ? h("span", { class: "muted" }, plural(e.figures.length, "figure")) : null, e.appendix ? link(route.note(P, e.appendix.stem), "appendix") : null, cycleTag(e))),
     ),
   );
   return [
@@ -424,7 +434,7 @@ function railTabs(ctx, shown, b) {
       null,
       () =>
         b.results.length
-          ? h("ul", { class: "plain-rows" }, b.results.map((r) => h("li", null, h("div", null, link(route.note(P, r.stem), r.id || r.stem)), h("div", { class: "d-meta" }, statusChip("res", r.status), r.confirmedDecision ? pair("confirmed by", link(route.decision(P, r.confirmedDecision), r.confirmedDecision.replace(/^[A-Z0-9]+-DEC-0*/, "#"))) : null, r.deviationImpact ? pair("deviation impact", r.deviationImpact) : null))))
+          ? h("ul", { class: "plain-rows" }, b.results.map((r) => h("li", { class: r.earlierCycle ? "earlier-cycle" : "" }, h("div", null, link(route.note(P, r.stem), r.id || r.stem)), h("div", { class: "d-meta" }, cycleTag(r), statusChip("res", r.status), r.confirmedDecision ? pair("confirmed by", link(route.decision(P, r.confirmedDecision), r.confirmedDecision.replace(/^[A-Z0-9]+-DEC-0*/, "#"))) : null, r.deviationImpact ? pair("deviation impact", r.deviationImpact) : null))))
           : emptyState("No result card."),
     ],
     [
@@ -434,7 +444,12 @@ function railTabs(ctx, shown, b) {
       null,
       () =>
         b.execPlans.length
-          ? h("ul", { class: "plain-rows" }, b.execPlans.map((e) => h("li", null, h("div", null, link(route.note(P, e.stem), e.id || e.stem)), e.stage ? h("div", { class: "muted small" }, e.stage) : null, h("div", { class: "d-meta" }, statusChip("exec", e.status), e.frozen ? h("span", { class: "muted" }, "frozen") : null, e.rulesShaMatches === false ? statusWord("bad", "rules changed") : null, e.rulesDecision ? link(route.decision(P, e.rulesDecision), e.rulesDecision.replace(/^[A-Z0-9]+-DEC-0*/, "#")) : null))))
+          ? h(
+              "details",
+              { class: "exec-fold" },
+              h("summary", null, `Show ${b.execPlans.length} exec-plan${b.execPlans.length === 1 ? "" : "s"} to double-check`),
+              h("ul", { class: "plain-rows" }, b.execPlans.map((e) => h("li", { class: e.earlierCycle ? "earlier-cycle" : "" }, h("div", null, link(route.note(P, e.stem), e.id || e.stem)), e.stage ? h("div", { class: "muted small" }, e.stage) : null, h("div", { class: "d-meta" }, cycleTag(e), statusChip("exec", e.status), approvedTag(e), e.frozenOn ? h("span", { class: "date" }, `frozen ${e.frozenOn}`) : e.frozen ? h("span", { class: "muted" }, "frozen") : null, e.rulesShaMatches === false ? statusWord("bad", "rules changed") : null, e.rulesDecision ? link(route.decision(P, e.rulesDecision), e.rulesDecision.replace(/^[A-Z0-9]+-DEC-0*/, "#")) : null)))),
+            )
           : emptyState("No exec-plan."),
     ],
     [
@@ -542,6 +557,7 @@ async function planPage(ctx) {
         { class: "meta-line" },
         h("span", { class: "pair" }, statusChip("plan", info.status)),
         info.owner ? pair("Owner", info.owner) : null,
+        info.reopenedOn ? h("span", { class: "pair reopened" }, `Reopened ${info.reopenedOn}`) : null,
         h("span", { class: "muted", title: info.path }, `checksum ${short(info.sha256)}`),
         info.legacy ? h("span", { class: "muted" }, "legacy page") : null,
       ),

@@ -739,3 +739,9 @@ a.hit-title:hover { color: var(--accent); }
 .deviation-row .kv dd > .prose > :first-child { margin-top: 0; }
 .deviation-row .kv dd > .prose > :last-child { margin-bottom: 0; }
 .copy-word { font-size: 12.5px; }
+
+.earlier-cycle { opacity: 0.6; }
+.tag-earlier { color: var(--muted); border: 1px solid var(--muted); border-radius: 3px; padding: 0 4px; font-size: 0.85em; }
+.pair.reopened { font-weight: 600; }
+.tag-approved { border: 1px solid var(--muted); border-radius: 3px; padding: 0 4px; font-size: 0.85em; }
+.exec-fold > summary { cursor: pointer; margin-bottom: 8px; }

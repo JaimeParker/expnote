@@ -124,6 +124,44 @@ RESEARCH_GUIDE = {
                 available=True,
             ),
         ],
+        "approved plan to running": [
+            _step(
+                "expnote next --json",
+                "an approved plan always has an agent step: `plan-needs-exec` "
+                "(write the exec-plan; engineering preparation never waits), "
+                "`exec-awaiting-freeze` (freeze it yourself with `exec freeze "
+                "<EXEC_ID> --self-approve --no-new-rules --apply` if it adds no "
+                "judgement rules, otherwise propose the rules decision: new "
+                "judgement rules need the user, and formal runs wait for them), "
+                "`plan-prep-while-rules-pending`, then the existing steps (freeze "
+                "once the user confirmed), then `plan-ready-to-run` (start runs, "
+                "advance to running)",
+                available=True,
+            ),
+        ],
+        "reopen a closed plan": [
+            _step(
+                "expnote decision new --title <TITLE> --layer <LAYER> --decided "
+                "<WHAT> --reason <WHY> --plans <PLAN_ID> --apply",
+                "the user confirms a decision that concerns the plan first",
+                available=True,
+            ),
+            _step(
+                "expnote plan reopen <PLAN_ID> --decision <DECISION_ID> --apply",
+                "dry-run first; a closed/confirmed plan goes back to approved, "
+                "`earlier_cycle` lists the members of the finished cycle; the new "
+                "cycle needs its own exec-plan and ONE new final result that links "
+                "the earlier one(s), and `res confirm` then supersedes them",
+                available=True,
+            ),
+            _step(
+                "expnote plan reopen <PLAN_ID> --decision <APPROVED_DECISION> "
+                "--mark-existing",
+                "for a plan reopened by hand; the dry-run prints the earlier/current "
+                "split (undated members need --earlier <stem>)",
+                available=True,
+            ),
+        ],
         "run a stage": [
             _step(
                 "expnote new exec --plan <PLAN_ID> --stage <STAGE> "
@@ -201,6 +239,11 @@ RESEARCH_GUIDE = {
         "stale-running-runs",
         "ev-unmapped",
         "plan-draft-unadopted",
+        "plan-needs-exec",
+        "exec-awaiting-freeze",
+        "plan-prep-while-rules-pending",
+        "plan-ready-to-run",
+        "plan-reopen-unmarked",
     ],
     "exitCodes": EXIT_CODES,
     "availability": "every writing command is a dry-run until --apply (exit 4 "

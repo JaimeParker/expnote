@@ -26,6 +26,7 @@ from expnote.research.extract import first_h1
 from expnote.research.index import linked_workspaces
 from expnote.research.model import Note
 from expnote.research.runs import join_runs
+from expnote.research.snapshot import earlier_cycle_stems
 from expnote.research.todos import derived_todos, manual_todos
 from expnote.research.view import ProjectView
 from expnote.workspace import data_home
@@ -212,12 +213,15 @@ def build_bundle(
     wanted = set(sections or SECTIONS)
     plan = find_plan(view, plan_id)
     members = plan_members(view, plan)
+    earlier_stems = earlier_cycle_stems(plan)
     warnings: list[dict] = []
     data: dict = {}
 
     def with_body(entry: dict, note: Note | None) -> dict:
         if include_body and note is not None:
             entry["body"] = note.body
+        if note is not None:
+            entry["earlierCycle"] = note.cstem in earlier_stems
         return entry
 
     if "plan" in wanted:

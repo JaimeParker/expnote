@@ -25,6 +25,8 @@ from expnote.research.textkit import (
     fold,
     glob_to_regex,
     is_attachment_name,
+    iter_links,
+    link_stem,
     nfc,
 )
 
@@ -90,6 +92,11 @@ class VaultSnapshot:
         hits.sort(key=self.is_archived)  # prefer a non-archived page
         return hits[0] if hits else None
 
+    def plan_page_of(self, member: Note) -> Note | None:
+        stem = member.link_field("plan")
+        page = self.note(stem) if stem else None
+        return page if page is not None and page.type == "plan" else None
+
     def plan_members(self, plan_id: str) -> list[Note]:
         page = self.plan_page(plan_id)
         if page is None:
@@ -99,6 +106,18 @@ class VaultSnapshot:
             for n in self.registry
             if n is not page and n.link_field("plan") == page.cstem
         ]
+
+    def plan_cycle_members(self, plan_id: str) -> tuple[list[Note], list[Note]]:
+        """(current, earlier) members; earlier ones are linked from `earlier_cycle`."""
+        page = self.plan_page(plan_id)
+        members = self.plan_members(plan_id)
+        earlier_stems = earlier_cycle_stems(page) if page is not None else set()
+        current = [m for m in members if m.cstem not in earlier_stems]
+        earlier = [m for m in members if m.cstem in earlier_stems]
+        return current, earlier
+
+    def current_plan_members(self, plan_id: str) -> list[Note]:
+        return self.plan_cycle_members(plan_id)[0]
 
     def decisions_for_plan(self, plan_id: str) -> list[tuple[Decision, list[str]]]:
         page = self.plan_page(plan_id)
@@ -125,6 +144,22 @@ class VaultSnapshot:
         """Entity type after the profile's legacy type map; None for other notes."""
         mapped = self.profile.legacy_type_map.get(note.type or "", note.type)
         return mapped if mapped in ENTITY_TYPES else None
+
+
+def earlier_cycle_links(plan: Note) -> list[str]:
+    """Stems (as written) of the notes a plan's `earlier_cycle` field links."""
+    value = plan.get("earlier_cycle")
+    items = value if isinstance(value, list) else [value]
+    return [
+        link_stem(target)
+        for item in items
+        if isinstance(item, str)
+        for _, target in iter_links(item)
+    ]
+
+
+def earlier_cycle_stems(plan: Note) -> set[str]:
+    return {fold(stem) for stem in earlier_cycle_links(plan)}
 
 
 def _deviation_order(did: str) -> tuple[int, str]:

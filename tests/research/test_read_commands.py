@@ -444,6 +444,7 @@ ITEM_KEYS = {
     "plan": {
         "id", "title", "status", "legacy", "path", "absPath", "sha256", "owner",
         "approvedDecision", "closedDecision", "result", "summary", "outline", "body",
+        "reopenedOn", "earlierCycle",
     },
     "gates": {"current", "known", "currentUnmet", "next"},
     "decisions": {
@@ -453,15 +454,16 @@ ITEM_KEYS = {
     },
     "execPlans": {
         "id", "stem", "plan", "stage", "status", "legacy", "frozen",
-        "rulesShaMatches", "rulesDecision", "amendedBy", "path",
+        "rulesShaMatches", "rulesDecision", "amendedBy", "path", "earlierCycle",
+        "approvedBy", "newRules", "frozenOn",
     },
     "evidence": {
         "stem", "status", "labelState", "labelledBy", "labelAuthorization", "plan",
-        "execPlan", "figures", "appendix", "runs", "legacy", "path",
+        "execPlan", "figures", "appendix", "runs", "legacy", "path", "earlierCycle",
     },
     "results": {
         "id", "stem", "plan", "status", "statusRaw", "confirmedDecision",
-        "deviationImpact", "supersededBy", "evidence", "legacy", "path",
+        "deviationImpact", "supersededBy", "evidence", "legacy", "path", "earlierCycle",
     },
     "deviations": {
         "id", "date", "status", "found", "impact", "experiment", "cards", "summary",

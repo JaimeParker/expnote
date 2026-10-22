@@ -20,6 +20,7 @@ from expnote.research.decisions import parse_decision_ref
 from expnote.research.errors import ResearchError
 from expnote.research.model import Decision, DeviationRow, FindingSink, Note
 from expnote.research.schemas import SUPPORTED_SCHEMAS
+from expnote.research.snapshot import earlier_cycle_links
 from expnote.research.summary import ONE_LINE_LIMIT, first_sentence, truncate
 from expnote.research.textkit import (
     HTML_COMMENT_RE,
@@ -439,6 +440,9 @@ def exec_item(view: ProjectView, note: Note) -> dict:
         "rulesShaMatches": (stored == computed) if stored and computed else None,
         "rulesDecision": decision_ref_id(view, note.get("rules_decision")),
         "amendedBy": _strs(note.get("rules_amended_by")),
+        "approvedBy": _str(note.get("approved_by")),
+        "newRules": {"true": True, "false": False}.get(note.get("new_rules")),
+        "frozenOn": _str(note.get("frozen_on")),
         "path": view.vault_rel(note),
     }
 
@@ -623,6 +627,40 @@ def deviation_detail(view: ProjectView, ident: str) -> dict:
     return {"deviation": item}
 
 
+def plan_cycle_members(view: ProjectView, plan: Note) -> tuple[list[Note], list[Note]]:
+    """(current-cycle, earlier-cycle) members of a plan."""
+    return view.snapshot.plan_cycle_members(str(plan.get("id", "")))
+
+
+def current_plan_members(view: ProjectView, plan: Note) -> list[Note]:
+    return view.snapshot.current_plan_members(str(plan.get("id", "")))
+
+
+DATE_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def note_date(view: ProjectView, note: Note) -> str | None:
+    """`frozen_on` for an exec-plan, else `created`; an appendix follows its parent."""
+    snap = view.snapshot
+    is_exec = snap.entity_type(note) == "exec-plan"
+    for key in ("frozen_on", "created") if is_exec else ("created",):
+        value = note.get(key)
+        if isinstance(value, str) and DATE_PREFIX.match(value.strip()):
+            return value.strip()[:10]
+    parent = note.link_field("parent")
+    parent_note = snap.note(parent) if parent else None
+    if parent_note is not None and parent_note is not note:
+        return note_date(view, parent_note)
+    return None
+
+
+def lifecycle_members(view: ProjectView, plan: Note) -> list[Note]:
+    """Exec-plans, results, evidence and appendices: the notes cycles are split by."""
+    return [
+        m for m in plan_members(view, plan) if view.snapshot.entity_type(m) is not None
+    ]
+
+
 def plan_members(view: ProjectView, plan: Note) -> list[Note]:
     return view.snapshot.plan_members(str(plan.get("id", "")))
 
@@ -672,7 +710,7 @@ def plan_status_counts(view: ProjectView) -> dict[str, int]:
 def plan_item(view: ProjectView, plan: Note, open_items: int | None = None) -> dict:
     snap = view.snapshot
     plan_id = str(plan.get("id", ""))
-    members = plan_members(view, plan)
+    members = snap.current_plan_members(plan_id)
     results = [m for m in members if snap.entity_type(m) == "result"]
     active = [
         r
@@ -705,6 +743,8 @@ def plan_core(view: ProjectView, plan: Note, include_body: bool) -> dict:
         "absPath": str(view.abs_path(plan)),
         "sha256": view.file_sha256(plan.rel),
         "owner": _str(plan.get("owner")),
+        "reopenedOn": _str(plan.get("reopened_on")),
+        "earlierCycle": earlier_cycle_links(plan),
         "approvedDecision": decision_ref_id(view, plan.get("approved_decision")),
         "closedDecision": decision_ref_id(view, plan.get("closed_decision")),
         "result": (_str(result.get("id")) or result.stem)

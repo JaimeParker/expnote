@@ -9,9 +9,12 @@ from expnote.research import adopt
 from expnote.research.entities import (
     decision_id,
     decision_plans,
+    decision_ref_id,
     deviation_plans,
     is_legacy,
+    lifecycle_members,
     normalized_result_status,
+    note_date,
     notes_of,
     plan_id_of,
     plan_members,
@@ -31,6 +34,11 @@ IMPACT_CHOICES = "--deviation-impact <none|weak|moderate|affects>"
 NEXT_PRIORITY = (
     "decision-confirmed-not-applied",
     "plan-gate-blocked",
+    "plan-reopen-unmarked",
+    "plan-ready-to-run",
+    "plan-needs-exec",
+    "exec-awaiting-freeze",
+    "plan-prep-while-rules-pending",
     "legacy-no-final-res",
     "final-res-pending",
     "deviation-open",
@@ -85,6 +93,11 @@ class _Derive:
         self.pages = plan_pages(view)
         self.decisions = [self.snap.decisions[n] for n in sorted(self.snap.decisions)]
         self.plans_of = decision_plans(view)
+        self.unmarked = {
+            f.where
+            for f in view.checks().findings
+            if f.code == "LIFE.PLAN_REOPEN_UNMARKED"
+        }
 
     def decision_id(self, decision: Decision) -> str:
         return decision_id(self.view, decision)
@@ -194,6 +207,22 @@ class _Derive:
                 continue
             did = self.decision_id(decision)
             if decision.status == "proposed":
+                if page.get("status") == "approved" and page.rel not in self.unmarked:
+                    items.append(
+                        _item(
+                            "plan-prep-while-rules-pending",
+                            "agent",
+                            "info",
+                            f"{plan_id}:{did}",
+                            f"formal runs of {plan_id} wait for {did}; do "
+                            "engineering preparation now (implementation, "
+                            "material checks, smoke tests)",
+                            "prepare; do not start formal runs",
+                            plan=plan_id,
+                            decision=did,
+                            stem=member.stem,
+                        )
+                    )
                 items.append(
                     _item(
                         "exec-rules-unconfirmed",
@@ -342,6 +371,139 @@ class _Derive:
                     items += self.result_confirmation(page, member)
             items += self.legacy_without_final_result(page, members)
             items += self.final_res_pending(page, members)
+            items += self.approved_plan_next_step(page)
+        return items
+
+    def approved_plan_next_step(self, page: Note) -> list[dict]:
+        """An approved plan: write the exec-plan, decide its rules, or start runs."""
+        if page.get("status") != "approved" or page.rel in self.unmarked:
+            return []  # an unmarked reopen comes first
+        plan_id = str(page.get("id", ""))
+        execs = [
+            m
+            for m in self.snap.current_plan_members(plan_id)
+            if self.snap.entity_type(m) == "exec-plan"
+        ]
+        ready = [m for m in execs if m.get("status") in ("frozen", "running", "done")]
+        usable = [m for m in execs if m.get("status") != "aborted"]
+        if ready:
+            reopened = page.get("reopened_on")
+            ids = ", ".join(str(m.get("id") or m.stem) for m in ready)
+            cycle = f" (reopened {reopened})" if reopened else ""
+            return [
+                _item(
+                    "plan-ready-to-run",
+                    "agent",
+                    "action",
+                    plan_id,
+                    f"{plan_id}{cycle} is approved and {ids} is frozen: start runs "
+                    "per the exec-plan, then advance the plan to running",
+                    "start the runs, then advance the plan",
+                    plan=plan_id,
+                    command=f"expnote plan advance {plan_id} --to running --apply"
+                    + self.flag,
+                    execPlans=[
+                        {
+                            "id": str(m.get("id") or m.stem),
+                            "stem": m.stem,
+                            "path": self.view.vault_rel(m),
+                        }
+                        for m in ready
+                    ],
+                )
+            ]
+        if not usable:
+            return [
+                _item(
+                    "plan-needs-exec",
+                    "agent",
+                    "action",
+                    plan_id,
+                    f"{plan_id} is approved but has no exec-plan: write it "
+                    "(engineering preparation can start now; formal runs wait for "
+                    "a frozen exec-plan)",
+                    "create the exec-plan and write its rules section",
+                    plan=plan_id,
+                    command=f"expnote new exec --plan {plan_id} --stage <STAGE> "
+                    f'--title "<TITLE>" --apply' + self.flag,
+                )
+            ]
+        items = []
+        for draft in (m for m in usable if m.get("status") == "draft"):
+            if any(
+                d.status in ("proposed", "confirmed") and lands_cites(d, draft.cstem)
+                for d in self.decisions
+            ):
+                continue
+            exec_id = str(draft.get("id") or draft.stem)
+            propose = (
+                'expnote decision new --title "<TITLE>" --layer <LAYER> '
+                '--decided "<RULES>" --reason "<WHY>" '
+                f'--plans {plan_id} --targets "[[{draft.stem}]]" --apply' + self.flag
+            )
+            self_approve = (
+                f"expnote exec freeze {exec_id} --self-approve --no-new-rules "
+                "--apply" + self.flag
+            )
+            user_only = draft.get("new_rules") == "true"
+            items.append(
+                _item(
+                    "exec-awaiting-freeze",
+                    "agent",
+                    "action",
+                    exec_id,
+                    f"{exec_id} is a draft: freeze it yourself if it adds no "
+                    "judgement rules, otherwise propose the rules decision for "
+                    "the user",
+                    "freeze it, or propose the rules decision",
+                    plan=plan_id,
+                    command=propose if user_only else self_approve,
+                    altCommand=None if user_only else propose,
+                    stem=draft.stem,
+                    execPlans=[
+                        {
+                            "id": exec_id,
+                            "stem": draft.stem,
+                            "path": self.view.vault_rel(draft),
+                        }
+                    ],
+                )
+            )
+        return items
+
+    def reopen_unmarked(self) -> list[dict]:
+        items = []
+        for page in self.pages:
+            if page.rel not in self.unmarked:
+                continue
+            plan_id = str(page.get("id", ""))
+            did = decision_ref_id(self.view, page.get("approved_decision"))
+            undated = sorted(
+                m.stem
+                for m in lifecycle_members(self.view, page)
+                if note_date(self.view, m) is None
+            )
+            hint = (
+                f"; {len(undated)} member(s) have no date, each needs "
+                "`--earlier <stem>` or a date: " + ", ".join(undated)
+                if undated
+                else ""
+            )
+            items.append(
+                _item(
+                    "plan-reopen-unmarked",
+                    "agent",
+                    "warn",
+                    plan_id,
+                    f"plan {plan_id} is {page.get('status')} but still holds a "
+                    f"confirmed result: mark the reopen{hint}",
+                    "run the dry run, review the earlier/current split, then apply",
+                    plan=plan_id,
+                    command=f"expnote plan reopen {plan_id} --mark-existing "
+                    f"--decision {did or '<APPROVED_DECISION>'}" + self.flag,
+                    undated=undated,
+                )
+            )
         return items
 
     def gate_blocked(self) -> list[dict]:
@@ -495,6 +657,7 @@ def derived_todos(
         *derive.evidence(),
         *derive.plans(),
         *derive.gate_blocked(),
+        *derive.reopen_unmarked(),
         *derive.open_deviations(),
         *derive.reviews_due(),
         *derive.conflict_files(),

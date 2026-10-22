@@ -56,13 +56,43 @@ CursorOption = Annotated[
     str | None, typer.Option("--cursor", help="Continue from meta.nextCursor.")
 ]
 
-plan_app = typer.Typer(help="Plans: list, show, bundle, advance, adopt, next-id.")
-decision_app = typer.Typer(help="Decisions: list, show, new, set.")
-exec_app = typer.Typer(help="Exec-plans: list, show, freeze, advance.")
-ev_app = typer.Typer(help="Evidence pages: list, label, split.")
-res_app = typer.Typer(help="Results: list, confirm.")
-deviation_app = typer.Typer(help="Deviation register: list, show, add, close.")
-todo_app = typer.Typer(help="TODOs: derived and manual (add, done, adopt).")
+plan_app = typer.Typer(
+    help="Plans: list, show, bundle, advance, close, reopen, adopt, next-id.",
+    epilog="Examples: `expnote plan bundle <PLAN_ID> --json` (all context of a plan); "
+    "`expnote plan advance <PLAN_ID> --to running --apply`; "
+    "`expnote plan reopen <PLAN_ID> --decision <DECISION_ID> --apply`. "
+    "Writes are dry runs (exit 4) unless --apply.",
+)
+decision_app = typer.Typer(
+    help="Decisions: list, show, new, set, export, restore.",
+    epilog='Example: `expnote decision new --title "<T>" --layer <LAYER> '
+    '--decided "<WHAT>" --reason "<WHY>" --plans <PLAN_ID> --apply`; '
+    "`expnote decision set <DECISION_ID> --status confirmed --authorization "
+    '"<USER_WORDS>" --apply`.',
+)
+exec_app = typer.Typer(
+    help="Exec-plans: list, show, freeze, advance.",
+    epilog="Example: `expnote exec freeze <EXEC_ID> --rules-decision <DECISION_ID> "
+    "--apply`; `expnote exec advance <EXEC_ID> --to running --apply`.",
+)
+ev_app = typer.Typer(
+    help="Evidence pages: list, split, label (label show, set, commit).",
+    epilog="Labels are the user's: `expnote ev label show <EV> --json`.",
+)
+res_app = typer.Typer(
+    help="Results: list, confirm.",
+    epilog="Example: `expnote res confirm <RES_ID> --decision <DECISION_ID> "
+    "--deviation-impact <none|weak|moderate|affects> --apply`.",
+)
+deviation_app = typer.Typer(
+    help="Deviation register: list, show, add, close.",
+    epilog="Example: `expnote deviation list --json`.",
+)
+todo_app = typer.Typer(
+    help="TODOs, derived and manual: list, add, done, adopt.",
+    epilog="Example: `expnote todo list --owner agent --json`; `expnote next --json` "
+    "orders the agent's steps.",
+)
 
 
 def _one_of(option: str, value: str | None, allowed: tuple[str, ...], optional=False):
@@ -670,7 +700,10 @@ def next_command(
     no_refresh: NoRefreshOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Ordered next steps with the exact command to run."""
+    """Ordered next steps with the exact command to run.
+
+    Example: expnote next --project <ID> --json (add --owner user for the user's list).
+    """
 
     def action() -> CommandResult:
         _one_of("--owner", owner, ("user", "agent"))

@@ -45,7 +45,8 @@ from expnote.research.errors import ResearchError
 from expnote.research.extract import TODO_FIELD_RE, TODO_LINE_RE, parse_todo_lines
 from expnote.research.model import FindingSink, Note
 from expnote.research.schemas import DEVIATION_IMPACT
-from expnote.research.textkit import find_section, split_table_row
+from expnote.research.snapshot import earlier_cycle_links
+from expnote.research.textkit import find_section, fold, link_stem, split_table_row
 from expnote.research.view import ProjectView
 from expnote.research.writeback import (
     FileEdit,
@@ -1017,7 +1018,7 @@ def _active_results(view: ProjectView, plan: Note) -> list[Note]:
     snap = view.snapshot
     return [
         m
-        for m in entities.plan_members(view, plan)
+        for m in entities.current_plan_members(view, plan)
         if snap.entity_type(m) == "result"
         and m.get("status") not in ("superseded", "withdrawn")
     ]
@@ -1078,6 +1079,171 @@ def plan_plan_advance(
     passed = [{"code": "LIFE.GATES", "ok": True, "message": f"gates for {to} pass"}]
     edit = _fm_edit(view, page, list(literals.items()), expected_sha256)
     return WritePlan([edit], {**base, "gates": passed})
+
+
+entities.DATE_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _reopen_decision(view: ProjectView, plan: Note, decision: str):
+    plan_id = str(plan.get("id", ""))
+    number, row = _decision(view, decision)
+    if row.status != "confirmed":
+        raise gate_failed(
+            f"decision {decision} is {row.status or row.status_raw!r}; reopening "
+            "needs a confirmed decision",
+            [_gate("LIFE.REOPEN_DECISION_NOT_CONFIRMED", str(row.status))],
+        )
+    concerned = {d.number for d, _ in view.snapshot.decisions_for_plan(plan_id)}
+    if number not in concerned:
+        raise gate_failed(
+            f"decision {decision} does not concern {plan_id}",
+            [_gate("LIFE.REOPEN_DECISION_UNRELATED", decision)],
+            remediation="record a decision whose plans/targets include the plan",
+        )
+    return number, row
+
+
+def _cycle_links(plan: Note, members: list[Note]) -> list[str]:
+    """Existing `earlier_cycle` entries plus links to `members`, no duplicates."""
+    listed = [_wrap_link(stem) for stem in earlier_cycle_links(plan)]
+    seen = {fold(stem) for stem in earlier_cycle_links(plan)}
+    for member in members:
+        if member.cstem not in seen:
+            seen.add(member.cstem)
+            listed.append(_stem_link(member))
+    return listed
+
+
+def plan_plan_reopen(
+    view: ProjectView,
+    plan_id: str,
+    *,
+    decision: str,
+    mark_existing: bool = False,
+    earlier: tuple[str, ...] = (),
+    authorization: str | None = None,
+    expected_sha256: str | None = None,
+) -> WritePlan:
+    """Start a new cycle of a closed/confirmed plan, or mark one reopened by hand.
+
+    The confirmed decision is the user's word, so it doubles as the authorization
+    unless the caller passes their own.
+    """
+    page = entities.find_plan(view, plan_id)
+    status = page.get("status")
+    number, row = _reopen_decision(view, page, decision)
+    ident = decision_id_of(view, number)
+    authorization = (authorization or "").strip() or ident
+    members = entities.lifecycle_members(view, page)
+    base = {"plan": plan_id, "from": status, "decision": ident}
+    if mark_existing:
+        return _plan_mark_reopened(
+            view, page, row, number, members, base, earlier, authorization,
+            expected_sha256,
+        )  # fmt: skip
+    if earlier:
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--earlier only goes with --mark-existing", exit_code=2
+        )
+    if status not in ("closed", "confirmed"):
+        hint = (
+            "use --mark-existing for a plan reopened by hand"
+            if status in ("approved", "running") and not page.get("reopened_on")
+            else None
+        )
+        raise gate_failed(
+            f"plan {plan_id} is {status!r}; only a closed or confirmed plan reopens",
+            [_gate("LIFE.REOPEN_STATUS", str(status))],
+            remediation=hint,
+        )
+    today = written_date(view)
+    items = [
+        ("status", "approved"),
+        ("approved_decision", decision_ref_literal(view, page, number)),
+    ]
+    for key in ("closed_decision", "result"):
+        if key in page.fm:
+            items.append((key, '""'))
+    cycle = _cycle_links(page, members)
+    items += [("reopened_on", today), ("earlier_cycle", yaml_list(cycle))]
+    dropped = {"forced_close"} if "forced_close" in page.fm else set()
+    edit = FileEdit(
+        view.abs_path(page),
+        "set-key",
+        "frontmatter:" + ",".join(key for key, _ in items),
+        transform=lambda text: edit_frontmatter(text, items, dropped),
+        expected_sha256=expected_sha256 or view.file_sha256(page.rel),
+    )
+    data = {
+        **base,
+        "to": "approved",
+        "reopenedOn": today,
+        "earlierCycle": cycle,
+        "dropped": sorted(dropped),
+    }
+    return WritePlan([edit], data, authorization=authorization)
+
+
+def _plan_mark_reopened(
+    view, page: Note, row, number: int, members, base, earlier, authorization, sha
+) -> WritePlan:
+    plan_id = str(page.get("id", ""))
+    status = page.get("status")
+    approved = parse_decision_ref(
+        page.get("approved_decision"), view.profile, lenient=True
+    )
+    if status not in ("approved", "running") or approved != number:
+        raise gate_failed(
+            f"--mark-existing needs {plan_id} approved or running with "
+            f"approved_decision {base['decision']}",
+            [_gate("LIFE.REOPEN_MARK_STATE", f"{status}, approved by {approved}")],
+        )
+    if page.get("reopened_on"):
+        return WritePlan([], {**base, "marked": False, "reason": "already marked"})
+    cutoff = (row.date or "").strip()[:10]
+    if not entities.DATE_PREFIX.fullmatch(cutoff):
+        raise gate_failed(
+            f"the date of decision {base['decision']} ({row.date!r}) is not a date",
+            [_gate("LIFE.REOPEN_MARK_DATE", str(row.date))],
+        )
+    forced = {fold(link_stem(e)) for e in earlier}
+    unknown = sorted(forced - {m.cstem for m in members})
+    if unknown:
+        raise ResearchError(
+            "NOT_FOUND",
+            "--earlier names no member of the plan: " + ", ".join(unknown),
+            exit_code=3,
+        )
+    placed = []
+    for member in members:
+        date = entities.note_date(view, member)
+        is_earlier = member.cstem in forced or (date is not None and date < cutoff)
+        placed.append((member, date, is_earlier))
+    undated = [m.stem for m, d, _ in placed if d is None and m.cstem not in forced]
+    if undated:
+        raise gate_failed(
+            f"{len(undated)} member(s) of {plan_id} have no date: "
+            + ", ".join(sorted(undated)),
+            [_gate("LIFE.REOPEN_MARK_UNDATED", stem) for stem in sorted(undated)],
+            remediation="place each with --earlier <stem> (repeatable)",
+        )
+    cycle = _cycle_links(page, [m for m, _, is_earlier in placed if is_earlier])
+    items = [("reopened_on", cutoff), ("earlier_cycle", yaml_list(cycle))]
+    split = {
+        "earlier": [{"stem": m.stem, "date": d} for m, d, e in placed if e],
+        "current": [{"stem": m.stem, "date": d} for m, d, e in placed if not e],
+    }
+    data = {
+        **base,
+        "to": status,
+        "marked": True,
+        "reopenedOn": cutoff,
+        "earlierCycle": cycle,
+        "split": split,
+    }
+    return WritePlan(
+        [_fm_edit(view, page, items, sha)], data, authorization=authorization
+    )
 
 
 def _decisions_wording(view: ProjectView, key: str, default: str, plan_id: str) -> str:
@@ -1192,9 +1358,9 @@ def plan_plan_close(
     return WritePlan([edit], data, authorization=authorization, store_op=op)
 
 
-def _close_gates(view, page: Note, record: dict, updates: dict, status) -> list[dict]:
-    """Gates a normal close would fail: the confirmed -> closed rule set."""
-    synthetic = dataclasses.replace(
+def _snapshot_with_record(view: ProjectView, record: dict):
+    """The snapshot as if the not-yet-written decision `record` already existed."""
+    return dataclasses.replace(
         view.snapshot,
         decisions={
             **view.snapshot.decisions,
@@ -1210,6 +1376,11 @@ def _close_gates(view, page: Note, record: dict, updates: dict, status) -> list[
             ),
         },
     )
+
+
+def _close_gates(view, page: Note, record: dict, updates: dict, status) -> list[dict]:
+    """Gates a normal close would fail: the confirmed -> closed rule set."""
+    synthetic = _snapshot_with_record(view, record)
     sink = FindingSink()
     _check_plan(synthetic, _clone(page, **updates), sink)
     unmet = _gate_rows(sink.items)
@@ -1245,12 +1416,19 @@ def plan_exec_freeze(
     *,
     rules_decision: str | None = None,
     amend: str | None = None,
+    self_approve: bool = False,
+    no_new_rules: bool = False,
     expected_sha256: str | None = None,
 ) -> WritePlan:
     profile = view.profile
     note = entities.find_by_id(view, "exec-plan", ident)
     status = note.get("status")
     exec_id = note.get("id") or note.stem
+    record = None
+    if self_approve:
+        record = _self_approval_record(
+            view, note, exec_id, no_new_rules, rules_decision, amend
+        )
     if status not in ("draft", "frozen", "running", "done"):
         raise gate_failed(
             f"{exec_id} is {status!r} and cannot be frozen",
@@ -1273,11 +1451,21 @@ def plan_exec_freeze(
     matches_previous = frozen and stored == digest and not amend
     updates: dict = {}
     literals: dict[str, str] = {}
-    if rules_decision:
+    if record is not None:
+        number = record["number"]
+        updates["rules_decision"] = decision_ref_text(view, note, number)
+        literals["rules_decision"] = decision_ref_literal(view, note, number)
+        for key, value in (("approved_by", "agent"), ("new_rules", "false")):
+            updates[key] = literals[key] = value
+    elif rules_decision:
         number, _ = _decision(view, rules_decision)
         updates["rules_decision"] = decision_ref_text(view, note, number)
         if not _same_decision(view, note, "rules_decision", number):
             literals["rules_decision"] = decision_ref_literal(view, note, number)
+        if note.get("approved_by") != "user":
+            updates["approved_by"] = literals["approved_by"] = "user"
+        if note.get("new_rules") is None:
+            updates["new_rules"] = literals["new_rules"] = "true"
     if stored != digest:
         updates["rules_sha256"] = literals["rules_sha256"] = digest
     if not matches_previous:
@@ -1292,12 +1480,15 @@ def plan_exec_freeze(
     if status == "draft":
         updates["status"] = literals["status"] = "frozen"
     sink = FindingSink()
-    _check_exec_plan(view.snapshot, _clone(note, **updates), sink)
+    snapshot = _snapshot_with_record(view, record) if record else view.snapshot
+    _check_exec_plan(snapshot, _clone(note, **updates), sink)
     unmet = _gate_rows(sink.items)
     if unmet:
         raise gate_failed(f"{exec_id} cannot be frozen", unmet)
     order = (
         "rules_decision",
+        "approved_by",
+        "new_rules",
         "rules_sha256",
         "frozen_on",
         "rules_amended_by",
@@ -1310,7 +1501,85 @@ def plan_exec_freeze(
         "frozenOn": updates.get("frozen_on", note.get("frozen_on")),
         "matchesPrevious": bool(matches_previous),
     }
-    return WritePlan([_fm_edit(view, note, items, expected_sha256)], data)
+    edit = _fm_edit(view, note, items, expected_sha256)
+    if record is None:
+        return WritePlan([edit], data)
+    data |= {"decision": record["id"], "approvedBy": "agent"}
+    op = StoreOp(
+        "decision-new",
+        f"decision:{record['id']}",
+        _record_summary(record),
+        lambda store, actor, at: store.insert(record, actor=actor, at=at),
+    )
+    return WritePlan([edit], data, store_op=op)
+
+
+def _engineering_layer(profile) -> str:
+    """The first profile layer whose decisions need no options section."""
+    plain = [x for x in profile.decision_layers if x not in profile.options_warn_layers]
+    layers = plain or list(profile.decision_layers)
+    return layers[0] if layers else ""
+
+
+def _self_approval_record(
+    view: ProjectView,
+    note: Note,
+    exec_id: str,
+    no_new_rules: bool,
+    rules_decision: str | None,
+    amend: str | None,
+) -> dict:
+    """The confirmed decision by which the agent approves an exec-plan itself."""
+    if not no_new_rules:
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "--self-approve needs --no-new-rules: the agent may only approve an "
+            "exec-plan that adds no judgement rules beyond the approved plan",
+            exit_code=2,
+        )
+    if rules_decision or amend:
+        raise ResearchError(
+            "USAGE_BAD_OPTION",
+            "--self-approve records its own decision: drop --rules-decision/--amend",
+            exit_code=2,
+        )
+    if note.get("new_rules") == "true":
+        raise gate_failed(
+            f"{exec_id} says new_rules: true; the user must confirm its rules",
+            [_gate("LIFE.EXEC_RULES_NOT_USER", exec_id)],
+            remediation="propose the rules decision for the user instead",
+        )
+    if note.get("status") != "draft":
+        raise gate_failed(
+            f"{exec_id} is {note.get('status')!r}; only a draft is self-approved",
+            [_gate("LIFE.EXEC_TRANSITION", str(note.get("status")))],
+        )
+    plan_id = entities.plan_id_of(view, note)
+    profile = view.profile
+    number = max(view.snapshot.decisions, default=0) + 1
+    today = written_date(view)
+    return {
+        "number": number,
+        "id": decision_id(profile.decision_id_prefix, number),
+        "title": f"Approve exec-plan {exec_id}: no new judgement rules",
+        "date": today,
+        "status": "confirmed",
+        "layer": _engineering_layer(profile),
+        "decided": f"The exec-plan {exec_id} adds no judgement rules beyond the "
+        "approved plan; it is frozen by the agent.",
+        "reason": "Judgement rules (thresholds, what counts as improvement) were "
+        "decided with the plan; this exec-plan only says how to run it.",
+        "options": "",
+        "lands": "",
+        "plans": [plan_id] if plan_id else [],
+        "targets": [_stem_link(note)],
+        "supersedes": [],
+        "status_raw": "",
+        "source": "cli",
+        "confirmed_by": "agent",
+        "confirmed_on": today,
+        "authorization": None,
+    }
 
 
 def plan_exec_advance(
@@ -1389,7 +1658,36 @@ def plan_res_confirm(
         ("deviation_impact", deviation_impact),
     ]
     base = {"id": res_id, "from": status, "to": "confirmed"}
-    return WritePlan([_fm_edit(view, note, items, expected_sha256)], base)
+    edits = [_fm_edit(view, note, items, expected_sha256)]
+    superseded = _earlier_cycle_active_results(view, note)
+    link = _stem_link(note)
+    for earlier in superseded:
+        edits.append(
+            _fm_edit(
+                view,
+                earlier,
+                [("status", "superseded"), ("superseded_by", yaml_quote(link))],
+                None,
+            )
+        )
+    base["supersedes"] = [e.get("id") or e.stem for e in superseded]
+    return WritePlan(edits, base)
+
+
+def _earlier_cycle_active_results(view: ProjectView, result: Note) -> list[Note]:
+    """Active results of earlier cycles that confirming `result` retires."""
+    page = view.snapshot.plan_page_of(result)
+    if page is None:
+        return []
+    current, earlier = entities.plan_cycle_members(view, page)
+    if result.cstem not in {m.cstem for m in current}:
+        return []
+    return [
+        m
+        for m in earlier
+        if view.snapshot.entity_type(m) == "result"
+        and m.get("status") not in ("superseded", "withdrawn")
+    ]
 
 
 # ---- deviation register ------------------------------------------------------
