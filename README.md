@@ -66,6 +66,11 @@ PYTHONPATH=. python -m expnote.cli init --workspace stackcube-demo
 
 ## Obsidian layout
 
+Markdown projection is for plain Obsidian vaults only. expnote refuses to
+project into a vault registered as a research project (and into workspaces with
+`projection = "off"`); those runs stay in SQLite and are viewed with
+`expnote web`.
+
 For an Obsidian vault that is synced by WebDAV, keep expnote state outside the
 vault and write only Markdown into the vault:
 

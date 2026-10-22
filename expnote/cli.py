@@ -54,6 +54,8 @@ from expnote.workspace import (
     WorkspaceContext,
     default_workspace_dir,
     list_workspaces,
+    research_vault_overlapping,
+    research_vault_refusal,
     resolve_workspace,
     set_active_workspace,
     write_workspace_config,
@@ -130,6 +132,8 @@ _AGENT_GUIDE = {
     "principles": [
         "SQLite is the source of truth",
         "Markdown is a projection",
+        "Markdown projection into a registered research vault is disabled; "
+        "view runs with expnote web",
         "Use --json for automation",
         "Use --workspace or expnote workspace use <name> on follow-up commands",
         "Edit structured fields through the CLI",
@@ -709,6 +713,12 @@ _RESULT_HELP = (
 )
 
 
+def _refuse_research_vault_root(obsidian_root: Path) -> None:
+    vault = research_vault_overlapping(obsidian_root)
+    if vault is not None:
+        raise typer.BadParameter(research_vault_refusal(vault))
+
+
 def _workspace_context(
     workspace: str | None,
     workspace_dir: Path | None,
@@ -730,6 +740,8 @@ def _render_agent_guide() -> str:
             "Core rules:",
             "- SQLite is the source of truth",
             "- Obsidian Markdown is an optional projection",
+            "- Projection into a registered research vault is disabled; "
+            "view runs with expnote web",
             "- Use --json for automation",
             "- Use expnote workspace use <name> before follow-up commands",
             "",
@@ -956,6 +968,8 @@ def init(
     root = (
         obsidian_root.expanduser().resolve() if obsidian_root is not None else state_dir
     )
+    if obsidian_root is not None:
+        _refuse_research_vault_root(root)
     output_docs_dir = docs_dir or default_docs_dir(notes_dir)
     init_store(
         root,
@@ -1106,6 +1120,8 @@ def workspace_unpack(
         )
     if index_path is not None and moc_path is not None:
         raise typer.BadParameter("--index-path and --moc-path cannot be combined")
+    if obsidian_root is not None:
+        _refuse_research_vault_root(obsidian_root.expanduser().resolve())
 
     if workspace_dir is not None:
         target_dir = workspace_dir.expanduser().resolve()
@@ -1113,13 +1129,11 @@ def workspace_unpack(
         assert workspace is not None
         target_dir = default_workspace_dir(workspace).resolve()
     workspace_name = workspace or target_dir.name
-    if target_dir.exists() and any(target_dir.iterdir()):
-        if not replace:
-            raise typer.BadParameter(
-                f"target workspace-dir already exists: {target_dir}. Use --replace."
-            )
-        shutil.rmtree(target_dir)
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    replacing_existing = target_dir.exists() and any(target_dir.iterdir())
+    if replacing_existing and not replace:
+        raise typer.BadParameter(
+            f"target workspace-dir already exists: {target_dir}. Use --replace."
+        )
 
     archive_path = archive_path.expanduser().resolve()
     with tempfile.TemporaryDirectory(prefix="expnote-unpack-") as tmp:
@@ -1130,6 +1144,14 @@ def workspace_unpack(
         extracted_state = tmp_path / "state"
         if not (extracted_state / "config.toml").exists():
             raise typer.BadParameter("archive does not contain state/config.toml")
+        if not no_obsidian and obsidian_root is None:
+            carried = _read_simple_config(extracted_state / "config.toml")
+            carried_root = carried.get("obsidian_root") or carried.get("root")
+            if carried_root:
+                _refuse_research_vault_root(Path(carried_root).expanduser().resolve())
+        if replacing_existing:
+            shutil.rmtree(target_dir)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(extracted_state), str(target_dir))
 
     config_path = target_dir / "config.toml"
@@ -2171,6 +2193,14 @@ def run_rename(
             )
 
     old_note_path = _run_note_path(root, state_dir, ctx.obsidian_root, old_id)
+    stale_note_warnings: list[str] = []
+    if ctx.projection_refusal is not None and old_note_path is not None:
+        if old_note_path.exists():
+            stale_note_warnings.append(
+                f"stale run note not removed ({old_note_path}): "
+                f"{ctx.projection_refusal}"
+            )
+        old_note_path = None
 
     if dry_run:
         _emit(
@@ -2255,7 +2285,7 @@ def run_rename(
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         append_event(root, "run.update", row_to_dict(row), state_dir=state_dir)
 
-    _emit(
+    _emit_with_warnings(
         {
             "old_id": old_id,
             "new_id": new_run_id,
@@ -2263,6 +2293,7 @@ def run_rename(
             "text_updated_run_ids": other_updated_ids,
             "stale_note_removed": stale_note_removed,
         },
+        stale_note_warnings,
         json_output,
     )
 
@@ -4059,7 +4090,7 @@ def validate(
         missing_required_metadata = _runs_missing_required_metadata(conn)
     conflicts = (
         projection_conflicts(root, state_dir=state_dir)
-        if ctx.obsidian_root is not None
+        if ctx.obsidian_root is not None and ctx.projection_refusal is None
         else []
     )
     ok = not conflicts and not stale_running_runs and not missing_required_metadata
@@ -4070,6 +4101,8 @@ def validate(
         "stale_running_runs": stale_running_runs,
         "missing_required_metadata": missing_required_metadata,
     }
+    if ctx.projection_refusal is not None:
+        result["projection_disabled"] = ctx.projection_refusal
     _emit(result, json_output)
 
 

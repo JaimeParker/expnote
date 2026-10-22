@@ -16,6 +16,7 @@ class WorkspaceContext:
     workspace_dir: Path
     obsidian_root: Path | None
     name: str | None = None
+    projection_refusal: str | None = None
 
 
 def config_home() -> Path:
@@ -58,6 +59,9 @@ def resolve_workspace(
     obsidian_root = (
         Path(obsidian_root_text).expanduser().resolve() if obsidian_root_text else None
     )
+    refusal = _projection_refusal(config, obsidian_root)
+    if require_obsidian and refusal is not None:
+        raise typer.BadParameter(refusal)
     if require_obsidian and obsidian_root is None:
         raise typer.BadParameter(
             "This workspace has no Obsidian projection configured. "
@@ -68,7 +72,64 @@ def resolve_workspace(
         workspace_dir=workspace_dir,
         obsidian_root=obsidian_root,
         name=name,
+        projection_refusal=refusal,
     )
+
+
+class ProjectionDisabled(RuntimeError):
+    """Markdown projection is not allowed for this workspace or target."""
+
+
+def research_vault_overlapping(path: Path) -> str | None:
+    """Return the registered research vault root that `path` is inside, equal
+    to, or contains; None when there is none or the registry is unreadable."""
+    try:
+        from expnote.research.registry import convert_drive_path, load_registry
+
+        projects = load_registry().projects.values()
+        target = path.expanduser().resolve()
+        for project in projects:
+            for vault in [project.vault_root, *project.vault_root_alternates]:
+                for candidate in (vault, convert_drive_path(vault)):
+                    if not candidate or not Path(candidate).is_absolute():
+                        continue
+                    resolved = Path(candidate).resolve()
+                    if target.is_relative_to(resolved) or resolved.is_relative_to(
+                        target
+                    ):
+                        return str(vault)
+    except Exception:
+        return None
+    return None
+
+
+def research_vault_refusal(vault: str) -> str:
+    return (
+        f"Markdown projection into research vault {vault} is disabled; "
+        "view runs with `expnote web`"
+    )
+
+
+def _projection_refusal(
+    config: dict[str, str], obsidian_root: Path | None
+) -> str | None:
+    if config.get("projection") == "off":
+        return (
+            'Markdown projection is disabled for this workspace (projection = "off"); '
+            "view runs with `expnote web`"
+        )
+    if obsidian_root is None:
+        return None
+    vault = research_vault_overlapping(obsidian_root)
+    return research_vault_refusal(vault) if vault is not None else None
+
+
+def ensure_projection_allowed(root: Path, state_dir: Path | None = None) -> None:
+    """Guard for every code path that writes projection Markdown into `root`."""
+    workspace_dir = state_dir or root / ".expnote"
+    refusal = _projection_refusal(_read_workspace_config(workspace_dir), root)
+    if refusal is not None:
+        raise ProjectionDisabled(refusal)
 
 
 def write_workspace_config(

@@ -14,6 +14,7 @@ from expnote.db import (
     transaction,
 )
 from expnote.links import render_obsidian_run_links
+from expnote.workspace import ensure_projection_allowed
 
 MANAGED_START = "<!-- expnote:managed:start -->"
 MANAGED_END = "<!-- expnote:managed:end -->"
@@ -33,6 +34,7 @@ def sync_markdown(
     pull_docs: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
+    ensure_projection_allowed(root, state_dir)
     config = read_config(root, state_dir=state_dir)
     notes_dir = root / config["notes_dir"]
     docs_dir = root / config["docs_dir"]
@@ -400,6 +402,7 @@ def sync_moc_section(
     moc_path: str,
     section: str,
 ) -> dict[str, Any]:
+    ensure_projection_allowed(root, state_dir)
     path = root / moc_path
     _ensure_curated_moc_target(path)
     rows = _moc_section_rows(root, state_dir, moc_path, section)
