@@ -17,6 +17,7 @@ from expnote.research.profile import Profile
 from expnote.research.schemas import (
     DEV_STATUS,
     DEVIATION_IMPACT,
+    EV_LABELLED_STATUSES,
     LABELLED_BY,
     LEGACY_RELAXED,
     SUPPORTED_SCHEMAS,
@@ -370,11 +371,9 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
             )
         if not legacy:
             for member in members:
-                if snap.entity_type(member) == "evidence" and member.get(
-                    "status"
-                ) not in (
-                    "labelled",
-                    "label-na",
+                if (
+                    snap.entity_type(member) == "evidence"
+                    and member.get("status") not in EV_LABELLED_STATUSES
                 ):
                     sink.add(
                         gate_level,

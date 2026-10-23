@@ -15,6 +15,7 @@ EXEC_STATUS = (
     "closed",
 )  # closed: legacy
 EV_STATUS = ("rendered", "labelled", "label-na")
+EV_LABELLED_STATUSES = ("labelled", "label-na")  # any other status still needs labels
 DEV_STATUS = ("open", "closed")
 RES_STATUS = ("first-read", "confirmed", "superseded", "withdrawn")
 DECISION_STATUS = ("proposed", "confirmed", "superseded", "rejected")

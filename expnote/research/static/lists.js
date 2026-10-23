@@ -19,6 +19,7 @@ import {
 import { facet, masterDetail } from "/research/masterdetail.js";
 import { parseHash, writeHash } from "/research/nav.js";
 import {
+  append,
   clear,
   emptyState,
   h,
@@ -86,7 +87,7 @@ async function decisionsPage(ctx) {
   function draw() {
     const rows = shownRows();
     clear(heading).append(h("h1", null, "Decisions"), h("span", { class: "count" }, rows.length === all.length ? String(all.length) : `${rows.length} of ${all.length}`));
-    clear(filterBox).append(
+    append(clear(filterBox), [
       textFilter("Find by title or number", filters.q, (value) => {
         filters.q = value;
         writeHash(hashFor(md.current()));
@@ -96,7 +97,7 @@ async function decisionsPage(ctx) {
       facet("Plan", facetItems("plan", body.data.plans, (id) => planSwatch(id)), filters.plan, setFilter("plan")),
       body.data.layers.length > 1 ? facet("Layer", facetItems("layer", body.data.layers), filters.layer, setFilter("layer")) : null,
       statuses.length > 1 ? facet("Status", facetItems("status", statuses), filters.status, setFilter("status")) : null,
-    );
+    ]);
     drawList();
   }
   function drawList() {
@@ -354,12 +355,12 @@ async function todosPage(ctx) {
     const rows = shownRows();
     clear(heading).append(h("h1", null, "TODOs"), h("span", { class: "count" }, rows.length === all.length ? String(all.length) : `${rows.length} of ${all.length}`));
     const kinds = [...countBy(all.filter((t) => matches(t, { ...filters, kind: "" })), (t) => t.kind).entries()];
-    clear(filterBox).append(
+    append(clear(filterBox), [
       facet("Owner", [["user", "Yours"], ["agent", "Agents"]].map(([v, l]) => ({ value: v, label: l, count: all.filter((t) => matches(t, { ...filters, owner: v })).length })), filters.owner, setFilter("owner")),
       facet("Kind", kinds.map(([k, n]) => ({ value: k, label: kindPhrase(k, 2), count: n })), filters.kind, setFilter("kind")),
       h("label", { class: "field check" }, h("input", { type: "checkbox", checked: includeDone ? true : null, onchange: (e) => (window.location.hash = route.todos(P, { ...filters, include_done: e.target.checked ? "true" : "" })) }), h("span", null, "Show ticked manual items")),
       body.data.manualFile.path ? h("p", { class: "muted small" }, "Manual items come from ", h("span", { title: body.data.manualFile.path }, "the TODO note"), ".") : null,
-    );
+    ]);
     drawList();
   }
   draw();

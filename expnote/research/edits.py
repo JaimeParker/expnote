@@ -12,11 +12,13 @@ import re
 from dataclasses import dataclass
 
 from expnote.research.errors import ResearchError
-from expnote.research.extract import TODO_LINE_RE, parse_todo_lines
+from expnote.research.extract import TODO_FIELD_RE, TODO_LINE_RE, parse_todo_lines
 from expnote.research.textkit import is_separator_row, sha256_text, split_table_row
 
 BOM = b"\xef\xbb\xbf"
-KEY_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
+KEY_NAME = r"[A-Za-z_][\w-]*"
+# A top-level key, bare or quoted ("key": / 'key':); the group is the unquoted name.
+KEY_LINE_RE = re.compile(rf"^(?:\"({KEY_NAME})\"|'({KEY_NAME})'|({KEY_NAME}))\s*:")
 SIMPLE_SCALAR_RE = re.compile(r"[0-9A-Za-z_.-]+")
 UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 DONE_FIELD_RE = re.compile(r"\s*\[done::\s*[^\]]*\]")
@@ -124,12 +126,18 @@ def _require_frontmatter(lines: list[str]) -> int:
     return end
 
 
+def key_of(line: str) -> str | None:
+    """Unquoted name of the top-level key a frontmatter line starts, else None."""
+    match = KEY_LINE_RE.match(line)
+    return next(g for g in match.groups() if g) if match else None
+
+
 def _blocks(fm_lines: list[str]) -> list[tuple[str | None, list[str]]]:
     blocks: list[tuple[str | None, list[str]]] = []
     for line in fm_lines:
-        match = KEY_LINE_RE.match(line)
-        if match:
-            blocks.append((match.group(1), [line]))
+        name = key_of(line)
+        if name is not None:
+            blocks.append((name, [line]))
         elif blocks:
             blocks[-1][1].append(line)
         else:
@@ -163,7 +171,7 @@ def edit_frontmatter(
     end = _require_frontmatter(lines)
     wanted = dict(set_items)
     for key in [*wanted, *remove]:
-        if not re.fullmatch(r"[A-Za-z_][\w-]*", key):
+        if not re.fullmatch(KEY_NAME, key):
             raise ResearchError(
                 "USAGE_BAD_KEY", f"{key!r} is not a frontmatter key", exit_code=2
             )
@@ -349,6 +357,36 @@ def mark_task(line: str, *, done: bool, today: str, new_id: str | None) -> str:
     if done:
         body = f"{body} [done:: {today}]"
     return f"- [{'x' if done else ' '}] {body}"
+
+
+def edit_task_line(
+    line: str,
+    *,
+    text: str | None = None,
+    set_fields: dict[str, str] | None = None,
+    clear_fields: tuple[str, ...] = (),
+) -> str:
+    """Rewrite a task line: replace the text and/or set/clear inline fields.
+
+    Existing fields stay where they are (their values replaced in place); new ones
+    are appended at the end. The checkbox state is kept.
+    """
+    match = TODO_LINE_RE.match(line.rstrip())
+    assert match is not None
+    body = match.group(2)
+    for key, value in (set_fields or {}).items():
+        field_re = re.compile(rf"\[{key}::\s*[^\]]*\]")
+        replacement = f"[{key}:: {value}]"
+        if field_re.search(body):
+            body = field_re.sub(lambda _m, new=replacement: new, body, count=1)
+        else:
+            body = f"{body} {replacement}"
+    for key in clear_fields:
+        body = re.sub(rf"\s*\[{key}::\s*[^\]]*\]", "", body)
+    if text is not None:
+        fields = " ".join(m.group(0) for m in TODO_FIELD_RE.finditer(body))
+        body = f"{text.strip()} {fields}".rstrip()
+    return f"- [{match.group(1)}] {body}"
 
 
 def adopt_task_line(line: str, new_id: str) -> str:

@@ -18,6 +18,7 @@ import { openDecisionAction, planCloseAction, todoAddForm } from "/research/acti
 import { planLanes, lanesLegend } from "/research/lanes.js";
 import { LISTS } from "/research/lists.js";
 import {
+  append,
   chip,
   clear,
   commandBlock,
@@ -365,14 +366,14 @@ function lifecycleRail(ctx, shown, bundle) {
   );
 }
 
-function nextStep(ctx, gates) {
+function nextStep(ctx, gates, failCount, showIssues) {
   const forward = gates.next.filter((n) => !["superseded", "withdrawn"].includes(n.to));
   const side = gates.next.filter((n) => ["superseded", "withdrawn"].includes(n.to));
   const row = (n) =>
     h(
       "div",
-      { class: "gate", "data-tone": n.ok ? "ok" : "bad" },
-      h("div", { class: "gate-head" }, icon(n.ok ? "check" : "gate"), h("strong", null, `to ${n.to}`), statusWord(n.ok ? "ok" : "bad", n.ok ? "ready" : `blocked by ${n.unmet.length}`)),
+      { class: "gate", "data-tone": n.ok ? (failCount ? "warn" : "ok") : "bad" },
+      h("div", { class: "gate-head" }, icon(n.ok ? "check" : "gate"), h("strong", null, `to ${n.to}`), statusWord(n.ok ? (failCount ? "warn" : "ok") : "bad", n.ok ? (failCount ? `ready, but ${plural(failCount, "failing check")}` : "ready") : `blocked by ${n.unmet.length}`)),
       n.unmet.length ? h("ul", null, n.unmet.map((u) => h("li", null, h("code", null, u.code), " ", u.message))) : null,
     );
   return h(
@@ -381,6 +382,9 @@ function nextStep(ctx, gates) {
     h("h2", null, "Next step"),
     gates.currentUnmet.length
       ? h("div", { class: "notice bad" }, icon("alert"), h("div", null, h("strong", null, "This plan is past a gate it does not meet:"), h("ul", null, gates.currentUnmet.map((u) => h("li", null, h("code", null, u.code), " ", u.message)))))
+      : null,
+    failCount
+      ? h("div", { class: "notice warn" }, icon("alert"), h("div", null, `${plural(failCount, "failing check")} on this plan's notes — fix them before advancing. `, h("button", { type: "button", class: "btn small ghost", onclick: showIssues }, "Show in Issues")))
       : null,
     forward.length ? forward.map(row) : h("p", { class: "muted small" }, "No further forward step."),
     side.length ? h("details", { class: "subtle" }, h("summary", null, "Other transitions"), side.map(row)) : null,
@@ -478,7 +482,18 @@ function railTabs(ctx, shown, b) {
   ];
 }
 
-function contextRail(ctx, shown, b, keyState) {
+// The plan's open items that are the user's to do; same rows (and ticks) as the Issues tab.
+function waitingOnYou(ctx, b, manualSha) {
+  const mine = b.openItems.filter((t) => t.owner === "user");
+  if (!mine.length) return null;
+  return panel(
+    "Waiting on you",
+    h("ul", { class: "todos" }, mine.map((t) => todoRow(ctx, { ...t, plan: null, source: t.kind === "manual" ? "manual" : "derived" }, { showKind: true, manualSha }))),
+    { count: mine.length, tone: "warn", className: "rail-waiting" },
+  );
+}
+
+function contextRail(ctx, shown, b, keyState, manualSha) {
   const tabs = railTabs(ctx, shown, b);
   const saved = store.get("planTab", "decisions");
   keyState.index = Math.max(0, tabs.findIndex(([key]) => key === saved));
@@ -502,11 +517,13 @@ function contextRail(ctx, shown, b, keyState) {
       b.setAttribute("tabindex", j === i ? "0" : "-1");
     });
     bodyBox.setAttribute("aria-labelledby", `tab-${tabs[i][0]}`);
-    clear(bodyBox).append(tabs[i][4]());
+    append(clear(bodyBox), [tabs[i][4]()]);
   }
   keyState.step = (delta) => activate((keyState.index + delta + tabs.length) % tabs.length);
   activate(keyState.index);
-  return h("aside", { class: "rail", "aria-label": "Plan status" }, nextStep(ctx, shown.gates), strip, bodyBox);
+  const failCount = b.findings.items.filter((f) => f.level === "FAIL").length;
+  const issuesAt = tabs.findIndex(([key]) => key === "issues");
+  return h("aside", { class: "rail", "aria-label": "Plan status" }, waitingOnYou(ctx, b, manualSha), nextStep(ctx, shown.gates, failCount, () => activate(issuesAt)), strip, bodyBox);
 }
 
 function outlineOf(prosebox, project, plan) {
@@ -533,7 +550,7 @@ async function planPage(ctx) {
   const { api } = ctx;
   const P = ctx.project;
   const plan = ctx.arg;
-  const [shown, bundle] = await Promise.all([api(`${base(P)}/plans/${enc(plan)}`), api(`${base(P)}/plans/${enc(plan)}/bundle`)]);
+  const [shown, bundle, todosBody] = await Promise.all([api(`${base(P)}/plans/${enc(plan)}`), api(`${base(P)}/plans/${enc(plan)}/bundle`), api(`${base(P)}/todos`)]);
   const s = shown.data;
   const b = bundle.data;
   const info = s.plan;
@@ -569,7 +586,7 @@ async function planPage(ctx) {
       "div",
       { class: "plan-grid" },
       sideOutline,
-      contextRail(ctx, s, b, keyState),
+      contextRail(ctx, s, b, keyState, todosBody.data.manualFile.sha256),
       h("article", { class: "plan-main" }, foldOutline, proseBox),
     ),
   );

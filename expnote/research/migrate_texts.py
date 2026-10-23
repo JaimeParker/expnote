@@ -13,6 +13,7 @@ from expnote.research.decisions import map_decision_status
 from expnote.research.edits import (
     edit_frontmatter,
     frontmatter_end,
+    key_of,
     yaml_list,
     yaml_quote,
 )
@@ -39,7 +40,7 @@ def set_schema_first(text: str, schema: str = "3") -> str:
     if end is None:
         raise ResearchError("NO_FRONTMATTER", "the note has no frontmatter")
     for index in range(1, end):
-        if re.match(r"schema\s*:", lines[index]):
+        if key_of(lines[index]) == "schema":
             if lines[index].split(":", 1)[1].strip() == schema:
                 return text
             lines[index] = f"schema: {schema}"

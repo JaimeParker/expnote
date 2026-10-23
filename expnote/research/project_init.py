@@ -32,7 +32,9 @@ from expnote.research.writeback import (
 )
 
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-PROFILE_HEAD_RE = re.compile(r"^type:\s*[\"']?" + re.escape(PROFILE_TYPE), re.M)
+PROFILE_HEAD_RE = re.compile(
+    r"^[\"']?type[\"']?:\s*[\"']?" + re.escape(PROFILE_TYPE), re.M
+)
 DRY_RUN_EXIT = 4
 
 

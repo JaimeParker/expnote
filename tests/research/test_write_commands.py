@@ -133,7 +133,7 @@ def test_every_write_command_is_dry_run_by_default(world):
             "--authorization",
             "用户原话",
         ),
-        ("todo", "add", "check later"),
+        ("todo", "add", "check later", "--owner", "agent"),
         ("deviation", "add", "--experiment", "x", "--content", "y", "--impact", "弱"),
         ("deviation", "close", "D-02"),
         ("exec", "advance", "PLAN-900A-S1", "--to", "running"),
@@ -601,32 +601,36 @@ def test_todo_add_creates_the_file_then_appends_with_ids(world):
         "PLAN-900A",
         "--due",
         "2026-11-01",
+        "--owner",
+        "agent",
         "--apply",
     )
     assert first["_exit"] == 0 and first["data"]["id"] == "T-0001"
     assert read(todo_file) == (
         "---\ntype: todo-list\n---\n# Todo\n\n"
         "- [ ] 回看 [[别的笔记]] [id:: T-0001] [plan:: PLAN-900A] "
-        "[due:: 2026-11-01] [by:: agent]\n"
+        "[due:: 2026-11-01] [by:: agent] [owner:: agent]\n"
     )
     second = run("todo", "add", "第二件", "--by", "user", "--apply")
     assert second["data"]["id"] == "T-0002"
     assert read(todo_file).endswith("- [ ] 第二件 [id:: T-0002] [by:: user]\n")
     listed = data("todo", "list", "--source", "manual")["todos"]
-    assert [t["id"] for t in listed] == ["T-0001", "T-0002"]
-    assert listed[0]["plan"] == "PLAN-900A" and listed[0]["due"] == "2026-11-01"
+    by_id = {t["id"]: t for t in listed}
+    assert sorted(by_id) == ["T-0001", "T-0002"]
+    assert by_id["T-0001"]["plan"] == "PLAN-900A"
+    assert by_id["T-0001"]["due"] == "2026-11-01"
 
 
 def test_todo_add_rejects_fields_in_text_and_bad_dates(world):
     for args in (("x [id:: T-0099]",), ("x", "--due", "soon"), ("two\nlines",)):
-        result = run("todo", "add", *args, "--apply")
+        result = run("todo", "add", *args, "--owner", "agent", "--apply")
         assert result["_exit"] == 2, args
 
 
 def test_todo_done_flips_the_line_and_undo_reverts_it(world):
     root, proj = world
-    run("todo", "add", "一件事", "--apply")
-    run("todo", "add", "另一件", "--apply")
+    run("todo", "add", "一件事", "--owner", "agent", "--apply")
+    run("todo", "add", "另一件", "--owner", "agent", "--apply")
     todo_file = proj / "待办.md"
     done = run("todo", "done", "T-0001", "--apply")
     assert done["_exit"] == 0
@@ -634,7 +638,7 @@ def test_todo_done_flips_the_line_and_undo_reverts_it(world):
     assert (
         lines[-2].startswith("- [x] 一件事 [id:: T-0001]") and "[done:: " in lines[-2]
     )
-    assert lines[-1] == "- [ ] 另一件 [id:: T-0002] [by:: agent]"
+    assert lines[-1] == "- [ ] 另一件 [id:: T-0002] [by:: agent] [owner:: agent]"
     stamp_before = stamp(todo_file)
     assert run("todo", "done", "T-0001", "--apply")["data"]["changes"] == []
     assert stamp(todo_file) == stamp_before
@@ -643,6 +647,142 @@ def test_todo_done_flips_the_line_and_undo_reverts_it(world):
     assert undone["_exit"] == 0 and "[done::" not in read(todo_file)
     missing = run("todo", "done", "T-0404", "--apply")
     assert missing["_exit"] == 3 and missing["error"]["code"] == "ADDRESS_NOT_FOUND"
+
+
+def test_todo_add_owner_flag_writes_the_field_and_rejects_bad_values(world):
+    root, proj = world
+    added = run("todo", "add", "agent side", "--owner", "agent", "--apply")
+    assert added["_exit"] == 0
+    assert read(proj / "待办.md").endswith(
+        "- [ ] agent side [id:: T-0001] [by:: agent] [owner:: agent]\n"
+    )
+    assert run("todo", "add", "x", "--owner", "robot", "--apply")["_exit"] == 2
+    run("todo", "add", "plain", "--by", "user", "--apply")
+    assert "[owner::" not in read(proj / "待办.md").splitlines()[-1]
+
+
+def test_todo_add_requires_an_owner_for_agents(world):
+    root, proj = world
+    todo_file = proj / "待办.md"
+    before = todo_file.read_bytes() if todo_file.exists() else None
+    refused = run("todo", "add", "no owner", "--apply")
+    assert refused["_exit"] == 2
+    assert refused["error"]["code"] == "USAGE_MISSING_OPTION"
+    assert "--owner agent" in refused["error"]["message"]
+    assert "--owner user" in refused["error"]["message"]
+    assert (todo_file.read_bytes() if todo_file.exists() else None) == before
+    assert run("todo", "add", "mine", "--owner", "agent", "--apply")["_exit"] == 0
+    assert run("todo", "add", "yours", "--owner", "user", "--apply")["_exit"] == 0
+    assert run("todo", "add", "by user", "--by", "user", "--apply")["_exit"] == 0
+    lines = read(todo_file).splitlines()
+    assert lines[-3].endswith("[by:: agent] [owner:: agent]")
+    assert lines[-2].endswith("[by:: agent] [owner:: user]")
+    assert lines[-1].endswith("[by:: user]")
+
+
+def seeded_todos(proj):
+    todo_file = proj / "待办.md"
+    run(
+        "todo", "add", "first task", "--plan", "PLAN-900A",
+        "--owner", "agent", "--apply",
+    )  # fmt: skip
+    run("todo", "add", "second task", "--owner", "agent", "--apply")
+    run("todo", "done", "T-0002", "--apply")
+    set_mtime(todo_file, 3600)
+    return todo_file
+
+
+def test_todo_edit_dry_run_changes_nothing_and_exits_4(world):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    before = read(todo_file)
+    result = run("todo", "edit", "T-0001", "--owner", "user")
+    assert result["_exit"] == 4 and read(todo_file) == before
+
+
+def test_todo_edit_owner_hands_the_task_to_the_user(world):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    agent_side = data("todo", "list", "--source", "manual", "--owner", "agent")
+    assert [t["id"] for t in agent_side["todos"]] == ["T-0001"]
+    assert run("todo", "edit", "T-0001", "--owner", "user", "--apply")["_exit"] == 0
+    line = read(todo_file).splitlines()[-2]
+    assert line.endswith("[owner:: user]") and "[owner:: agent]" not in line
+    listed = data("todo", "list", "--source", "manual", "--owner", "user")["todos"]
+    assert "T-0001" in [t["id"] for t in listed]
+    assert (
+        data("todo", "list", "--source", "manual", "--owner", "agent")["todos"] == []
+    )
+
+
+def test_todo_edit_text_keeps_fields_and_checkbox_state(world):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    untouched = read(todo_file).splitlines()[-2]
+    result = run("todo", "edit", "T-0002", "--text", "reworded", "--apply")
+    assert result["_exit"] == 0
+    lines = read(todo_file).splitlines()
+    assert lines[-2] == untouched
+    assert lines[-1].startswith("- [x] reworded [id:: T-0002] [by:: agent]")
+    assert "[done:: " in lines[-1]
+
+
+def test_todo_edit_sets_and_clears_plan_and_due(world):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    run(
+        "todo", "edit", "T-0001", "--plan", "PLAN-900B",
+        "--due", "2026-12-01", "--apply",
+    )  # fmt: skip
+    line = read(todo_file).splitlines()[-2]
+    assert "[plan:: PLAN-900B]" in line and "PLAN-900A" not in line
+    assert line.endswith("[due:: 2026-12-01]")
+    run("todo", "edit", "T-0001", "--clear-plan", "--clear-due", "--apply")
+    line = read(todo_file).splitlines()[-2]
+    assert "[plan::" not in line and "[due::" not in line
+    assert line == "- [ ] first task [id:: T-0001] [by:: agent] [owner:: agent]"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--owner", "robot"),
+        ("--due", "soon"),
+        ("--text", "two\nlines"),
+        ("--text", "   "),
+        ("--text", "x [id:: T-0099]"),
+        ("--plan", "a]b"),
+        ("--plan", "PLAN-900A", "--clear-plan"),
+        (),
+    ],
+)
+def test_todo_edit_rejects_bad_input_with_a_usage_error(world, args):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    before = read(todo_file)
+    result = run("todo", "edit", "T-0001", *args, "--apply")
+    assert result["_exit"] == 2 and read(todo_file) == before
+
+
+def test_todo_edit_unknown_id_and_stale_sha(world):
+    root, proj = world
+    todo_file = seeded_todos(proj)
+    missing = run("todo", "edit", "T-0404", "--owner", "user", "--apply")
+    assert missing["_exit"] == 3 and missing["error"]["code"] == "ADDRESS_NOT_FOUND"
+    before = read(todo_file)
+    stale = run(
+        "todo", "edit", "T-0001", "--owner", "user",
+        "--expected-sha256", "0" * 64, "--apply",
+    )  # fmt: skip
+    assert stale["_exit"] == 5 and stale["error"]["code"] == "CAS_MISMATCH"
+    assert read(todo_file) == before
+
+
+def test_todo_edit_is_discoverable_from_help_and_guide():
+    assert "edit" in invoke("todo", "--help").output
+    assert "todo edit" in invoke("todo", "--help").output.replace("\n", " ")
+    guide = json.loads(invoke("guide", "research", "--json").stdout)
+    assert "todo edit" in json.dumps(guide)
 
 
 def test_todo_adopt_and_tick_give_id_less_lines_real_ids(world):

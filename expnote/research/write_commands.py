@@ -820,6 +820,15 @@ def todo_add(
     plan: Annotated[str | None, typer.Option("--plan")] = None,
     due: Annotated[str | None, typer.Option("--due", help="YYYY-MM-DD")] = None,
     by: Annotated[str, typer.Option("--by", help="Who adds it.")] = "agent",
+    owner: Annotated[
+        str | None,
+        typer.Option(
+            "--owner",
+            help="user or agent. Required with --by agent (the default): "
+            "agent for your own work, user when the user must act (start the "
+            "text with that action). Optional with --by user (default: user).",
+        ),
+    ] = None,
     expected_sha256: ExpectedOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
@@ -830,7 +839,51 @@ def todo_add(
     run_write(
         "todo add",
         lambda view: writes.plan_todo_add(
-            view, text, plan=plan, due=due, by=by, expected_sha256=expected_sha256
+            view,
+            text,
+            plan=plan,
+            due=due,
+            by=by,
+            owner=owner,
+            expected_sha256=expected_sha256,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
+@todo_app.command("edit")
+def todo_edit(
+    ident: Annotated[str, typer.Argument(metavar="ID")],
+    text: Annotated[str | None, typer.Option("--text", help="New task text.")] = None,
+    owner: Annotated[
+        str | None, typer.Option("--owner", help="Hand the task to user or agent.")
+    ] = None,
+    plan: Annotated[str | None, typer.Option("--plan")] = None,
+    clear_plan: Annotated[bool, typer.Option("--clear-plan")] = False,
+    due: Annotated[str | None, typer.Option("--due", help="YYYY-MM-DD")] = None,
+    clear_due: Annotated[bool, typer.Option("--clear-due")] = False,
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Reword a manual task or change its owner, plan or due date."""
+    run_write(
+        "todo edit",
+        lambda view: writes.plan_todo_edit(
+            view,
+            ident,
+            text=text,
+            owner=owner,
+            plan=plan,
+            clear_plan=clear_plan,
+            due=due,
+            clear_due=clear_due,
+            expected_sha256=expected_sha256,
         ),
         project=project,
         apply=apply,

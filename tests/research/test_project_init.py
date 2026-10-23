@@ -210,7 +210,7 @@ def test_the_scaffolded_project_works_end_to_end(tmp_path):
     )
     assert decided["data"]["id"] == "MY-DEMO-PROJECT-DEC-0001"
     assert run("plan", "list")["data"]["plans"][0]["id"] == "P-1"
-    added = run("todo", "add", "first task", "--apply")
+    added = run("todo", "add", "first task", "--owner", "agent", "--apply")
     assert added["data"]["id"] == "T-0001" and (project / "todos.md").exists()
     assert run("check")["data"]["summary"]["fail"] == 0
     assert run("guide", "research")["_exit"] == 0

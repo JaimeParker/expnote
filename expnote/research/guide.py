@@ -35,7 +35,7 @@ RESEARCH_GUIDE = {
         "Never invent a user decision: confirmations need the user's own words "
         "(--authorization) or a click in the GUI",
         "The GUI writes only: approve/reject a decision, close a plan, adopt a "
-        "draft as a plan, save EV labels, add/tick a TODO, close a deviation",
+        "draft as a plan, save EV labels, add/tick/edit a TODO, close a deviation",
     ],
     "essentialCommands": [
         _step("expnote next --json", "what is actionable now, with exact commands"),
@@ -52,6 +52,14 @@ RESEARCH_GUIDE = {
             "--type/--plan/--status/--linked-to/--backlinks-of/--images",
         ),
         _step("expnote todo list --json", "derived and manual TODOs, user items first"),
+        _step(
+            "expnote todo edit <ID> --owner user --apply",
+            "a TODO that waits on the user must be owned by the user, and its "
+            "text must start with the action the user must take; hand an "
+            "agent-owned TODO over this way (`todo add --owner user|agent` sets "
+            "it at creation and is required for agents) once your prerequisite "
+            "work is done; `--text` rewords it; never hand-edit the TODO file",
+        ),
     ],
     "lifecycle": {
         "plan": "draft > approved > running > read-out > confirmed > closed "

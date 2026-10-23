@@ -1,6 +1,7 @@
 // expnote research GUI: shell, hash router and API client. Pages live in pages.js.
 import { baseOf, nav, parseHash } from "/research/nav.js";
 import { PAGES } from "/research/pages.js";
+import { createRevisitRefresh } from "/research/revisit.js";
 import { clear, errorBox, h, icon, route, setLaneOrder, skeleton } from "/research/ui.js";
 
 const API = "/api/research";
@@ -290,6 +291,8 @@ function wireKeys() {
 async function start() {
   wireKeys();
   window.addEventListener("hashchange", () => show());
+  // A tab left open goes stale; refresh it on return unless the user has work in progress.
+  document.addEventListener("visibilitychange", createRevisitRefresh({ doc: document, scope: main, refresh: refreshPage }));
   try {
     const body = await api("/projects");
     state.projects = body.data.projects;

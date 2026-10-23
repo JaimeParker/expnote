@@ -745,3 +745,7 @@ a.hit-title:hover { color: var(--accent); }
 .pair.reopened { font-weight: 600; }
 .tag-approved { border: 1px solid var(--muted); border-radius: 3px; padding: 0 4px; font-size: 0.85em; }
 .exec-fold > summary { cursor: pointer; margin-bottom: 8px; }
+.rail-waiting { border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; flex: none; }
+.rail-waiting .panel-head { padding: 14px 18px 4px; }
+.rail-waiting .panel-head h2 { font-size: 15px; }
+.rail-waiting .panel-body { padding: 0 18px 10px; }

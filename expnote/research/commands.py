@@ -89,9 +89,10 @@ deviation_app = typer.Typer(
     epilog="Example: `expnote deviation list --json`.",
 )
 todo_app = typer.Typer(
-    help="TODOs, derived and manual: list, add, done, adopt.",
+    help="TODOs, derived and manual: list, add, edit, done, adopt.",
     epilog="Example: `expnote todo list --owner agent --json`; `expnote next --json` "
-    "orders the agent's steps.",
+    "orders the agent's steps. Hand a TODO to the user: "
+    "`expnote todo edit T-0001 --owner user --apply`.",
 )
 
 

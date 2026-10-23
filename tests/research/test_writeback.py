@@ -440,6 +440,60 @@ def test_frontmatter_edit_replaces_whole_blocks_and_appends_new_keys():
         edits.edit_frontmatter("no frontmatter\n", [("a", "b")])
 
 
+def test_frontmatter_edit_replaces_double_and_single_quoted_keys():
+    text = "---\n\"status\": \"rendered\"\n'owner': me\nid: a\n---\nbody\n"
+    out = edits.edit_frontmatter(text, [("status", "labelled"), ("owner", "you")])
+    assert out == "---\nstatus: labelled\nowner: you\nid: a\n---\nbody\n"
+
+
+def test_frontmatter_edit_replaces_a_quoted_key_with_a_list_value():
+    text = '---\n"figures":\n- "a.png"\n  - "b.png"\n"id": x\n---\n'
+    assert edits.frontmatter_block(text, "figures") == [
+        '"figures":', '- "a.png"', '  - "b.png"'
+    ]
+    out = edits.edit_frontmatter(text, [("figures", '["c.png"]')])
+    assert out == '---\nfigures: ["c.png"]\n"id": x\n---\n'
+
+
+def test_frontmatter_edit_removes_a_quoted_key():
+    text = '---\n"a": 1\n\'b\': 2\nc: 3\n---\n'
+    assert edits.edit_frontmatter(text, remove={"a", "b"}) == "---\nc: 3\n---\n"
+
+
+def test_frontmatter_edit_keeps_untouched_quoted_and_bare_lines():
+    text = '---\n"a": "1"\nb: 2\n\'c\': 3  # k\n---\n'
+    out = edits.edit_frontmatter(text, [("b", "9")])
+    assert out == '---\n"a": "1"\nb: 9\n\'c\': 3  # k\n---\n'
+
+
+def test_list_items_and_indented_lines_are_not_keys():
+    for line in ('- "status": x', '  "status": x', "  status: x", '"status" x'):
+        assert edits.key_of(line) is None
+    assert edits.key_of('"status" : x') == "status"
+
+
+def test_frontmatter_edit_on_the_real_quoted_evidence_frontmatter():
+    text = (
+        '---\n"schema": 3\n"type": "evidence"\n'
+        '"plan": "[[PLAN-002C PickCube 在线 CQL α 对比]]"\n"status": "rendered"\n'
+        '"figures":\n- "o2o_x.png"\n"labelled_by": ""\n"labelled_on": ""\n'
+        '"label_authorization": ""\n---\nbody\n'
+    )
+    out = edits.edit_frontmatter(
+        text,
+        [
+            ("status", "labelled"),
+            ("labelled_by", "user"),
+            ("labelled_on", "2026-10-23"),
+        ],
+    )
+    keys = [edits.key_of(line) for line in out.split("\n")[1 : out.index("\n---\n", 4)]]
+    keys = [k for k in keys if k]
+    assert len(keys) == len(set(keys)) == 8
+    assert "status: labelled" in out and "labelled_by: user" in out
+    assert '"figures":\n- "o2o_x.png"\n' in out and out.endswith("---\nbody\n")
+
+
 def test_table_cell_edit_keeps_padding_and_escapes_pipes():
     line = "| orig |  | keep |"
     assert edits.replace_cell(line, 1, "a|b") == "| orig | a\\|b | keep |"

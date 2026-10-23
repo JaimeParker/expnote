@@ -264,7 +264,8 @@ def _assert_body_equal(before: str, after: str, what: str) -> None:
 
 
 def _is_stub(text: str) -> bool:
-    return bool(re.search(r"^type:\s*decision-hub\s*$", text, re.M))
+    pattern = r"""^["']?type["']?:\s*["']?decision-hub["']?\s*$"""
+    return bool(re.search(pattern, text, re.M))
 
 
 # ---- step 1: plans and schema-2 notes ------------------------------------------------

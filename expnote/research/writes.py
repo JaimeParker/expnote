@@ -29,6 +29,7 @@ from expnote.research.edits import (
     adopt_task_line,
     body_line_offset,
     edit_frontmatter,
+    edit_task_line,
     find_row,
     find_tables,
     find_task_line,
@@ -903,6 +904,18 @@ def plan_todo_add(
         )
     if due is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
         raise ResearchError("USAGE_BAD_OPTION", "--due takes YYYY-MM-DD", exit_code=2)
+    if owner is None and by == "agent":
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "an agent adding a task must pass --owner: `--owner agent` for the "
+            "agent's own work, `--owner user` when the user must act (the text "
+            "then starts with the user's action)",
+            exit_code=2,
+        )
+    if owner is not None and owner not in ("user", "agent"):
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--owner takes one of user, agent", exit_code=2
+        )
     path = todo_file_path(view)
     allocated: list[str] = []
 
@@ -980,6 +993,90 @@ def plan_todo_done(
     edit = FileEdit(path, "edit-task", f"task:{ident}", transform=transform,
                     expected_sha256=expected_sha256)  # fmt: skip
     return WritePlan([edit], {"id": ident, "done": not undo, "assignedIds": assigned})
+
+
+def plan_todo_edit(
+    view: ProjectView,
+    ident: str,
+    *,
+    text: str | None = None,
+    owner: str | None = None,
+    plan: str | None = None,
+    clear_plan: bool = False,
+    due: str | None = None,
+    clear_due: bool = False,
+    expected_sha256: str | None = None,
+) -> WritePlan:
+    changes = (text, owner, plan, clear_plan, due, clear_due)
+    if all(change in (None, False) for change in changes):
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "give at least one of --text, --owner, --plan, --clear-plan, --due, "
+            "--clear-due",
+            exit_code=2,
+        )
+    if plan is not None and clear_plan:
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--plan and --clear-plan conflict", exit_code=2
+        )
+    if due is not None and clear_due:
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--due and --clear-due conflict", exit_code=2
+        )
+    if owner is not None and owner not in ("user", "agent"):
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--owner takes one of user, agent", exit_code=2
+        )
+    if due is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+        raise ResearchError("USAGE_BAD_OPTION", "--due takes YYYY-MM-DD", exit_code=2)
+    if text is not None:
+        if TODO_FIELD_RE.search(text):
+            raise ResearchError(
+                "USAGE_BAD_VALUE",
+                "the task text may not contain `[key:: value]` fields; use the options",
+                exit_code=2,
+            )
+        if "\n" in text or "\r" in text:
+            raise ResearchError(
+                "USAGE_MULTILINE_VALUE", "the task text must be one line", exit_code=2
+            )
+        if not text.strip():
+            raise ResearchError(
+                "USAGE_EMPTY_TEXT", "the task text is empty", exit_code=2
+            )
+    if plan is not None and (not plan.strip() or "]" in plan or "\n" in plan):
+        raise ResearchError("USAGE_BAD_VALUE", "--plan is not a plan id", exit_code=2)
+    set_fields = {
+        key: value
+        for key, value in (("owner", owner), ("plan", plan), ("due", due))
+        if value is not None
+    }
+    clear_fields = tuple(
+        key for key, flag in (("plan", clear_plan), ("due", clear_due)) if flag
+    )
+    path = todo_file_path(view)
+
+    def transform(existing: str) -> str:
+        lines = existing.split("\n")
+        index = find_task_line(lines, ident)
+        if index is None:
+            raise ResearchError(
+                "ADDRESS_NOT_FOUND",
+                f"no task {ident!r} in {path.name}",
+                exit_code=3,
+                remediation="expnote todo list --source manual --include-done",
+            )
+        lines[index] = edit_task_line(
+            lines[index],
+            text=text,
+            set_fields=set_fields,
+            clear_fields=clear_fields,
+        )
+        return "\n".join(lines)
+
+    edit = FileEdit(path, "edit-task", f"task:{ident}", transform=transform,
+                    expected_sha256=expected_sha256)  # fmt: skip
+    return WritePlan([edit], {"id": ident})
 
 
 def plan_todo_adopt(

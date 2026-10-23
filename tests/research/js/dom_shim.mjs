@@ -49,7 +49,8 @@ export class Element_ extends Node_ {
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   removeAttribute(k) { delete this.attrs[k]; }
   hasAttribute(k) { return k in this.attrs; }
-  append(...nodes) { nodes.forEach((n) => this._add(typeof n === "string" ? new Text_(n) : n)); }
+  // Like the browser: anything that is not a Node (an array, null) is appended as its string form.
+  append(...nodes) { nodes.forEach((n) => this._add(n instanceof Node_ ? n : new Text_(String(n)))); }
   replaceChildren(...nodes) {
     this.childNodes.forEach((c) => { c.parent = null; });
     this.childNodes = [];

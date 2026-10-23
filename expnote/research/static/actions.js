@@ -364,7 +364,7 @@ export function evLabelEditor(ctx, data) {
         return;
       }
       const input = h("input", { type: "text", class: "cell-input", value: text, "aria-label": `${table.header[column]} for ${row.key}`, autocomplete: "off", maxlength: "300" });
-      inputs.push({ input, key: row.key, column: table.header[column], original: text.trim() });
+      inputs.push({ input, key: row.key, columnIndex: column, column: table.header[column], original: text.trim() });
       cells.push(h("td", null, input));
     });
     return h("tr", null, cells);
@@ -372,7 +372,7 @@ export function evLabelEditor(ctx, data) {
   const remarkInput = data.write && data.write.remark ? h("input", { type: "text", class: "note-input", placeholder: "Remark (optional)", "aria-label": "Remark, optional", maxlength: "300", autocomplete: "off" }) : null;
   const confirmSlot = h("div", { class: "confirm-slot" });
   const hint = h("p", { class: "muted small", "aria-live": "polite" });
-  const allFilled = () => inputs.every((c) => cellValue(c.input));
+  const allFilled = () => inputs.filter((c) => c.columnIndex === table.valueColumns[0]).every((c) => cellValue(c.input));
   const commitButton = h("button", { type: "button", class: "btn", onclick: () => save(true) }, icon("check"), "Save and mark labelled");
   const saveButton = h("button", { type: "button", class: "btn primary", onclick: () => save(false) }, "Save labels");
 

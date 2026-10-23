@@ -678,8 +678,24 @@ queue with the exact command for each step.
 ```bash
 expnote todo add "Archive the raw training logs" --plan PLAN-001 --due 2026-11-01 --by user --apply
 expnote todo list
+expnote todo add "Review the draft" --owner user --apply   # agents (--by agent, the default) must pass --owner user|agent
+expnote todo edit T-0001 --owner user --apply              # hand a task to the user
+expnote todo edit T-0001 --text "Review the draft" --plan PLAN-001 --due 2026-11-01 --apply
+expnote todo edit T-0001 --clear-plan --clear-due --apply
 expnote todo done T-0001 --apply
 ```
+
+When the adder is an agent (`--by agent`, the default), `--owner user|agent` is
+required and a missing owner exits 2 (`USAGE_MISSING_OPTION`): `--owner agent` for
+the agent's own work, `--owner user` when the user must act, with the text starting
+with the user's action. With `--by user` the owner is optional and defaults to the user.
+
+`todo edit` needs at least one of `--text`, `--owner user|agent`, `--plan`,
+`--clear-plan`, `--due`, `--clear-due`. It keeps the checkbox state and the other
+inline fields, replaces existing fields in place and appends new ones. A task that
+waits on the user is owned by the user and its text starts with the action the user
+must take; an agent hands its tasks over with `--owner user` once its work is done.
+Do not hand-edit the TODO file. The GUI has a matching `POST .../todos/{id}/edit`.
 
 In Obsidian you may also type `- [ ] a task` into `todos.md` yourself;
 `expnote todo adopt --apply` gives such lines real ids. The GUI can add and tick

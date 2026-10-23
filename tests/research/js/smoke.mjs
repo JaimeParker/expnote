@@ -176,6 +176,18 @@ if (rendered) {
   check("label save previews the cell change", text.includes("跌落 <b>严重</b>") && main.byClass("diff")[0].byTag("b").length === 0, text);
 }
 
+// the optional second user column never gates "mark labelled"; the first one does
+{
+  const optionalColumnTable = { header: ["臂", "跌落", "恢复/提升"], valueColumns: [1, 2], rows: [{ key: "a", values: ["跌落", ""] }, { key: "b", values: ["未跌落", ""] }] };
+  const editor = actions.evLabelEditor({ project, post: async () => ({}) }, { ev: { status: "rendered", stem: "x", sha256: "s", labelTable: optionalColumnTable } });
+  const commit = buttonLike(editor, "Save and mark labelled");
+  const firstColumn = editor.byClass("cell-input").filter((_, i) => i % 2 === 0);
+  check("mark-labelled ignores an empty optional column", commit && !commit.hasAttribute("disabled"));
+  firstColumn[1].value = "";
+  firstColumn[1].dispatch("input");
+  check("mark-labelled waits for an empty first-column cell", commit.hasAttribute("disabled"));
+}
+
 await go(`#/p/${enc(project)}/todos`);
 await afterFetch();
 check("TODO page has the add form and a tick on manual items", buttonLike(main, "Add TODO") && main.byClass("todo-tick").length >= 1);
@@ -316,6 +328,71 @@ check("a selection that no longer exists falls back instead of showing an error"
 await go(`#/p/${enc(project)}`);
 await afterFetch();
 check("overview Waiting panel has Add TODO and ticks", main.byClass("waiting-panel")[0] && buttonLike(main.byClass("waiting-panel")[0], "Add TODO") && main.byClass("waiting-panel")[0].byClass("todo-tick").length >= 1);
+
+// ---- plan rail: tab bodies, "Waiting on you", failing-check notice (the plan payloads are faked) ----
+const fakes = { bundle: null, show: null };
+const fetchUnfaked = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  const response = await fetchUnfaked(url, options);
+  const kind = /\/plans\/[^/?]+\/bundle(\?|$)/.test(String(url)) ? "bundle" : /\/plans\/[^/?]+(\?|$)/.test(String(url)) ? "show" : null;
+  if (!kind || !fakes[kind]) return response;
+  const body = await response.json();
+  fakes[kind](body.data);
+  return { ok: true, status: 200, json: async () => body };
+};
+const railPlan = plans[0];
+const readyGates = (data) => {
+  data.gates = { next: [{ to: "running", ok: true, unmet: [] }, { to: "withdrawn", ok: true, unmet: [] }], currentUnmet: [] };
+};
+const userItem = { id: "T-9", kind: "manual", owner: "user", severity: "info", message: "do the user thing", ref: "T-9", action: null, command: null };
+const agentItem = { id: "d1", kind: "deviation-open", owner: "agent", severity: "warn", message: "agent chore", ref: "D-1", action: null, command: null };
+const failFinding = { level: "FAIL", code: "EV.PARSE", where: "evidence/x.md", message: "cannot parse the page" };
+const rail = () => main.byClass("rail")[0];
+const railText = () => (rail() ? rail().textContent : "");
+const loadRail = async (patchBundle) => {
+  fakes.bundle = patchBundle;
+  fakes.show = readyGates;
+  await go(`#/p/${enc(project)}/plan/${enc(railPlan)}`);
+  await afterFetch();
+};
+await loadRail((data) => {
+  data.runs = [{ id: "RUN-1", topic: "a run topic", status: "done", citedBy: ["x"], result: "r" }];
+  data.analysisDocs = [{ title: "An analysis", oneLine: "o", linkedRuns: ["RUN-1"] }];
+  data.related = [{ type: "note", stem: "rel-note", title: "A related note", status: "ok", oneLine: "l" }];
+  data.openItems = [userItem, agentItem];
+  data.findings = { fail: 1, warn: 0, items: [failFinding] };
+});
+check("the plan rail renders", rail(), main.textContent);
+const bodies = {};
+for (const tab of main.byClass("tab")) {
+  tab.dispatch("click");
+  bodies[tab.textContent.trim().split(" ")[0]] = main.byClass("rail-body")[0].textContent;
+}
+check("no rail tab body shows [object", Object.keys(bodies).length >= 6 && Object.values(bodies).every((t) => !t.includes("[object")), JSON.stringify(bodies));
+check("Runs, Related and Issues tabs list their rows", bodies.Runs.includes("a run topic") && bodies.Runs.includes("An analysis") && bodies.Related.includes("A related note") && bodies.Issues.includes("agent chore") && bodies.Issues.includes("cannot parse the page"), JSON.stringify(bodies));
+const waiting = main.byClass("rail-waiting")[0];
+check("Waiting on you lists the user's open items only", waiting && waiting.textContent.includes("Waiting on you") && waiting.textContent.includes("do the user thing") && !waiting.textContent.includes("agent chore"), waiting && waiting.textContent);
+check("Waiting on you carries a count", waiting && waiting.byClass("count")[0].textContent === "1");
+const sha = (await api(`${P}/todos`)).data.manualFile.sha256;
+check("a manual item in Waiting on you can be ticked", !sha || waiting.byClass("todo-tick").length === 1);
+check("Waiting on you sits above Next step", railText().indexOf("Waiting on you") >= 0 && railText().indexOf("Waiting on you") < railText().indexOf("Next step"));
+check("a FAIL finding raises a notice", rail().textContent.includes("1 failing check on this plan's notes") && rail().byClass("notice").length >= 1, railText());
+check("an ok gate reads ready, but N failing", railText().includes("ready, but 1 failing check") && !/ready(?!,)/.test(railText().replace("ready, but", "")), railText());
+const showIssues = buttonLike(rail().byClass("next-step")[0], "Issues");
+check("the notice offers a way to the Issues tab", showIssues);
+if (showIssues) {
+  showIssues.dispatch("click");
+  check("it activates the Issues tab", main.byClass("tab").find((t) => t.getAttribute("aria-selected") === "true").textContent.includes("Issues"));
+}
+
+await loadRail((data) => {
+  data.openItems = [agentItem];
+  data.findings = { fail: 0, warn: 1, items: [{ ...failFinding, level: "WARN" }] };
+});
+check("no user item: no Waiting on you block", main.byClass("rail-waiting").length === 0 && !railText().includes("Waiting on you"), railText());
+check("a WARN finding is not a failing check", !railText().includes("failing check") && railText().includes("ready") && !railText().includes("ready, but"), railText());
+fakes.bundle = null;
+fakes.show = null;
 
 const words = (code, extra = {}) => actions.errorPanel({ code, message: `m-${code}`, remediation: `r-${code}`, details: {}, ...extra }, { retry() {} }).textContent;
 check("CAS_MISMATCH wording", words("CAS_MISMATCH").includes("This note changed since you opened it. Reload to see the new version."));

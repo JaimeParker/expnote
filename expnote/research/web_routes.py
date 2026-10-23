@@ -702,6 +702,12 @@ def build_router(service: ResearchService) -> APIRouter:
             request, project_id, "todo done", _todo_done_builder(todo_id)
         )
 
+    @router.post(f"{api}/projects/{{project_id}}/todos/{{todo_id}}/edit")
+    async def todo_edit(project_id: str, todo_id: str, request: Request):
+        return await gui_write(
+            request, project_id, "todo edit", _todo_edit_builder(todo_id)
+        )
+
     return router
 
 
@@ -870,6 +876,23 @@ def _todo_done_builder(todo_id: str):
             raise _bad_value("done must be true or false")
         return writes.plan_todo_done(
             view, todo_id, undo=not done, expected_sha256=_expected_sha(body)
+        )
+
+    return build
+
+
+def _todo_edit_builder(todo_id: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        return writes.plan_todo_edit(
+            view,
+            todo_id,
+            text=_text(body, "text"),
+            owner=_text(body, "owner"),
+            plan=_text(body, "plan"),
+            clear_plan=body.get("clearPlan") is True,
+            due=_text(body, "due"),
+            clear_due=body.get("clearDue") is True,
+            expected_sha256=_expected_sha(body),
         )
 
     return build

@@ -24,6 +24,7 @@ from expnote.research.entities import (
 from expnote.research.index import linked_workspaces
 from expnote.research.model import Decision, Note
 from expnote.research.runs import stale_running_runs
+from expnote.research.schemas import EV_LABELLED_STATUSES
 from expnote.research.textkit import fold, iter_links, link_stem
 from expnote.research.view import ProjectView
 
@@ -126,15 +127,15 @@ class _Derive:
     def evidence(self) -> list[dict]:
         items = []
         for note in notes_of(self.view, "evidence"):
-            if note.get("status") == "rendered":
+            if note.get("status") not in EV_LABELLED_STATUSES:
                 items.append(
                     _item(
                         "ev-unlabelled",
                         "user",
                         "action",
                         note.stem,
-                        f"evidence page {note.stem} is rendered and needs the "
-                        "user's labels",
+                        f"evidence page {note.stem} is not labelled yet and needs "
+                        "the user's labels",
                         "open the evidence page and fill the label table",
                         plan=plan_id_of(self.view, note),
                     )

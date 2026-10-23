@@ -484,3 +484,22 @@ def test_review_due_follows_the_injected_clock(tmp_path):
 
     assert due(datetime(2026, 5, 31)) == []
     assert due(datetime(2026, 6, 1)) == ["O2O-DEC-0125"]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("rendered", True),
+        ("draft", True),
+        (None, True),
+        ("labelled", False),
+        ("label-na", False),
+    ],
+)
+def test_ev_unlabelled_follows_the_lifecycle_gate(vault, status, expected):
+    root, proj = vault
+    path = proj / EV_PATH
+    text = path.read_text(encoding="utf-8")
+    replacement = "" if status is None else f"status: {status}"
+    path.write_text(text.replace("status: labelled", replacement), encoding="utf-8")
+    assert (("ev-unlabelled", "EV--PLAN-900A 演示") in kinds()) is expected

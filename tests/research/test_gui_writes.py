@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -189,6 +190,7 @@ def test_only_the_listed_endpoints_can_write(world):
         ("POST", f"{prefix}/ev/{{stem}}/labels"),
         ("POST", f"{prefix}/todos"),
         ("POST", f"{prefix}/todos/{{todo_id}}/done"),
+        ("POST", f"{prefix}/todos/{{todo_id}}/edit"),
     }
     for method in ("put", "patch", "delete"):
         for path in ("/decisions/2", "/todos", f"/ev/{quote(EV_STEM)}/labels"):
@@ -515,6 +517,22 @@ def test_ev_labels_batch_commit(world):
     )
     findings = run("check", "--level", "FAIL")["data"]["findings"]
     assert not [f for f in findings if f["code"].startswith("EV.")]
+
+
+def test_ev_labels_commit_on_an_ev_with_quoted_frontmatter_keys(world):
+    head, rest = read(world.ev).split("\n---\n", 1)
+    quoted_head = re.sub(r"(?m)^([A-Za-z_][\w-]*):", r'"\1":', head)
+    world.ev.write_text(quoted_head + "\n---\n" + rest, encoding="utf-8")
+    set_mtime(world.ev, 3600)
+    assert '"status": rendered' in read(world.ev)
+    row = {"key": "...", "values": {"Value": "跌落"}}
+    assert ev_labels(world, [row], commit=True).status_code == 200
+    after = read(world.ev)
+    assert len(re.findall(r"(?m)^[\"']?status[\"']?:", after)) == 1
+    assert "status: labelled" in after and '"status"' not in after
+    assert "labelled_by: user" in after
+    listed = world.client.get(f"{P}/ev/{quote(EV_STEM)}")
+    assert listed.status_code == 200, listed.text
 
 
 def test_ev_labels_save_without_commit_then_commit_alone(world):
