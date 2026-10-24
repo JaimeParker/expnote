@@ -256,15 +256,22 @@ def test_ev_table_cells_render_inline_markdown_without_raw_html(world):
     root, proj = world
     path = proj / EV_PATH
     path.write_text(
-        path.read_text(encoding="utf-8").replace(
+        path.read_text(encoding="utf-8")
+        .replace(
             "| orig | 0.1 |",
             "| orig | `x=1`<br>**粗** [[PLAN-900A--demo\\|计划]] "
-            "<script>alert(1)</script> |",
-        ),
+            "<script>alert(1)</script> $a\\|b$ |",
+        )
+        .replace("| 臂 | 终点 |", "| 臂 | 终点 $k_{\\text{rec}}$ |", 1),
         encoding="utf-8",
     )
     ev = ok(make_client(), f"{P}/ev/{quote('EV--PLAN-900A 演示')}")["data"]["ev"]
+    assert ev["endpointTable"]["headerHtml"] == [
+        "臂",
+        '终点 <span class="math" data-display="0">k_{\\text{rec}}</span>',
+    ]
     cell = ev["endpointTable"]["rowsHtml"][0][1]
+    assert '<span class="math" data-display="0">a|b</span>' in cell
     assert "<code>x=1</code><br>" in cell and "<strong>粗</strong>" in cell
     assert 'href="#/p/off2on/plan/PLAN-900A"' in cell
     assert "<script" not in cell and "&lt;script" in cell
@@ -519,6 +526,8 @@ def test_pages_and_assets_are_served_with_csp(client):
 def test_static_assets_have_no_external_or_inline_code():
     static = Path(__file__).parents[2] / "expnote/research/static"
     for path in static.iterdir():
+        if path.is_dir():  # vendored katex/ is checked below
+            continue
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"https?://(?!www\.w3\.org)", text), path.name
         assert "unpkg" not in text and "googleapis" not in text, path.name
@@ -528,6 +537,10 @@ def test_static_assets_have_no_external_or_inline_code():
         if path.suffix == ".js":
             assert 'setAttribute("style"' not in text and "style:" not in text
             assert not re.search(r"<[a-z][^>]* style=", text)
+    for path in (static / "katex").glob("*.*"):
+        if path.suffix in (".mjs", ".css"):
+            text = path.read_text(encoding="utf-8")
+            assert "@import" not in text and "url(http" not in text, path.name
 
 
 # ---- read-only guarantee -----------------------------------------------------

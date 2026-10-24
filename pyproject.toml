@@ -42,6 +42,7 @@ artifacts = [
   "expnote/research/static/*.html",
   "expnote/research/static/*.js",
   "expnote/research/static/*.css",
+  "expnote/research/static/katex/**",
 ]
 
 [tool.ruff]

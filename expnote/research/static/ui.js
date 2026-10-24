@@ -2,6 +2,8 @@
 // Text always goes through text nodes; only server-sanitised Markdown uses innerHTML.
 // Layout is positioned by classes and SVG attributes only (the CSP forbids inline styles).
 
+import { renderMath } from "/research/math.js";
+
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
@@ -304,6 +306,7 @@ export function errorBox(error, retry) {
 export function prose(html, className = "") {
   const box = h("div", { class: `prose ${className}`.trim() });
   box.innerHTML = html || "";
+  renderMath(box);
   return box;
 }
 

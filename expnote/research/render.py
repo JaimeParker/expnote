@@ -4,12 +4,14 @@ Vault notes are rendered from the index, never from disk. Raw HTML is never
 parsed (the `markdown` package would pass it through): the HTML preprocessor and
 inline pattern are removed, so tags in a note are serialised as escaped text.
 Obsidian syntax is added on top: wikilinks, embeds, run/doc links and the legacy
-decision hub form (`[[hub]] #12, #13`).
+decision hub form (`[[hub]] #12, #13`). LaTeX math is lifted out before Markdown
+sees it and sent as escaped TeX in `span.math`; the client typesets it (KaTeX).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import html
 import re
 import xml.etree.ElementTree as etree
 from urllib.parse import quote
@@ -38,6 +40,22 @@ from expnote.research.view import ProjectView
 SAFE_SCHEMES = ("http://", "https://", "mailto:")
 EMBED_WIDTH = re.compile(r"\d{1,4}")
 TASK_LINE = re.compile(r"^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X)\](?=\s)", re.M)
+# Obsidian's math: `$$...$$` anywhere; `$x$` opens on a non-space, closes on a
+# non-space not followed by a digit, never across a blank line. `\$` is a dollar.
+# Code spans come first so a `$` inside one is never math; a span opens only at the
+# start of a backtick run (possessive), so a long run cannot backtrack.
+MATH_RE = re.compile(
+    r"(?P<code>(?<![\\`])(`++)(?:(?!\n[ \t]*\n).)+?(?<!`)\2(?!`))"
+    r"|(?P<escaped>\\\\)"
+    r"|(?P<dollar>\\\$)"
+    r"|\$\$(?P<block>(?:\\.|[^$\\])+?)\$\$"
+    r"|(?<!\$)\$(?=[^\s$])"
+    r"(?P<inline>(?:\\.|[^$\\\n]|\n(?![ \t]*\n))+?)(?<!\s)\$(?!\d)",
+    re.S,
+)
+TABLE_ROW = re.compile(r"[ \t]*\|")
+QUOTE_MARKS = re.compile(r"^(?:[ \t]*>[ \t]?)+", re.M)
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 
 
 def api_base(project_id: str) -> str:
@@ -310,6 +328,52 @@ class StripComments(Preprocessor):
         return "".join(out).split("\n")
 
 
+class StashMath(Preprocessor):
+    """Swap math for stash placeholders, outside code, so Markdown cannot touch it.
+
+    In a table row (every line, for table cells) `\\|` is the cell-escaped pipe, and
+    math with a bare `|` is left as text, since the row splits there as in Obsidian.
+    """
+
+    def __init__(self, md, cells: bool):
+        super().__init__(md)
+        self.cells = cells
+
+    def _swap(self, m) -> str:
+        if m.group("code") or m.group("escaped"):
+            return m.group(0)
+        if m.group("dollar"):
+            return self.md.htmlStash.store("$")
+        block = m.group("block")
+        tex = m.group("inline")
+        line = m.string[m.string.rfind("\n", 0, m.start()) + 1 :]
+        if block is not None:
+            # A block inside a blockquote or callout carries `> ` on its later lines.
+            if QUOTE_MARKS.match(line):
+                block = QUOTE_MARKS.sub("", block)
+            tex = block.strip()
+            if not tex:
+                return m.group(0)
+        if self.cells or TABLE_ROW.match(line):
+            if UNESCAPED_PIPE.search(tex):
+                return m.group(0)
+            tex = tex.replace("\\|", "|")
+        return self.md.htmlStash.store(
+            f'<span class="math" data-display="{int(block is not None)}">'
+            f"{html.escape(tex)}</span>"
+        )
+
+    def run(self, lines):
+        text = "\n".join(lines)
+        out, last = [], 0
+        for fence in FENCE_RE.finditer(text):
+            out.append(MATH_RE.sub(self._swap, text[last : fence.start()]))
+            out.append(fence.group(0))
+            last = fence.end()
+        out.append(MATH_RE.sub(self._swap, text[last:]))
+        return "".join(out).split("\n")
+
+
 class SanitizeLinks(Treeprocessor):
     """Only http(s), mailto and in-page links survive; remote images become links."""
 
@@ -354,14 +418,16 @@ class SanitizeLinks(Treeprocessor):
 
 
 class ObsidianExtension(Extension):
-    def __init__(self, resolver: LinkResolver):
+    def __init__(self, resolver: LinkResolver, cells: bool = False):
         super().__init__()
         self.resolver = resolver
+        self.cells = cells
 
     def extendMarkdown(self, md):  # noqa: N802
         md.preprocessors.deregister("html_block")
         md.inlinePatterns.deregister("html")
         md.preprocessors.register(StripComments(md), "strip_comments", 30)
+        md.preprocessors.register(StashMath(md, self.cells), "stash_math", 29)
         # Above `escape` (180) so a table-escaped pipe is still a pipe here.
         hub = decision_hub_pattern(self.resolver.view.profile)
         if hub is not None:
@@ -382,14 +448,16 @@ def strip_frontmatter(text: str) -> str:
     return body if fm_text is not None else text
 
 
-def _engine(view: ProjectView, run_app: bool) -> markdown.Markdown:
+def _engine(
+    view: ProjectView, run_app: bool, cells: bool = False
+) -> markdown.Markdown:
     return markdown.Markdown(
         extensions=[
             "fenced_code",
             "sane_lists",
             "tables",
             "toc",
-            ObsidianExtension(LinkResolver(view, run_app)),
+            ObsidianExtension(LinkResolver(view, run_app), cells),
         ],
         extension_configs={
             "toc": {"slugify": slugify_unicode, "anchorlink": False},
@@ -416,7 +484,7 @@ def render_inline_cells(
     Goes through the same sanitising engine as note bodies, so raw tags stay escaped;
     the only tag added here is the `<br>` that separates rendered segments.
     """
-    engine = _engine(view, run_app)
+    engine = _engine(view, run_app, cells=True)
     rendered = []
     for cell in cells:
         segments = []

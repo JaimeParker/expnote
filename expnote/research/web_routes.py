@@ -69,6 +69,12 @@ from expnote.research.view import ProjectView, open_view
 
 STATIC_DIR = Path(__file__).parent / "static"
 ASSET_TYPES = {".js": "text/javascript", ".css": "text/css"}
+KATEX_TYPES = {
+    ".mjs": "text/javascript",
+    ".js": "text/javascript",
+    ".css": "text/css",
+    ".woff2": "font/woff2",
+}
 CSP = "default-src 'self'; img-src 'self' data:"
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
@@ -901,8 +907,14 @@ def _todo_edit_builder(todo_id: str):
 def _add_cell_html(ev: dict, view: ProjectView, run_app: bool) -> None:
     """Additive inline HTML beside the raw cell text.
 
-    Adds `rowsHtml` (endpoint table) and `keyHtml` / `valuesHtml` (label rows).
+    Adds `headerHtml` (both tables), `rowsHtml` (endpoint table) and `keyHtml` /
+    `valuesHtml` (label rows).
     """
+    for table in (ev.get("endpointTable"), ev.get("labelTable")):
+        if table:
+            table["headerHtml"] = render_inline_cells(
+                table["header"], view, run_app=run_app
+            )
     endpoints = ev.get("endpointTable")
     if endpoints:
         flat = [cell for row in endpoints["rows"] for cell in row]
@@ -984,6 +996,24 @@ def build_pages_router(service: ResearchService) -> APIRouter:
     def research_deep_link(rest: str) -> RedirectResponse:
         tail = "/".join(quote(part, safe="") for part in rest.split("/"))
         return RedirectResponse(f"/research/#/p/{tail}")
+
+    katex_dir = STATIC_DIR / "katex"
+    katex = {
+        p.relative_to(katex_dir).as_posix(): p
+        for p in katex_dir.rglob("*")
+        if p.is_file() and p.suffix in KATEX_TYPES
+    }
+
+    @router.get("/research/katex/{path:path}")
+    def research_katex(path: str):
+        file = katex.get(path)
+        if file is None:
+            return Response("not found", status_code=404, headers=SECURITY_HEADERS)
+        return FileResponse(
+            file,
+            media_type=KATEX_TYPES[file.suffix],
+            headers={**SECURITY_HEADERS, "Cache-Control": "no-cache"},
+        )
 
     @router.get("/research/{asset}")
     def research_asset(asset: str):
