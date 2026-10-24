@@ -45,3 +45,19 @@ def test_validate_has_help_text():
     assert "run-registry workspace" in invoke("validate", "--help").output.replace(
         "\n", " "
     ).replace("│", "")
+
+
+def test_res_group_has_the_review_flow_and_no_confirm():
+    assert set(ROOT.commands["res"].commands) == {"list", "submit", "review"}
+    out = invoke("res", "--help").output
+    assert "res submit" in out and "GUI" in out and "res confirm" not in out
+
+
+def test_the_guide_names_the_review_flow_and_its_todo_kinds():
+    from expnote.research.guide import RESEARCH_GUIDE
+
+    kinds = RESEARCH_GUIDE["derivedTodoKinds"]
+    assert {"res-awaiting-review", "res-returned", "res-draft"} <= set(kinds)
+    assert "res-awaiting-confirmation" not in kinds
+    steps = " ".join(s["run"] for s in RESEARCH_GUIDE["workflows"]["close a plan"])
+    assert "res submit" in steps and "res confirm" not in steps

@@ -16,6 +16,7 @@ from expnote.research import entities
 from expnote.research.edits import edit_frontmatter, yaml_quote
 from expnote.research.errors import ResearchError
 from expnote.research.frontmatter import FrontmatterError, split_frontmatter
+from expnote.research.snapshot import earlier_cycle_links
 from expnote.research.textkit import fold, normalize_text
 from expnote.research.view import ProjectView
 from expnote.research.writeback import FileEdit
@@ -141,7 +142,7 @@ schema: 3
 type: result
 id: "RES-{{plan_id}}"
 plan: "[[{{plan}}]]"
-status: first-read
+status: draft
 evidence: []
 decisions: []
 reviewed_by: ""
@@ -416,11 +417,35 @@ def plan_new_ev(
     return WritePlan(edits, data, warnings=_warnings(left, "ev"))
 
 
+CYCLE_ID_SUFFIX = re.compile(r"-cycle(\d+)$")
+
+
+def _cycle_number(view: ProjectView, page) -> int:
+    """1 for a never-reopened plan, else one more than the latest earlier cycle.
+
+    A reopen records no counter, but it lists every note of the finished cycle in
+    `earlier_cycle`; the earlier results carry their cycle in their id (`...-cycleN`,
+    a plain id is cycle 1), so a plan reopened twice reads 3 whatever the history.
+    """
+    if not (page.get("reopened_on") or earlier_cycle_links(page)):
+        return 1
+    _, earlier = entities.plan_cycle_members(view, page)
+    cycles = [
+        int(match.group(1))
+        if (match := CYCLE_ID_SUFFIX.search(str(m.get("id") or "")))
+        else 1
+        for m in earlier
+        if view.snapshot.entity_type(m) == "result"
+    ]
+    return max(cycles, default=1) + 1
+
+
 def plan_new_res(view: ProjectView, *, plan_id: str, title: str) -> WritePlan:
     profile = view.profile
     page = _plan_page(view, plan_id)
     prefix = _section(profile, "ids").get("res_prefix") or "RES-"
-    res_id = f"{prefix}{plan_id}"
+    cycle = _cycle_number(view, page)
+    res_id = f"{prefix}{plan_id}" + (f"-cycle{cycle}" if cycle > 1 else "")
     if any(n.get("id") == res_id for n in entities.notes_of(view, "result")):
         raise ResearchError(
             "ID_EXISTS", f"a result with id {res_id!r} already exists", exit_code=5
@@ -432,12 +457,16 @@ def plan_new_res(view: ProjectView, *, plan_id: str, title: str) -> WritePlan:
         "res",
         _default_subs(view, title=title, plan=page.stem, plan_id=plan_id),
     )
-    if prefix != "RES-":  # the built-in and legacy templates spell the id this way
+    # the built-in and legacy templates spell the id RES-<plan>
+    if res_id != f"RES-{plan_id}":
         text = edit_frontmatter(text, [("id", yaml_quote(res_id))])
+    # A vault template written before the review flow may still say first-read.
+    text = edit_frontmatter(text, [("status", "draft")])
     path = _note_path(view, "res", stem)
     edit = FileEdit(path, "create", "new-file", new_text=text)
     data = {
         "id": res_id,
+        "cycle": cycle,
         "created": _created(view, [path]),
         "leftoverPlaceholders": left,
     }

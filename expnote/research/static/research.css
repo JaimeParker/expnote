@@ -753,3 +753,8 @@ a.hit-title:hover { color: var(--accent); }
 /* Math (KaTeX): errors keep the TeX source visible; wide display formulas scroll instead of breaking layout. */
 .math-error { color: var(--red); font-family: var(--font-mono); }
 .katex-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+.res-review { border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--panel); padding: 12px 14px 8px; margin: 0 0 16px; min-width: 0; }
+.res-review h2 { margin: 0 0 6px; }
+.res-review .reason-label { display: grid; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 0.9em; }
+.res-review .remarks-input { width: 100%; resize: vertical; }
+.impact-select { font: inherit; font-size: 15px; color: var(--ink); background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 10px; min-height: 34px; max-width: 14em; }

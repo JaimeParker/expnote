@@ -17,9 +17,10 @@ EXEC_STATUS = (
 EV_STATUS = ("rendered", "labelled", "label-na")
 EV_LABELLED_STATUSES = ("labelled", "label-na")  # any other status still needs labels
 DEV_STATUS = ("open", "closed")
-RES_STATUS = ("first-read", "confirmed", "superseded", "withdrawn")
+RES_STATUS = ("draft", "first-read", "confirmed", "superseded", "withdrawn")
 DECISION_STATUS = ("proposed", "confirmed", "superseded", "rejected")
 LABELLED_BY = ("user", "agent-for-user")
+RES_REVIEWED_BY = ("user", "agent-for-user")
 DEVIATION_IMPACT = ("none", "weak", "moderate", "affects")
 
 SUPPORTED_SCHEMAS = ("2", "3")
@@ -128,6 +129,10 @@ _V2: dict[str, dict[str, Field]] = {
         "deviation_impact": Field("enum", False, "coordinator", DEVIATION_IMPACT),
         "superseded_by": Field("link", False, "coordinator"),
         "reviewed_by": Field("str", False, "coordinator"),
+        "submitted_on": Field("date", False, "agent"),
+        "returned_on": Field("date", False, "user"),
+        "reviewed_on": Field("date", False, "user"),
+        "review_authorization": Field("str", False, "coordinator"),
     },
 }
 

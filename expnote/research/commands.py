@@ -80,9 +80,12 @@ ev_app = typer.Typer(
     epilog="Labels are the user's: `expnote ev label show <EV> --json`.",
 )
 res_app = typer.Typer(
-    help="Results: list, confirm.",
-    epilog="Example: `expnote res confirm <RES_ID> --decision <DECISION_ID> "
-    "--deviation-impact <none|weak|moderate|affects> --apply`.",
+    help="Results: list, submit, review (draft > first-read > confirmed).",
+    epilog="Agent: `expnote res submit <RES_ID> --deviation-impact "
+    "<none|weak|moderate|affects> --apply` hands the draft to the user (a running "
+    "plan moves to read-out when its gates pass). The user reviews it in the GUI "
+    "(pass or return with remarks); `res review` is the user-only CLI path and "
+    'needs --authorization "<USER_WORDS>".',
 )
 deviation_app = typer.Typer(
     help="Deviation register: list, show, add, close.",

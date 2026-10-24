@@ -39,6 +39,12 @@ def server(world):  # noqa: F811
         '---\nschema: 3\ntype: plan\nid: PLAN-900C\ntitle: "PLAN-900C"\n'
         "status: draft\n---\n# 开放计划\n",
     )
+    write(
+        proj / "results/RES--PLAN-900C 判读.md",
+        '---\nschema: 3\ntype: result\nid: RES-PLAN-900C\nplan: "[[PLAN-900C--open]]"\n'
+        "status: first-read\nevidence: []\ndeviation_impact: weak\n---\n"
+        "# RES--PLAN-900C 判读\n\n正文。\n",
+    )
     write(proj / "plans/想法草稿.md", "# 想法草稿\n\n一段想法。\n")
     set_mtime(proj / "plans/想法草稿.md", 3600)
     long_content = "子协议 B 逐位相同：" + "窗口小于 horizon，" * 20 + "结尾"
@@ -83,7 +89,7 @@ def test_every_page_renders_without_errors(server):
     assert any(n.startswith("plan PLAN-900A") for n in names)
     assert any(n.startswith("ev ") for n in names)
     assert report["pages"] >= 15
-    assert report["checks"] >= 60  # the write-action panels, errors and toasts
+    assert report["checks"] >= 70  # the write-action panels, errors and toasts
     by_name = {r["name"]: r for r in report["results"]}
     # master-detail pages render the selected item in the preview pane
     for name in ("decisions-sel", "ev-sel", "ev-figures", "todos"):

@@ -666,14 +666,15 @@ def exec_advance(
     )
 
 
-@res_app.command("confirm")
-def res_confirm(
+@res_app.command("submit")
+def res_submit(
     ident: Annotated[str, typer.Argument(metavar="RES")],
-    decision: Annotated[
-        str, typer.Option("--decision", help="The user's confirmed decision.")
-    ],
     deviation_impact: Annotated[
-        str, typer.Option("--deviation-impact", help="none, weak, moderate or affects.")
+        str,
+        typer.Option(
+            "--deviation-impact",
+            help="Your proposal: none, weak, moderate or affects.",
+        ),
     ],
     expected_sha256: ExpectedOption = None,
     project: ProjectOption = None,
@@ -681,14 +682,65 @@ def res_confirm(
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Confirm a result after the user confirmed a decision that links it."""
+    """Hand a drafted result to the user (draft -> first-read).
+
+    A running plan moves on to read-out in the same write when its gates pass (one
+    active result, every evidence page labelled); otherwise the result is still
+    submitted and the unmet gates come back as warnings.
+    """
     run_write(
-        "res confirm",
-        lambda view: writes.plan_res_confirm(
+        "res submit",
+        lambda view: writes.plan_res_submit(
             view,
             ident,
-            decision=decision,
             deviation_impact=deviation_impact,
+            expected_sha256=expected_sha256,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
+@res_app.command("review")
+def res_review(
+    ident: Annotated[str, typer.Argument(metavar="RES")],
+    verdict: Annotated[
+        str, typer.Option("--verdict", help="pass (confirm) or return (to draft).")
+    ],
+    deviation_impact: Annotated[
+        str | None,
+        typer.Option(
+            "--deviation-impact",
+            help="none, weak, moderate or affects (default: the submitted one).",
+        ),
+    ] = None,
+    remarks: Annotated[
+        str | None,
+        typer.Option("--remarks", help="What to revise (required with return)."),
+    ] = None,
+    authorization: AuthorizationOption = None,
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Review a first-read result for the user: pass or return it (user-only).
+
+    The user normally does this in the GUI. From the CLI it needs --authorization
+    with the user's own words (exit 7 without it).
+    """
+    run_write(
+        "res review",
+        lambda view: writes.plan_res_review(
+            view,
+            ident,
+            verdict=verdict,
+            deviation_impact=deviation_impact,
+            remarks=remarks,
+            authorization=authorization,
             expected_sha256=expected_sha256,
         ),
         project=project,
@@ -1085,7 +1137,11 @@ def new_res(
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Create the final result note of a plan."""
+    """Create the final result note of a plan, as a draft.
+
+    The id is RES-<PLAN>; in a reopened plan's later cycle it is RES-<PLAN>-cycleN
+    (N = the current cycle, 2 after the first reopen). Fill it, then `res submit`.
+    """
     run_write(
         "new res",
         lambda view: newnote.plan_new_res(view, plan_id=plan_id, title=title),

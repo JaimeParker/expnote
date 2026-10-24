@@ -188,6 +188,7 @@ def test_only_the_listed_endpoints_can_write(world):
         ("POST", f"{prefix}/plans/adopt"),
         ("POST", f"{prefix}/deviations/{{ident}}/close"),
         ("POST", f"{prefix}/ev/{{stem}}/labels"),
+        ("POST", f"{prefix}/res/{{ident}}/review"),
         ("POST", f"{prefix}/todos"),
         ("POST", f"{prefix}/todos/{{todo_id}}/done"),
         ("POST", f"{prefix}/todos/{{todo_id}}/edit"),
@@ -596,6 +597,108 @@ def test_ev_detail_tells_the_page_whether_a_remark_can_be_saved(world):
     shown = world.client.get(f"{P}/ev/{quote(EV_STEM)}").json()["data"]
     assert shown["write"] == {"remark": True}
     assert shown["ev"]["labelTable"]["valueColumns"] == [1]
+
+
+# ---- result review -----------------------------------------------------------------
+
+RES_NOTE = """---
+schema: 3
+type: result
+id: "RES-PLAN-900B"
+plan: "[[PLAN-900B--open]]"
+status: first-read
+evidence: []
+deviation_impact: weak
+---
+# RES--PLAN-900B 判读
+
+## 1. 摘要
+
+正文。
+"""
+
+
+def first_read_result(world):
+    path = world.proj / "results" / "RES--PLAN-900B 判读.md"
+    write(path, RES_NOTE)
+    set_mtime(path, 3600)
+    return path
+
+
+def res_review(world, path, **extra):
+    body = {"expectedSha256": sha(path), **extra}
+    return post(world, "/res/RES-PLAN-900B/review", body)
+
+
+def test_res_review_pass_records_the_user_without_any_words(world):
+    path = first_read_result(world)
+    before = read(path)
+    dry = res_review(
+        world, path, verdict="pass", deviationImpact="moderate", dryRun=True
+    )
+    assert dry.status_code == 200, dry.text
+    diff = dry.json()["data"]["changes"][0]["unifiedDiff"]
+    assert "+status: confirmed" in diff and "+reviewed_by: user" in diff
+    assert read(path) == before and new_audit(world) == []
+    done = res_review(world, path, verdict="pass", deviationImpact="moderate")
+    assert done.status_code == 200, done.text
+    text = read(path)
+    assert "status: confirmed" in text and "deviation_impact: moderate" in text
+    assert "reviewed_by: user" in text and "reviewed_on: " in text
+    assert "review_authorization" not in text and "confirmed_decision" not in text
+    audit = new_audit(world)
+    assert len(audit) == 1 and audit[0]["payload"]["actor"] == "gui"
+    error_of(res_review(world, path, verdict="pass"), 422, "GATE_FAILED")
+
+
+def test_res_review_keeps_the_submitted_impact_when_the_user_sends_none(world):
+    path = first_read_result(world)
+    assert res_review(world, path, verdict="pass").status_code == 200
+    assert "deviation_impact: weak" in read(path)
+
+
+def test_res_review_return_needs_remarks_and_logs_them(world):
+    path = first_read_result(world)
+    error_of(res_review(world, path, verdict="return"), 422, "USAGE_MISSING_OPTION")
+    assert read(path) == RES_NOTE
+    done = res_review(world, path, verdict="return", remarks="补上 seed 数")
+    assert done.status_code == 200, done.text
+    text = read(path)
+    assert "status: draft" in text and "returned_on: " in text
+    assert re.search(
+        r"\n## Review remarks\n\n- \d{4}-\d{2}-\d{2} user: 补上 seed 数\n$", text
+    )
+    error_of(res_review(world, path, verdict="return", remarks="x"), 422, "GATE_FAILED")
+
+
+def test_res_review_refusals(world):
+    path = first_read_result(world)
+    error_of(res_review(world, path, verdict="maybe"), 422, "USAGE_BAD_VALUE")
+    error_of(res_review(world, path), 422, "USAGE_BAD_VALUE")
+    error_of(
+        res_review(world, path, verdict="pass", deviationImpact="huge"),
+        422,
+        "USAGE_BAD_OPTION",
+    )
+    error_of(
+        post(world, "/res/RES-PLAN-900B/review", {"verdict": "pass"}),
+        422,
+        "USAGE_MISSING_OPTION",
+    )
+    error_of(
+        post(
+            world, "/res/没有/review", {"verdict": "pass", "expectedSha256": "0" * 64}
+        ),
+        404,
+        "NOT_FOUND",
+    )
+    stale = post(
+        world,
+        "/res/RES-PLAN-900B/review",
+        {"verdict": "pass", "expectedSha256": "0" * 64},
+    )
+    error_of(stale, 409, "CAS_MISMATCH")
+    assert read(path) == RES_NOTE and new_audit(world) == []
 
 
 # ---- manual TODOs ------------------------------------------------------------------

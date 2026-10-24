@@ -237,17 +237,17 @@ plan       draft > approved > running > read-out > confirmed > closed     (super
 decision   proposed > confirmed > superseded      or  proposed > rejected
 exec-plan  draft > frozen > running > done | aborted
 evidence   rendered > labelled | label-na
-result     first-read > confirmed | superseded | withdrawn
+result     draft > first-read > confirmed | superseded | withdrawn   (the user returns first-read to draft)
 ```
 
 `expnote plan bundle PLAN-001` (or `plan advance` as a dry-run) shows the unmet gate
 codes for the next move. Plan gates: *approved* needs a confirmed decision;
 *running* needs a frozen exec plan; *read-out* needs exactly one final result and
-labelled evidence; *confirmed* needs that result confirmed; *closed* needs a
+labelled evidence (and refuses while that result is still a `draft`: submit it first); *confirmed* needs that result confirmed; *closed* needs a
 confirmed closing decision.
 
 **Authorization.** Some actions are the human's: confirming or rejecting a
-decision, closing a plan, labelling evidence. From the CLI they need
+decision, closing a plan, labelling evidence, reviewing a result. From the CLI they need
 `--authorization "<the user's own words>"` (or the id of an earlier confirmed
 decision) or the command exits 7 (`USER_ONLY`). In the GUI the user just clicks.
 An agent must never invent the words. The quotes below stand for what you
@@ -555,10 +555,13 @@ can close a deviation with a click.
 
 ### 5.7 Final result, confirmation, closing
 
-There is **one final RES per plan**. It cites its evidence, states the
-pre-registered verdicts and the deviations that affect them. The user confirms it
-with a decision that links the result; then `res confirm` records the confirmation
-and the plan moves on.
+There is **one final RES per plan** (per cycle: in a reopened plan `new res` ids the
+new cycle's result `RES-<PLAN>-cycleN`, N = 2 after the first reopen, 3 after the
+second; the first cycle keeps `RES-<PLAN>`). It cites its evidence, states the
+pre-registered verdicts and the deviations that affect them. It is drafted
+(`status: draft`), the agent submits it with `res submit` (`first-read`), and the
+user reads and checks it in the GUI, then passes it (`confirmed`) or returns it with
+remarks (back to `draft`). The review is not a decision.
 
 ```bash
 expnote new res --plan PLAN-001 --title "Warmup result" --apply
@@ -569,7 +572,7 @@ schema: 3
 type: result
 id: "RES-PLAN-001"
 plan: "[[PLAN-001--Learning-rate warmup study]]"
-status: first-read
+status: draft
 evidence: ["[[EV--PLAN-001 Loss curves]]"]
 decisions: []
 reviewed_by: ""
@@ -597,22 +600,44 @@ One model size and one dataset, as scoped in the plan.
 
 One seed was rerun, see the deviation register; it does not affect the verdict.
 EOF
-expnote decision new --title "Confirm the result RES-PLAN-001" --layer research \
-  --decided "The warmup arm is the more stable one." \
-  --reason "The labelled evidence supports the pre-registered verdict." \
-  --options "Leave the result unconfirmed and repeat the runs; not needed, the effect is clear." \
-  --plans PLAN-001 --targets "[[RES--PLAN-001 Warmup result]]" --apply
-expnote decision set DEMO-DEC-0003 --status confirmed --authorization "Yes, the result stands." --apply
-expnote res confirm RES-PLAN-001 --decision DEMO-DEC-0003 --deviation-impact none --no-quiet --apply
-expnote plan advance PLAN-001 --to read-out --apply
+expnote res submit RES-PLAN-001 --deviation-impact none --apply
+expnote next                                   # the result waits for the user: res-awaiting-review
+```
+
+`res submit` moves the result to `first-read`, records your proposed
+`deviation_impact` (`none|weak|moderate|affects`) and, when the plan is `running`
+and its read-out gates pass (one active result, every evidence page labelled), moves
+the plan to `read-out` in the same write. If a gate is unmet the result is still
+submitted, the plan stays `running` and the unmet gates come back as warnings; run
+`plan advance PLAN-001 --to read-out` once they pass.
+
+The user opens the result in the GUI (the `res-awaiting-review` TODO links to it),
+reads and checks it, may change the deviation impact, and clicks **Pass review** or
+**Return for revision**. A return needs remarks: they are appended to a
+`## Review remarks` section at the end of the note (`- <date> user: <remarks>`), the
+result goes back to `draft` with `returned_on`, and the plan stays where it is.
+The agent sees `res-returned`, revises the note, and submits again. A pass writes
+`status: confirmed`, `reviewed_by`, `reviewed_on` and the deviation impact. The CLI
+path is user-only and needs the user's own words:
+
+```bash
+expnote res review RES-PLAN-001 --verdict pass --deviation-impact none \
+  --authorization "Yes, the result stands." --no-quiet --apply
+expnote res review RES-PLAN-001 --verdict return --remarks "Add the seed count to section 4." \
+  --authorization "Not yet, see my comment." --apply
+```
+
+Then the plan moves on:
+
+```bash
+expnote decision new --title "Close PLAN-001" --layer research \
+  --decided "PLAN-001 is finished: the warmup arm is the more stable one." \
+  --reason "The result passed review." --plans PLAN-001 --apply
+expnote decision set DEMO-DEC-0003 --status confirmed --authorization "Yes, close it." --apply
 expnote plan advance PLAN-001 --to confirmed --apply
 expnote plan advance PLAN-001 --to closed --decision DEMO-DEC-0003 --apply
 expnote check
 ```
-
-`--deviation-impact` (`none|weak|moderate|affects`) is your judgement of how the
-deviations touch the verdict. The closing decision can be the one that confirmed the
-result, or a separate one.
 
 **The user's shortcut.** To drop or close a plan on the user's word in one step,
 `plan close` records a confirmed decision and closes it; `--force` closes from any
@@ -653,8 +678,8 @@ The plan goes back to `approved` (`approved_decision` is the new decision,
 `reopened_on`, and `earlier_cycle` lists every note of the finished cycle (it
 accumulates over repeated reopens). The body is untouched. The gates then look at the
 current cycle only: the new cycle needs its own frozen exec-plan, evidence and
-ONE new final result. That result must link the earlier cycle's active result(s)
-(`check` warns `LIFE.REOPEN_RES_NOT_MERGED` otherwise), and `res confirm` marks
+ONE new final result (`new res` gives it the id `RES-PLAN-001-cycle2`). That result must link the earlier cycle's active result(s)
+(`check` warns `LIFE.REOPEN_RES_NOT_MERGED` otherwise), and passing its review marks
 those earlier results `superseded`. The GUI shows "Reopened <date>" and tags
 earlier-cycle notes; reopening itself is CLI only.
 
@@ -669,7 +694,7 @@ no date must be placed with `--earlier <stem>` (repeatable).
 
 `expnote todo list` merges *derived* items, computed from the state of the notes and
 never stored (a decision waiting for approval, unlabelled evidence, an open
-deviation, a result waiting for confirmation, a decision review date that has come,
+deviation, a result waiting for the user's review (or returned to the agent), a decision review date that has come,
 a draft in the plans folder that is not a plan yet, sync-conflict files, runs stuck in
 `running`, ...), with *manual* ones in the TODO
 note. Items are split by owner, the user's first. `expnote next` prints the same

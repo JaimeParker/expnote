@@ -176,6 +176,40 @@ if (rendered) {
   check("label save previews the cell change", text.includes("跌落 <b>严重</b>") && main.byClass("diff")[0].byTag("b").length === 0, text);
 }
 
+// ---- result review: the panel on a first-read result --------------------------------------------------------
+const { hasWorkInProgress } = await import("/research/revisit.js");
+// the shim has no selector engine: a scope that answers the two queries hasWorkInProgress asks
+const wip = () => hasWorkInProgress({ querySelector: () => main.byClass("confirm-panel")[0] || null, querySelectorAll: () => ["input", "textarea", "select"].flatMap((t) => main.byTag(t)) });
+const reviewable = (await api(`${P}/todos`)).data.todos.find((t) => t.kind === "res-awaiting-review");
+check("a first-read result awaits the user's review", reviewable && reviewable.owner === "user");
+if (reviewable) {
+  await go(`#/p/${enc(project)}/note/${enc(reviewable.stem)}`);
+  await afterFetch();
+  const pass = buttonLike(main, "Pass review");
+  const back = buttonLike(main, "Return for revision");
+  check("the result page carries the review panel", main.byClass("res-review").length === 1 && pass && back && main.byClass("impact-select").length === 1 && main.byClass("remarks-input").length === 1);
+  check("an untouched panel is not work in progress", !wip());
+  back.dispatch("click");
+  check("returning without remarks asks for them and opens nothing", main.byClass("confirm-panel").length === 0 && main.byClass("res-review")[0].textContent.includes("Say what to revise"));
+  main.byClass("remarks-input")[0].value = "补 seed 数 <b>x</b>";
+  check("typed remarks count as work in progress", wip());
+  back.dispatch("click");
+  await afterFetch();
+  const returnDiff = (main.byClass("diff")[0] || { textContent: "" }).textContent;
+  check("returning previews draft, the mark and the remark as text", returnDiff.includes("+status: draft") && returnDiff.includes("returned_on") && returnDiff.includes("补 seed 数 <b>x</b>") && main.byClass("diff")[0].byTag("b").length === 0, returnDiff);
+  buttonLike(main, "Cancel").dispatch("click");
+  check("Cancel closes the review confirm", main.byClass("confirm-panel").length === 0);
+  pass.dispatch("click");
+  await afterFetch();
+  const passDiff = (main.byClass("diff")[0] || { textContent: "" }).textContent;
+  check("passing previews confirmed and the reviewer", passDiff.includes("+status: confirmed") && passDiff.includes("+reviewed_by: user"), passDiff);
+  buttonLike(main, "Cancel").dispatch("click");
+}
+{
+  const noPanel = (fm) => actions.resReviewPanel({ project, post: async () => ({}) }, { type: "result", stem: "s", sha256: "x", frontmatter: fm });
+  check("no review panel unless the result is first-read", ["draft", "confirmed", "superseded", "withdrawn"].every((status) => noPanel({ status }) === null) && noPanel({ status: "first-read" }) !== null);
+}
+
 // the optional second user column never gates "mark labelled"; the first one does
 {
   const optionalColumnTable = { header: ["臂", "跌落", "恢复/提升"], valueColumns: [1, 2], rows: [{ key: "a", values: ["跌落", ""] }, { key: "b", values: ["未跌落", ""] }] };
@@ -204,7 +238,7 @@ for (const t of todoList) {
   const bare = t.kind === "deviation-open" ? t.ref : t.message;
   check(`TODO ${t.kind} ${t.ref}: pane names owner, kind, level and the message`, text.includes(bare) && text.includes(t.kind) && text.includes(t.owner) && (t.source === "manual" || text.includes(t.severity)), text.slice(0, 200));
   check(`TODO ${t.kind} ${t.ref}: the command is copyable`, !t.command || (pane().byClass("command").length === 1 && pane().byClass("command")[0].textContent.includes(t.command) && pane().byClass("command")[0].byTag("button").length === 1));
-  const actionable = t.kind === "deviation-open" || t.source === "manual" || t.kind === "ev-unlabelled" || t.kind === "plan-draft-unadopted";
+  const actionable = t.kind === "deviation-open" || t.source === "manual" || t.kind === "ev-unlabelled" || t.kind === "plan-draft-unadopted" || t.kind === "res-awaiting-review";
   check(`TODO ${t.kind} ${t.ref}: no action bar unless there is an action`, actionable || pane().byClass("todo-actions").length === 0);
   const row = main.byClass("todo").find((r) => r.getAttribute("data-id") === t.id);
   const rowLink = row && row.byClass("row-link")[0];

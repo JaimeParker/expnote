@@ -24,7 +24,7 @@ from expnote.research.entities import (
 from expnote.research.index import linked_workspaces
 from expnote.research.model import Decision, Note
 from expnote.research.runs import stale_running_runs
-from expnote.research.schemas import EV_LABELLED_STATUSES
+from expnote.research.schemas import EV_LABELLED_STATUSES, SUPPORTED_SCHEMAS
 from expnote.research.textkit import fold, iter_links, link_stem
 from expnote.research.view import ProjectView
 
@@ -40,6 +40,8 @@ NEXT_PRIORITY = (
     "plan-needs-exec",
     "exec-awaiting-freeze",
     "plan-prep-while-rules-pending",
+    "res-returned",
+    "res-draft",
     "legacy-no-final-res",
     "final-res-pending",
     "deviation-open",
@@ -256,54 +258,58 @@ class _Derive:
                 )
         return items
 
-    def result_confirmation(self, page: Note, member: Note) -> list[dict]:
-        if member.get("status") != "first-read":
+    def result_review(self, page: Note, member: Note) -> list[dict]:
+        """The review loop of a current-cycle result: draft, first-read, returned."""
+        if member.schema not in SUPPORTED_SCHEMAS:
             return []
+        status = member.get("status")
         plan_id = str(page.get("id", ""))
-        status = page.get("status")
         res_id = str(member.get("id") or member.stem)
-        waiting_plan = status == "read-out" or (
-            is_legacy(self.view, page) and status in ("confirmed", "closed")
-        )
-        items = []
-        for decision in self.decisions:
-            if not lands_cites(decision, member.cstem):
-                continue
-            did = self.decision_id(decision)
-            if decision.status == "proposed" and waiting_plan:
-                items.append(
-                    _item(
-                        "res-awaiting-confirmation",
-                        "user",
-                        "action",
-                        res_id,
-                        f"result {res_id} waits for the user ({did})",
-                        "decide the confirming decision",
-                        plan=plan_id,
-                        decision=did,
-                        stem=member.stem,
-                    )
+        if status == "first-read":
+            return [
+                _item(
+                    "res-awaiting-review",
+                    "user",
+                    "action",
+                    res_id,
+                    f"read and check result {res_id}, then pass or return it",
+                    "open the result in the GUI, read it, then pass the review or "
+                    "return it with remarks",
+                    plan=plan_id,
+                    stem=member.stem,
                 )
-            elif decision.status == "confirmed" and not is_legacy(self.view, member):
-                items.append(
-                    _item(
-                        "decision-confirmed-not-applied",
-                        "agent",
-                        "action",
-                        f"{did}:{res_id}",
-                        f"{did} confirms {res_id}, still first-read",
-                        "confirm the result",
-                        plan=plan_id,
-                        role="result",
-                        decision=did,
-                        stem=member.stem,
-                        command=(
-                            f"expnote res confirm {res_id} --decision {did} "
-                            f"{IMPACT_CHOICES} --apply{self.flag}"
-                        ),
-                    )
+            ]
+        if status != "draft" or page.get("status") in ("superseded", "withdrawn"):
+            return []
+        command = f"expnote res submit {res_id} {IMPACT_CHOICES} --apply{self.flag}"
+        if member.get("returned_on"):
+            return [
+                _item(
+                    "res-returned",
+                    "agent",
+                    "action",
+                    res_id,
+                    f"{res_id} was returned on {member.get('returned_on')}",
+                    "revise it per the user's review remarks (the Review remarks "
+                    "section), then submit it again",
+                    plan=plan_id,
+                    stem=member.stem,
+                    command=command,
                 )
-        return items
+            ]
+        return [
+            _item(
+                "res-draft",
+                "agent",
+                "info",
+                res_id,
+                f"{res_id} is still a draft",
+                "finish the result, then submit it for the user's review",
+                plan=plan_id,
+                stem=member.stem,
+                command=command,
+            )
+        ]
 
     def legacy_without_final_result(
         self, page: Note, members: list[Note]
@@ -322,7 +328,7 @@ class _Derive:
                 "warn",
                 plan_id,
                 f"legacy plan {plan_id} is {status} without a confirmed result",
-                "draft the final result and a decision that confirms it",
+                "draft the final result, `res submit` it for the user's review",
                 plan=plan_id,
                 command=f'expnote new res --plan {plan_id} --title "<title>" '
                 f"--apply{self.flag}",
@@ -351,8 +357,8 @@ class _Derive:
                 plan_id,
                 f"legacy plan {plan_id} has {len(active)} active result(s), "
                 "not one final result",
-                "draft the final result, supersede its stage cards, propose the "
-                "confirming decision",
+                "draft the final result, supersede its stage cards, `res submit` it "
+                "for the user's review",
                 plan=plan_id,
                 command=f'expnote new res --plan {plan_id} --title "<title>" '
                 f"--apply{self.flag}",
@@ -364,12 +370,15 @@ class _Derive:
         for page in self.pages:
             members = plan_members(self.view, page)
             items += self.plan_waiting_on_decisions(page)
+            current = {
+                m.cstem for m in self.snap.current_plan_members(str(page.get("id", "")))
+            }
             for member in members:
                 entity = self.snap.entity_type(member)
                 if entity == "exec-plan":
                     items += self.exec_rules(page, member)
-                elif entity == "result":
-                    items += self.result_confirmation(page, member)
+                elif entity == "result" and member.cstem in current:
+                    items += self.result_review(page, member)
             items += self.legacy_without_final_result(page, members)
             items += self.final_res_pending(page, members)
             items += self.approved_plan_next_step(page)

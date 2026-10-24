@@ -3,24 +3,24 @@ schema: 3
 type: result
 id: "RES-{{plan_id}}"
 plan: "[[{{plan}}]]"
-status: first-read
+status: draft
 evidence: []
 decisions: []
-confirmed_decision: ""
 deviation_impact: ""
 superseded_by: ""
-reviewed_by: 协调方
+reviewed_by: ""
 project: New Off2On RL
 date: "{{date}}"
 ---
 <!-- vault:template-doc:start -->
 > **模板说明（`expnote new res` 生成新笔记时会删掉本块）**
 >
-> 每个计划只有一张最终 RES，写在计划进入 read-out 时。阶段性判读写成这张卡里的小节，不另建 RES。若旧卡被并入，旧卡标 `superseded` 并写 `superseded_by`。
+> 每个计划只有一张最终 RES，在计划 running 收尾时起草，提交后计划进入 read-out。阶段性判读写成这张卡里的小节，不另建 RES。若旧卡被并入，旧卡标 `superseded` 并写 `superseded_by`。
 >
-> **生命周期**：`first-read`（协调方初读）→ `confirmed`（用户确认），也可转为 `superseded` 或 `withdrawn`。
-> - 确认用 `expnote res confirm <ID>`：需要 `confirmed_decision` 指向一条 confirmed 决策，且该决策链接本卡；还要填写 `deviation_impact`（none / weak / moderate / affects）。
-> - 只有用户能确认；协调方引用用户原话写决策。
+> **生命周期**：`draft`（协调方起草）→ `first-read`（协调方提交，等用户审阅）→ `confirmed`（用户审阅通过）；用户退回则回到 `draft`，也可转为 `superseded` 或 `withdrawn`。
+> - 写完后用 `expnote res submit <ID> --deviation-impact <none|weak|moderate|affects>` 提交：状态变 `first-read`，`deviation_impact` 是协调方的建议；计划在 `running` 且 read-out 门槛满足时同时进入 `read-out`。
+> - 用户在 GUI 里读卡并通过或退回；`deviation_impact` 由用户审阅时可改。退回时意见写入文末「Review remarks」，协调方按意见修改后重新提交。
+> - 审阅不经决策：通过后卡上写 `reviewed_by` / `reviewed_on`，不要再写 `confirmed_decision`。
 <!-- vault:template-doc:end -->
 # RES--{{plan_id}} {{title}}
 
@@ -55,5 +55,5 @@ date: "{{date}}"
 
 ## 六、用户决定与后续方向
 
-- 用户确认：决策 [[O2O-DEC-nnnn]]。
+- 用户审阅：通过后见卡上 `reviewed_by` / `reviewed_on`；退回意见见文末「Review remarks」。
 - 后续方向（均未批准）：…

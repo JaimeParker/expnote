@@ -1,10 +1,10 @@
 """HTTP surface of the research layer (GUI pages and `/api/research`).
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
-GET except the eight GUI writes (decision approve/reject, plan close, plan adopt, EV
-labels, TODO add/tick, deviation close); those need the per-process token
-and a loopback Origin/Host, and go through `writes.py` and `writeback.py` with actor
-`gui`. Responses carry the research CSP.
+GET except the GUI writes (decision approve/reject, plan close, plan adopt, EV
+labels, result review, TODO add/edit/tick, deviation close); those need the
+per-process token and a loopback Origin/Host, and go through `writes.py` and
+`writeback.py` with actor `gui`. Responses carry the research CSP.
 """
 
 from __future__ import annotations
@@ -631,7 +631,7 @@ def build_router(service: ResearchService) -> APIRouter:
         except ResearchError as error:
             return _failure("image", error)
 
-    # ---- GUI writes (exactly these eight) ------------------------------------------
+    # ---- GUI writes (exactly these) ------------------------------------------
 
     async def gui_write(
         request: Request,
@@ -696,6 +696,12 @@ def build_router(service: ResearchService) -> APIRouter:
     async def ev_labels(project_id: str, stem: str, request: Request):
         return await gui_write(
             request, project_id, "ev label set", _labels_builder(stem)
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/res/{{ident}}/review")
+    async def res_review(project_id: str, ident: str, request: Request):
+        return await gui_write(
+            request, project_id, "res review", _res_review_builder(ident)
         )
 
     @router.post(f"{api}/projects/{{project_id}}/todos")
@@ -852,6 +858,24 @@ def _labels_builder(stem: str):
             rows=rows,
             remark=_text(body, "remark"),
             commit=commit,
+            expected_sha256=_expected_sha(body),
+        )
+
+    return build
+
+
+def _res_review_builder(ident: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        verdict = _text(body, "verdict", required=True)
+        if verdict not in ("pass", "return"):
+            raise _bad_value("verdict is pass or return")
+        return writes.plan_res_review(
+            view,
+            ident,
+            verdict=verdict,
+            deviation_impact=_text(body, "deviationImpact") or None,
+            remarks=_text(body, "remarks"),
+            by_user=True,
             expected_sha256=_expected_sha(body),
         )
 

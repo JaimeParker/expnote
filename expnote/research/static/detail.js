@@ -260,13 +260,15 @@ export function todoTarget(ctx, t) {
     case "plan-gate-blocked":
     case "legacy-no-final-res":
       return route.plan(P, t.ref);
+    case "res-awaiting-review":
+      return route.note(P, t.stem);
     default:
       return t.plan ? route.plan(P, t.plan) : t.stem ? route.note(P, t.stem) : null;
   }
 }
 
 // Kinds whose proposed decision(s) the user settles with Approve / Reject.
-const DECIDABLE_KINDS = new Set(["decision-proposed", "plan-awaiting-approval", "exec-rules-unconfirmed", "res-awaiting-confirmation"]);
+const DECIDABLE_KINDS = new Set(["decision-proposed", "plan-awaiting-approval", "exec-rules-unconfirmed"]);
 
 export function todoDecisionIds(t) {
   if (t.owner !== "user" || !DECIDABLE_KINDS.has(t.kind)) return [];
@@ -300,7 +302,9 @@ const KIND_TEXT = {
   "plan-gate-blocked": ["plan is blocked at a gate", "plans are blocked at a gate"],
   "legacy-no-final-res": ["legacy plan has no final result", "legacy plans have no final result"],
   "exec-rules-unconfirmed": ["exec-plan has unconfirmed rules", "exec-plans have unconfirmed rules"],
-  "res-awaiting-confirmation": ["result awaits confirmation", "results await confirmation"],
+  "res-awaiting-review": ["result awaits your review", "results await your review"],
+  "res-returned": ["result was returned for revision", "results were returned for revision"],
+  "res-draft": ["result is still a draft", "results are still drafts"],
   "stale-running-runs": ["run looks stale", "runs look stale"],
   "sync-conflict-file": ["sync conflict file", "sync conflict files"],
   "plan-needs-exec": ["approved plan has no exec-plan", "approved plans have no exec-plan"],
@@ -399,6 +403,7 @@ export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h
   const title = deviation ? `Deviation ${deviation.id} is ${deviation.status}` : t.message;
   const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, planAdoptAction(ctx, t), todoDoneButton(ctx, t, manualSha)].filter(Boolean);
   const evLink = t.kind === "ev-unlabelled" ? h("a", { class: "btn primary", href: route.ev(ctx.project, t.ref) }, "Open the label editor", icon("chevron")) : null;
+  const reviewLink = t.kind === "res-awaiting-review" ? h("a", { class: "btn primary", href: route.note(ctx.project, t.stem) }, "Open the result to review", icon("chevron")) : null;
   return h(
     "article",
     { class: "detail todo-detail" },
@@ -418,7 +423,7 @@ export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h
     ]),
     deviation ? deviationRow(ctx, deviation) : null,
     decisions.map((data) => decisionBlock(ctx, data)),
-    actions.length || evLink ? h("div", { class: "act-bar todo-actions" }, actions, evLink) : null,
+    actions.length || evLink || reviewLink ? h("div", { class: "act-bar todo-actions" }, actions, evLink, reviewLink) : null,
     t.command ? h("div", { class: "block" }, h("h3", null, "Command"), commandBlock(t.command)) : null,
   );
 }

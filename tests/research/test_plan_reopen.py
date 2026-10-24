@@ -285,7 +285,7 @@ def test_earlier_cycle_result_does_not_count_for_the_new_cycle(world):
     assert "LIFE.REOPEN_RES_NOT_MERGED" not in finding_codes()
 
 
-def test_confirming_the_new_result_supersedes_the_earlier_one(world):
+def test_passing_the_review_of_the_new_result_supersedes_the_earlier_one(world):
     root, proj = world
     reopened_plan(proj, "read-out")
     put(proj, "ops/exec.md", exec_text("done"))
@@ -295,30 +295,79 @@ def test_confirming_the_new_result_supersedes_the_earlier_one(world):
         "# RES-NEW", "# RES-NEW\n\n[[r1]]"
     )
     put(proj, "results/r2.md", new_text)
-    add_decision(proj, 11, CONFIRMED, "[[r2]]")
+    words = ["--authorization", "用户原话：通过"]
     dry = run(
-        "res", "confirm", "RES-NEW", "--decision", "11", "--deviation-impact", "none"
-    )
+        "res", "review", "RES-NEW", "--verdict", "pass", "--deviation-impact", "none",
+        *words,
+    )  # fmt: skip
     assert dry["_exit"] == 4
     assert {c["path"].split("/")[-1] for c in dry["data"]["changes"]} == {
         "r1.md",
         "r2.md",
     }
     done = run(
-        "res",
-        "confirm",
-        "RES-NEW",
-        "--decision",
-        "11",
-        "--deviation-impact",
-        "none",
-        "--apply",
-    )
+        "res", "review", "RES-NEW", "--verdict", "pass", "--deviation-impact", "none",
+        *words, "--apply",
+    )  # fmt: skip
     assert done["_exit"] == 0 and done["data"]["supersedes"] == ["RES-PLAN-910A"]
     old = read(proj / "results" / "r1.md")
     assert "status: superseded" in old and 'superseded_by: "[[r2]]"' in old
     assert "status: confirmed" in read(proj / "results" / "r2.md")
     assert plan_findings()[1] == []
+
+
+# ---- `new res` in a later cycle ------------------------------------------------
+
+
+def new_res(title="新一轮"):
+    return run("new", "res", "--plan", PLAN, "--title", title, "--apply")
+
+
+def test_new_res_ids_follow_the_cycle(world):
+    root, proj = world
+    set_plan(proj, "running", **APPROVED)
+    first = new_res("第一轮")
+    assert first["data"]["id"] == f"RES-{PLAN}" and first["data"]["cycle"] == 1
+    # reopened once: the finished cycle's plain-id result is earlier
+    put(proj, "results/r1.md", result_text("confirmed"))
+    reopened_plan(proj, "approved")
+    second = new_res("第二轮")
+    assert second["data"]["id"] == f"RES-{PLAN}-cycle2" and second["data"]["cycle"] == 2
+    created = read(root / second["data"]["created"][0]["path"])
+    assert f'id: "RES-{PLAN}-cycle2"' in created and "status: draft" in created
+    # the same cycle cannot take a second final result id
+    assert new_res("再来")["error"]["code"] == "ID_EXISTS"
+    # reopened twice: both earlier results are listed, so this is cycle 3
+    stem = second["data"]["created"][0]["path"].rsplit("/", 1)[-1][: -len(".md")]
+    reopened_plan(proj, "approved", cycle=f'["[[exec]]", "[[r1]]", "[[{stem}]]"]')
+    third = new_res("第三轮")
+    assert third["data"]["id"] == f"RES-{PLAN}-cycle3" and third["data"]["cycle"] == 3
+
+
+def test_new_res_refuses_an_id_that_exists(world):
+    root, proj = world
+    put(proj, "results/r1.md", result_text("confirmed"))
+    put(proj, "results/r2.md", result_text("first-read", f"RES-{PLAN}-cycle2"))
+    reopened_plan(proj, "approved")
+    clash = new_res()
+    assert clash["_exit"] == 5 and clash["error"]["code"] == "ID_EXISTS"
+
+
+def test_a_reopened_plan_gets_a_submittable_final_result(world):
+    root, proj = world
+    put(proj, "ops/exec.md", exec_text("done"))
+    put(proj, "results/r1.md", result_text("confirmed"))
+    put(proj, "ops/exec2.md", exec_text("running").replace(f"{PLAN}-S1", f"{PLAN}-S2"))
+    put(proj, "evidence/e1.md", ev_text("labelled"))
+    reopened_plan(proj, "running")
+    made = new_res()
+    assert made["data"]["id"] == f"RES-{PLAN}-cycle2"
+    submitted = run(
+        "res", "submit", f"RES-{PLAN}-cycle2", "--deviation-impact", "none", "--apply"
+    )
+    assert submitted["_exit"] == 0 and submitted["data"]["planAdvanced"] is True
+    assert "status: read-out" in read(proj / PLAN_FILE)
+    assert "status: first-read" in read(root / made["data"]["created"][0]["path"])
 
 
 # ---- plan reopen ------------------------------------------------------------------

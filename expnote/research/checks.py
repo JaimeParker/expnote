@@ -20,6 +20,7 @@ from expnote.research.schemas import (
     EV_LABELLED_STATUSES,
     LABELLED_BY,
     LEGACY_RELAXED,
+    RES_REVIEWED_BY,
     SUPPORTED_SCHEMAS,
     field_table,
 )
@@ -708,14 +709,23 @@ def _check_result(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                     "legacy result without a confirming decision",
                 )
         else:
-            row = _decision_ok(
-                snap,
-                note.get("confirmed_decision"),
-                sink,
-                where,
-                "a confirmed result needs its confirming decision",
-                "RES.CONFIRM_NO_DECISION",
-                lenient=lenient,
+            # Results confirmed before the review flow carry `confirmed_decision`.
+            reviewed = note.get("reviewed_by") in RES_REVIEWED_BY and note.get(
+                "reviewed_on"
+            )
+            row = (
+                None
+                if reviewed
+                else _decision_ok(
+                    snap,
+                    note.get("confirmed_decision"),
+                    sink,
+                    where,
+                    "a confirmed result needs the user's review "
+                    "(reviewed_by + reviewed_on) or its confirming decision",
+                    "RES.CONFIRM_NO_DECISION",
+                    lenient=lenient,
+                )
             )
             if row is not None and not row.cites_stem(note.cstem):
                 sink.add(

@@ -1123,7 +1123,8 @@ def test_a_plan_walks_from_draft_to_closed_through_the_commands(world):
     assert res["data"]["id"] == "RES-PLAN-901A" and ev["_exit"] == 0
     early = run("plan", "advance", "PLAN-901A", "--to", "read-out", "--apply")
     assert [g["code"] for g in early["error"]["details"]["gates"]] == [
-        "LIFE.PLAN_EV_UNLABELLED"
+        "LIFE.PLAN_EV_UNLABELLED",
+        "LIFE.PLAN_RES_DRAFT",  # the new result is still a draft
     ]
     run(
         "ev",
@@ -1150,69 +1151,31 @@ def test_a_plan_walks_from_draft_to_closed_through_the_commands(world):
         )["_exit"]
         == 0
     )
-    assert (
-        run("plan", "advance", "PLAN-901A", "--to", "read-out", "--apply")["_exit"] == 0
+    # submitting the result moves the running plan to read-out in the same write
+    submitted = run(
+        "res", "submit", "RES-PLAN-901A", "--deviation-impact", "none", "--apply"
     )
+    assert submitted["_exit"] == 0 and submitted["data"]["planAdvanced"] is True
+    assert "status: read-out" in read(plan_path)
 
-    # confirming the result: the user's decision must exist and link the result
-    proposed = run(
-        "decision",
-        "new",
-        "--title",
-        "PLAN-901A 判读确认",
-        "--layer",
-        "研究",
-        "--decided",
-        "判读成立。",
-        "--reason",
-        "因为。",
-        "--plans",
-        "PLAN-901A",
-        "--targets",
-        "[[RES--PLAN-901A 判读]]",
-        "--apply",
-    )
-    asked = run(
-        "res",
-        "confirm",
-        "RES-PLAN-901A",
-        "--decision",
-        proposed["data"]["id"],
-        "--deviation-impact",
-        "none",
-        "--apply",
-    )
+    # the review is the user's: no words, no review; their words are recorded
+    res_path = root / res["data"]["created"][0]["path"]
+    asked = run("res", "review", "RES-PLAN-901A", "--verdict", "pass", "--apply")
     assert asked["_exit"] == 7 and asked["error"]["code"] == "USER_ONLY"
-    confirm(proposed["data"]["id"], "用户原话：判读成立")
-    unlinked = run(
-        "res",
-        "confirm",
-        "RES-PLAN-901A",
-        "--decision",
-        approval,
-        "--deviation-impact",
-        "none",
-        "--apply",
-    )
-    assert unlinked["error"]["details"]["gates"][0]["code"] == "RES.DECISION_NOT_LINKED"
-    confirmed = run(
-        "res",
-        "confirm",
-        "RES-PLAN-901A",
-        "--decision",
-        proposed["data"]["id"],
-        "--deviation-impact",
-        "none",
-        "--apply",
-    )
-    assert confirmed["_exit"] == 0
-    res_text = read(root / res["data"]["created"][0]["path"])
+    reviewed = run(
+        "res", "review", "RES-PLAN-901A", "--verdict", "pass",
+        "--authorization", "用户原话：判读成立", "--apply",
+    )  # fmt: skip
+    assert reviewed["_exit"] == 0
+    res_text = read(res_path)
     for line in (
         "status: confirmed",
-        f'confirmed_decision: "{proposed["data"]["id"]}"',
+        "reviewed_by: agent-for-user",
+        'review_authorization: "用户原话：判读成立"',
         "deviation_impact: none",
     ):
         assert line in res_text
+    assert "confirmed_decision" not in res_text
     to_confirmed = run("plan", "advance", "PLAN-901A", "--to", "confirmed", "--apply")
     assert to_confirmed["_exit"] == 0
     assert 'result: "[[RES--PLAN-901A 判读]]"' in read(plan_path)
@@ -1242,7 +1205,13 @@ def test_a_plan_walks_from_draft_to_closed_through_the_commands(world):
     ]
     assert bad == []
     audit = [e["payload"]["command"] for e in audit_records()]
-    assert {"plan advance", "exec freeze", "res confirm", "new plan"} <= set(audit)
+    assert {
+        "plan advance",
+        "exec freeze",
+        "res submit",
+        "res review",
+        "new plan",
+    } <= set(audit)
 
 
 # ---- `new` and templates -----------------------------------------------------
@@ -1302,6 +1271,29 @@ def test_new_plan_from_a_schema_2_template_writes_schema_3_and_strips_markers(wo
     assert "template documentation" not in text
     assert text.endswith("正文。\n") and "\n\n\n" not in text
     assert data("check", "--code", "FM.PARSE")["findings"] == []
+
+
+def test_new_res_creates_a_draft_even_from_an_older_vault_template(world):
+    root, proj = world
+    for plan_id in ("PLAN-902A", "PLAN-902B"):
+        run("new", "plan", "--id", plan_id, "--title", plan_id, "--apply")
+    built_in = run("new", "res", "--plan", "PLAN-902A", "--title", "内置", "--apply")
+    text = read(root / built_in["data"]["created"][0]["path"])
+    assert "status: draft\n" in text and "first-read" not in text
+    assert "confirmed_decision" not in text
+    write(
+        proj / "templates" / "模板--最终RES.md",
+        '---\nschema: 3\ntype: result\nid: "RES-{{plan_id}}"\n'
+        'plan: "[[{{plan}}]]"\nstatus: first-read\nevidence: []\n---\n# {{title}}\n',
+    )
+    edit_profile(
+        proj,
+        DOC_MARKERS,
+        DOC_MARKERS + '\n  files:\n    res: "模板--最终RES.md"',
+    )
+    older = run("new", "res", "--plan", "PLAN-902B", "--title", "旧模板", "--apply")
+    assert older["_exit"] == 0, older
+    assert "status: draft\n" in read(root / older["data"]["created"][0]["path"])
 
 
 def test_new_refuses_existing_ids_names_and_bad_characters(world):

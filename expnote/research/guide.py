@@ -66,7 +66,8 @@ RESEARCH_GUIDE = {
         "(superseded and withdrawn are terminal)",
         "exec-plan": "draft > frozen > running > done | aborted",
         "evidence": "rendered > labelled | label-na",
-        "result": "first-read > confirmed | superseded | withdrawn",
+        "result": "draft > first-read > confirmed | superseded | withdrawn "
+        "(the user returns a first-read result to draft)",
         "decision": "proposed > confirmed > superseded, or proposed > rejected",
         "gates": "plan bundle shows, per next transition, the unmet gate codes",
     },
@@ -158,8 +159,9 @@ RESEARCH_GUIDE = {
                 "expnote plan reopen <PLAN_ID> --decision <DECISION_ID> --apply",
                 "dry-run first; a closed/confirmed plan goes back to approved, "
                 "`earlier_cycle` lists the members of the finished cycle; the new "
-                "cycle needs its own exec-plan and ONE new final result that links "
-                "the earlier one(s), and `res confirm` then supersedes them",
+                "cycle needs its own exec-plan and ONE new final result "
+                "(`new res` ids it RES-<PLAN_ID>-cycleN) that links "
+                "the earlier one(s), and passing its review then supersedes them",
                 available=True,
             ),
             _step(
@@ -207,18 +209,29 @@ RESEARCH_GUIDE = {
         "close a plan": [
             _step(
                 "expnote new res --plan <PLAN_ID> --title <TITLE> --apply",
-                "write the final result",
+                "creates the final result as a draft; fill it in (id RES-<PLAN_ID>, or "
+                "RES-<PLAN_ID>-cycleN in a reopened plan's Nth cycle)",
                 available=True,
             ),
             _step(
-                "expnote res confirm <RES_ID> --decision <DECISION_ID> "
+                "expnote res submit <RES_ID> "
                 "--deviation-impact <none|weak|moderate|affects> --apply",
-                "needs a confirmed decision that links the result",
+                "draft -> first-read with your proposed deviation impact; a running "
+                "plan moves to read-out in the same write when its gates pass (one "
+                "active result, every evidence page labelled), otherwise the unmet "
+                "gates come back as warnings and `plan advance <PLAN_ID> --to "
+                "read-out` is yours to run once they pass",
                 available=True,
             ),
             _step(
-                "expnote plan advance <PLAN_ID> --to read-out --apply",
-                "then --to confirmed, then --to closed --decision <DECISION_ID>",
+                "the user reviews the result in the GUI",
+                "pass (confirmed) or return with remarks (back to draft: revise per "
+                "the Review remarks section, then `res submit` again); never "
+                "confirm it through a decision",
+            ),
+            _step(
+                "expnote plan advance <PLAN_ID> --to confirmed --apply",
+                "after the review passed; then --to closed --decision <DECISION_ID>",
                 available=True,
             ),
             _step(
@@ -236,7 +249,9 @@ RESEARCH_GUIDE = {
         "ev-unlabelled",
         "plan-awaiting-approval",
         "exec-rules-unconfirmed",
-        "res-awaiting-confirmation",
+        "res-awaiting-review",
+        "res-returned",
+        "res-draft",
         "decision-confirmed-not-applied",
         "deviation-open",
         "plan-gate-blocked",

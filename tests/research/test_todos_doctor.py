@@ -114,7 +114,7 @@ def test_ev_unlabelled_and_ev_unmapped(vault):
     assert unmapped["owner"] == "agent" and unmapped["severity"] == "info"
 
 
-def test_exec_rules_unconfirmed_and_res_awaiting_confirmation(vault):
+def test_exec_rules_unconfirmed_and_res_awaiting_review(vault):
     root, proj = vault
     write(proj / "plans/PLAN-900C--new.md", plan_c(status="read-out"))
     write(proj / "ops/执行方案--PLAN-900C S1.md", exec_c())
@@ -123,19 +123,50 @@ def test_exec_rules_unconfirmed_and_res_awaiting_confirmation(vault):
         125, status="proposed", plans=["PLAN-900C"],
         targets=["[[执行方案--PLAN-900C S1]]"],
     )  # fmt: skip
-    seed(
-        126, status="proposed", plans=["PLAN-900C"],
-        targets=["[[RES--PLAN-900C 判读]]"],
-    )  # fmt: skip
     found = kinds()
     rules = found[("exec-rules-unconfirmed", "PLAN-900C-S1")]
     assert rules["owner"] == "user"
     assert rules["decision"] == "O2O-DEC-0125"
     assert rules["stem"] == "执行方案--PLAN-900C S1"
-    result = found[("res-awaiting-confirmation", "RES-PLAN-900C")]
+    result = found[("res-awaiting-review", "RES-PLAN-900C")]
+    assert result["owner"] == "user" and result["severity"] == "action"
     assert result["plan"] == "PLAN-900C"
-    assert result["decision"] == "O2O-DEC-0126"
     assert result["stem"] == "RES--PLAN-900C 判读"
+    assert "GUI" in result["message"] + result["action"]
+
+
+def test_a_first_read_result_waits_for_review_in_any_plan_status_and_without_decision(
+    vault,
+):
+    root, proj = vault
+    write(proj / "results/RES--PLAN-900C 判读.md", res_c())
+    for status in ("running", "read-out"):
+        write(proj / "plans/PLAN-900C--new.md", plan_c(status=status))
+        assert ("res-awaiting-review", "RES-PLAN-900C") in kinds(owner="user")
+    write(proj / "results/RES--PLAN-900C 判读.md", res_c("confirmed"))
+    assert ("res-awaiting-review", "RES-PLAN-900C") not in kinds()
+
+
+def test_draft_and_returned_results_are_agent_work(vault):
+    root, proj = vault
+    write(proj / "plans/PLAN-900C--new.md", plan_c(status="running"))
+    write(proj / "results/RES--PLAN-900C 判读.md", res_c("draft"))
+    draft = kinds(owner="agent")[("res-draft", "RES-PLAN-900C")]
+    assert draft["severity"] == "info"
+    assert "res submit RES-PLAN-900C" in draft["command"]
+    assert "--deviation-impact <none|weak|moderate|affects>" in draft["command"]
+    write(
+        proj / "results/RES--PLAN-900C 判读.md",
+        res_c("draft").replace(
+            "status: draft", "status: draft\nreturned_on: 2026-10-20"
+        ),
+    )
+    found = kinds(owner="agent")
+    returned = found[("res-returned", "RES-PLAN-900C")]
+    assert returned["severity"] == "action" and "res submit" in returned["command"]
+    assert ("res-draft", "RES-PLAN-900C") not in found
+    queue = [t["kind"] for t in data("next")["steps"]]
+    assert "res-returned" in queue
 
 
 def test_confirmed_decisions_not_yet_applied_carry_the_exact_command(vault):
@@ -160,8 +191,7 @@ def test_confirmed_decisions_not_yet_applied_carry_the_exact_command(vault):
     assert rules["command"].startswith(
         "expnote exec freeze PLAN-900C-S1 --rules-decision O2O-DEC-0126"
     )
-    result = found[("decision-confirmed-not-applied", "O2O-DEC-0127:RES-PLAN-900C")]
-    assert "res confirm RES-PLAN-900C --decision O2O-DEC-0127" in result["command"]
+    assert ("decision-confirmed-not-applied", "O2O-DEC-0127:RES-PLAN-900C") not in found
 
 
 def test_deviation_open_gate_blocked_and_legacy_no_final_res(vault):

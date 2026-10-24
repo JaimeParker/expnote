@@ -1,6 +1,6 @@
 """Every row of the lifecycle gate table (design 7.1) as a pass/fail pair.
 
-Rows with a write command (`plan advance`, `exec freeze|advance`, `res confirm`,
+Rows with a write command (`plan advance`, `exec freeze|advance`, `res submit|review`,
 `ev label commit`, `decision set`) are driven through the command: the failing case
 exits 1 `GATE_FAILED` (or 7 for user-only acts) with the gate code in
 `error.details.gates`, the passing case writes. Static rows have no writer, so
@@ -8,6 +8,8 @@ they are paired through `check` on the scenario vaults.
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 from decisionkit import reseed
@@ -468,45 +470,244 @@ def test_evidence_rendered_to_labelled(world):
     assert commit()["data"]["changes"] == []
 
 
-# ---- result: first-read -> confirmed -----------------------------------------
+# ---- result: draft -> first-read -> confirmed, or back to draft ---------------
+
+USER_WORDS = "用户原话：判读成立"
 
 
-def confirm_result(*args):
-    return run("res", "confirm", "RES-PLAN-910A", *args, "--apply")
+def submit_result(*args):
+    return run("res", "submit", "RES-PLAN-910A", *args, "--apply")
 
 
-def test_result_first_read_to_confirmed(world):
+def review_result(*args, authorization=USER_WORDS):
+    extra = ["--authorization", authorization] if authorization else []
+    return run("res", "review", "RES-PLAN-910A", *args, *extra, "--apply")
+
+
+def running_plan(proj, ev="labelled"):
+    set_plan(proj, "running", approved_decision='"O2O-DEC-0009"')
+    put(proj, "ops/exec.md", exec_text("running"))
+    put(proj, "evidence/e1.md", ev_text(ev))
+
+
+def plan_status(proj):
+    return read(proj / "plans" / f"{PLAN_STEM}.md")
+
+
+def test_submit_hands_a_draft_to_the_user(world):
     root, proj = world
-    put(proj, "results/r1.md", result_text("first-read"))
-    add_decision(proj, 11, CONFIRMED, "[[别的笔记]]")
-    add_decision(proj, 12, CONFIRMED, "[[r1]]")
-    add_decision(proj, 13, PROPOSED, "[[r1]]")
-    assert (
-        confirm_result("--decision", "12", "--deviation-impact", "huge")["_exit"] == 2
+    put(proj, "results/r1.md", result_text("draft"))
+    assert submit_result("--deviation-impact", "huge")["_exit"] == 2
+    ok = submit_result("--deviation-impact", "weak")
+    assert ok["_exit"] == 0 and ok["data"]["planAdvanced"] is False
+    text = read(proj / "results" / "r1.md")
+    assert "status: first-read" in text and "deviation_impact: weak" in text
+    assert re.search(r"submitted_on: \d{4}-\d{2}-\d{2}\n", text)
+    assert "status: draft" in plan_status(proj)  # only a running plan moves on
+    again = submit_result("--deviation-impact", "weak")
+    assert gate_codes(again) == ["RES.TRANSITION"]
+
+
+@pytest.mark.parametrize("status", ["confirmed", "withdrawn", "superseded"])
+def test_only_a_draft_result_is_submitted(world, status):
+    root, proj = world
+    put(proj, "results/r1.md", result_text(status))
+    assert gate_codes(submit_result("--deviation-impact", "none")) == ["RES.TRANSITION"]
+
+
+def test_submit_moves_a_running_plan_to_read_out_when_the_gates_pass(world):
+    root, proj = world
+    running_plan(proj)
+    put(proj, "results/r1.md", result_text("draft"))
+    dry = run("res", "submit", "RES-PLAN-910A", "--deviation-impact", "none")
+    assert dry["_exit"] == 4
+    assert {c["path"].split("/")[-1] for c in dry["data"]["changes"]} == {
+        "r1.md",
+        f"{PLAN_STEM}.md",
+    }
+    done = submit_result("--deviation-impact", "none")
+    assert done["_exit"] == 0 and done["data"]["planAdvanced"] is True
+    assert "status: read-out" in plan_status(proj)
+    assert "status: first-read" in read(proj / "results" / "r1.md")
+
+
+def test_submit_with_unmet_gates_still_submits_and_warns(world):
+    root, proj = world
+    running_plan(proj, ev="rendered")
+    put(proj, "results/r1.md", result_text("draft"))
+    done = submit_result("--deviation-impact", "none")
+    assert done["_exit"] == 0 and done["data"]["planAdvanced"] is False
+    assert [g["code"] for g in done["data"]["unmetGates"]] == [
+        "LIFE.PLAN_EV_UNLABELLED"
+    ]
+    assert [w["code"] for w in done["warnings"]] == ["LIFE.PLAN_EV_UNLABELLED"]
+    assert "status: first-read" in read(proj / "results" / "r1.md")
+    assert "status: running" in plan_status(proj)
+    # the gates pass later: submitting again (or `plan advance`) finishes the move
+    put(proj, "evidence/e1.md", ev_text("labelled"))
+    retry = submit_result("--deviation-impact", "none")
+    assert retry["data"]["planAdvanced"] is True
+    assert "status: read-out" in plan_status(proj)
+
+
+def test_resubmitting_after_a_return_clears_the_mark_and_leaves_the_plan(world):
+    root, proj = world
+    set_plan(proj, "read-out", approved_decision='"O2O-DEC-0009"')
+    put(proj, "ops/exec.md", exec_text("done"))
+    put(
+        proj,
+        "results/r1.md",
+        result_text("draft", extra="returned_on: 2026-10-20\n"),
     )
-    asked = confirm_result("--decision", "13", "--deviation-impact", "none")
+    done = submit_result("--deviation-impact", "moderate")
+    assert done["_exit"] == 0 and done["data"]["planAdvanced"] is False
+    text = read(proj / "results" / "r1.md")
+    assert "status: first-read" in text and "returned_on" not in text
+    assert "status: read-out" in plan_status(proj)
+
+
+def test_plan_advance_to_read_out_refuses_a_draft_result(world):
+    root, proj = world
+    running_plan(proj)
+    put(proj, "results/r1.md", result_text("draft"))
+    assert gate_codes(advance("read-out")) == ["LIFE.PLAN_RES_DRAFT"]
+    put(proj, "results/r1.md", result_text("first-read"))
+    assert advance("read-out")["_exit"] == 0
+
+
+def test_review_pass_is_the_users_and_confirms_the_result(world):
+    root, proj = world
+    put(
+        proj,
+        "results/r1.md",
+        result_text("first-read", extra="deviation_impact: weak\n"),
+    )
+    add_decision(proj, 13, PROPOSED, "[[r1]]")
+    assert review_result("--verdict", "maybe")["_exit"] == 2
+    asked = review_result("--verdict", "pass", authorization=None)
     assert asked["_exit"] == 7 and asked["error"]["code"] == "USER_ONLY"
-    unlinked = confirm_result("--decision", "11", "--deviation-impact", "none")
-    assert gate_codes(unlinked) == ["RES.DECISION_NOT_LINKED"]
-    ok = confirm_result("--decision", "12", "--deviation-impact", "weak")
+    assert "status: first-read" in read(proj / "results" / "r1.md")
+    unconfirmed = review_result("--verdict", "pass", authorization="13")
+    assert gate_codes(unconfirmed) == ["DEC.NOT_CONFIRMED"]
+    bad = review_result("--verdict", "pass", "--deviation-impact", "huge")
+    assert bad["_exit"] == 2
+    ok = review_result("--verdict", "pass", "--deviation-impact", "moderate")
     assert ok["_exit"] == 0
     text = read(proj / "results" / "r1.md")
-    assert "status: confirmed" in text and 'confirmed_decision: "O2O-DEC-0012"' in text
-    assert "deviation_impact: weak" in text
-    assert (
-        confirm_result("--decision", "12", "--deviation-impact", "weak")["data"][
-            "changes"
-        ]
-        == []
-    )
+    for line in (
+        "status: confirmed",
+        "deviation_impact: moderate",
+        "reviewed_by: agent-for-user",
+        f'review_authorization: "{USER_WORDS}"',
+    ):
+        assert line in text
+    assert re.search(r"reviewed_on: \d{4}-\d{2}-\d{2}\n", text)
+    assert "confirmed_decision" not in text
+    assert gate_codes(review_result("--verdict", "pass")) == ["RES.TRANSITION"]
+    assert run("check", "--code", "RES.NO_IMPACT")["data"]["findings"] == []
 
 
-def test_a_withdrawn_result_cannot_be_confirmed(world):
+def test_review_pass_keeps_the_submitted_impact_unless_the_user_changes_it(world):
     root, proj = world
-    put(proj, "results/r1.md", result_text("withdrawn"))
+    put(
+        proj,
+        "results/r1.md",
+        result_text("first-read", extra="deviation_impact: weak\n"),
+    )
+    assert review_result("--verdict", "pass")["_exit"] == 0
+    assert "deviation_impact: weak" in read(proj / "results" / "r1.md")
+    put(proj, "results/r1.md", result_text("first-read"))
+    assert review_result("--verdict", "pass")["_exit"] == 2  # no impact anywhere
+
+
+def test_review_return_sends_the_result_back_with_the_remarks(world):
+    root, proj = world
+    set_plan(proj, "read-out", approved_decision='"O2O-DEC-0009"')
+    put(proj, "ops/exec.md", exec_text("done"))
+    put(proj, "results/r1.md", result_text("first-read"))
+    no_remarks = review_result("--verdict", "return")
+    assert no_remarks["_exit"] == 2
+    assert review_result("--verdict", "return", "--remarks", "  ")["_exit"] == 2
+    asked = review_result(
+        "--verdict", "return", "--remarks", "补 seed 数", authorization=None
+    )
+    assert asked["_exit"] == 7
+    ok = review_result("--verdict", "return", "--remarks", "补 seed 数\n和 §4")
+    assert ok["_exit"] == 0
+    text = read(proj / "results" / "r1.md")
+    assert "status: draft" in text and re.search(r"returned_on: \d{4}", text)
+    assert "\n## Review remarks\n\n- " in text
+    assert re.search(r"- \d{4}-\d{2}-\d{2} agent-for-user: 补 seed 数 和 §4\n$", text)
+    assert "status: read-out" in plan_status(proj)  # the plan stays put
+    # a second return adds a bullet to the same section
+    put(proj, "results/r1.md", text.replace("status: draft", "status: first-read"))
+    assert review_result("--verdict", "return", "--remarks", "再改一处")["_exit"] == 0
+    again = read(proj / "results" / "r1.md")
+    assert again.count("## Review remarks") == 1 and again.count("\n- 20") == 2
+    assert again.rstrip("\n").endswith("再改一处")
+
+
+def test_a_return_appends_inside_an_existing_remarks_section(world):
+    root, proj = world
+    body = (
+        "# RES\n\n## Review remarks\n\n- 2026-10-01 user: 旧意见\n\n## 附录\n\n内容\n"
+    )
+    text = result_text("first-read").replace("# RES-PLAN-910A\n", body)
+    put(proj, "results/r1.md", text)
+    assert review_result("--verdict", "return", "--remarks", "新意见")["_exit"] == 0
+    out = read(proj / "results" / "r1.md")
+    remarks, _, rest = out.partition("## 附录")
+    assert remarks.index("旧意见") < remarks.index("新意见") and rest.strip() == "内容"
+
+
+def test_a_withdrawn_or_draft_result_cannot_be_reviewed(world):
+    root, proj = world
+    for status in ("withdrawn", "draft", "confirmed"):
+        put(proj, "results/r1.md", result_text(status))
+        result = review_result("--verdict", "pass", "--deviation-impact", "none")
+        assert gate_codes(result) == ["RES.TRANSITION"]
+
+
+def test_a_confirmed_result_needs_a_review_record_or_its_old_decision(world):
+    root, proj = world
     add_decision(proj, 12, CONFIRMED, "[[r1]]")
-    result = confirm_result("--decision", "12", "--deviation-impact", "none")
-    assert gate_codes(result) == ["RES.TRANSITION"]
+    impact = "deviation_impact: weak\n"
+    old = result_text(
+        "confirmed", extra=f'confirmed_decision: "O2O-DEC-0012"\n{impact}'
+    )
+    new = result_text(
+        "confirmed", extra=f"reviewed_by: user\nreviewed_on: 2026-10-24\n{impact}"
+    )
+    half = result_text("confirmed", extra=f"reviewed_by: user\n{impact}")
+    coordinator = result_text("confirmed", extra=f"reviewed_by: 协调方\n{impact}")
+    for text, expected in (
+        (old, False),
+        (new, False),
+        (half, True),
+        (coordinator, True),
+    ):
+        put(proj, "results/r1.md", text)
+        assert ("RES.CONFIRM_NO_DECISION" in finding_codes()) is expected, text
+    put(proj, "results/r1.md", new.replace(impact, ""))
+    assert "RES.NO_IMPACT" in finding_codes()
+
+
+def test_a_read_out_plan_with_a_returned_draft_result_has_no_standing_fail(world):
+    root, proj = world
+    set_plan(proj, "read-out", approved_decision='"O2O-DEC-0009"')
+    put(proj, "ops/exec.md", exec_text("done"))
+    put(
+        proj,
+        "evidence/e1.md",
+        ev_text("labelled").replace(
+            "status: labelled", "status: labelled\nlabelled_by: user"
+        ),
+    )
+    put(proj, "results/r1.md", result_text("draft", extra="returned_on: 2026-10-20\n"))
+    body = run("check", "--plan", PLAN)["data"]
+    found = [*body["findings"], *body["newCodes"]]
+    ours = [f for f in found if f["code"].startswith(("LIFE.", "RES."))]
+    assert [f["code"] for f in ours if f["level"] == "FAIL"] == []
 
 
 # ---- decision: proposed -> confirmed / rejected; confirmed -> superseded -----
@@ -753,14 +954,14 @@ def test_schema_2_notes_get_numeric_decision_references(world):
     put(
         proj,
         "results/r1.md",
-        result_text("first-read").replace("schema: 3", "schema: 2"),
+        result_text("first-read", extra="deviation_impact: none\n").replace(
+            "schema: 3", "schema: 2"
+        ),
     )
-    add_decision(proj, 12, CONFIRMED, "[[r1]]")
-    assert (
-        confirm_result("--decision", "12", "--deviation-impact", "none")["_exit"] == 0
-    )
-    assert "confirmed_decision: 12\n" in read(proj / "results" / "r1.md")
+    assert review_result("--verdict", "pass")["_exit"] == 0
+    assert "reviewed_by: agent-for-user\n" in read(proj / "results" / "r1.md")
     assert run("check", "--code", "SCHEMA.BAD_VALUE")["data"]["findings"] == []
+    assert run("check", "--code", "SCHEMA.UNKNOWN_FIELD")["data"]["findings"] == []
 
 
 def test_a_gate_decided_on_stale_text_is_refused_at_write_time(world):

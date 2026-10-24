@@ -14,7 +14,7 @@ import {
   runRef,
   todoRow,
 } from "/research/detail.js";
-import { openDecisionAction, planCloseAction, todoAddForm } from "/research/actions.js";
+import { openDecisionAction, planCloseAction, resReviewPanel, todoAddForm } from "/research/actions.js";
 import { planLanes, lanesLegend } from "/research/lanes.js";
 import { LISTS } from "/research/lists.js";
 import {
@@ -634,6 +634,19 @@ async function evPage(ctx) {
 
 // ---- NOTE ------------------------------------------------------------------------------------------------
 
+// Who reviewed a result and when (the remarks themselves are the "Review remarks" section of the note).
+function resReviewRecord(fm) {
+  const rows = [
+    ["Submitted", fm.submitted_on],
+    ["Returned", fm.returned_on],
+    ["Reviewed by", fm.reviewed_by],
+    ["Reviewed on", fm.reviewed_on],
+    ["Deviation impact", fm.deviation_impact],
+    ["Authorization", fm.review_authorization],
+  ];
+  return rows.some(([, v]) => v) ? kv(rows) : null;
+}
+
 async function notePage(ctx) {
   const { api } = ctx;
   const P = ctx.project;
@@ -642,6 +655,8 @@ async function notePage(ctx) {
   const proseBox = prose(body.data.html);
   const items = outlineOf(proseBox, P, n.stem);
   const here = route.note(P, n.stem);
+  const reviewPanel = resReviewPanel(ctx, n);
+  const reviewRecord = n.type === "result" ? resReviewRecord(n.frontmatter || {}) : null;
   const node = h(
     "div",
     { class: "page note-page" },
@@ -655,10 +670,11 @@ async function notePage(ctx) {
     h(
       "div",
       { class: "note-grid" },
-      h("article", { class: "note-main" }, proseBox),
+      h("article", { class: "note-main" }, reviewPanel, proseBox),
       h(
         "aside",
         { class: "note-aside" },
+        reviewRecord ? section("Review", reviewRecord, { id: "review-record" }) : null,
         items.length ? section("Contents", outlineLinks(items, here), { count: items.length, open: items.length < 16, foldKey: "note.outline" }) : null,
         section("Linked from", body.data.backlinks.length ? h("ul", { class: "related" }, body.data.backlinks.map((b2) => h("li", null, b2.href ? link(b2.href, b2.stem) : b2.stem, b2.type ? h("span", { class: "muted small" }, ` ${b2.type}`) : null))) : emptyState("Nothing links here."), { count: body.data.backlinks.length, open: false }),
         section("Frontmatter", Object.keys(n.frontmatter).length ? kv(Object.entries(n.frontmatter).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) : emptyState("No frontmatter."), { open: false }),

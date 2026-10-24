@@ -1167,6 +1167,16 @@ def plan_plan_advance(
     sink = FindingSink()
     _check_plan(view.snapshot, _clone(page, **updates), sink)
     unmet = _gate_rows(sink.items)
+    if to == "read-out":  # a transition gate only: a draft result is not yet handed in
+        unmet += [
+            _gate(
+                "LIFE.PLAN_RES_DRAFT",
+                f"{r.get('id') or r.stem} is still draft; the agent submits it with "
+                f"`expnote res submit {r.get('id') or r.stem}`",
+            )
+            for r in _active_results(view, page)
+            if r.get("status") == "draft"
+        ]
     if unmet:
         raise gate_failed(
             f"plan {plan_id} cannot move {status} -> {to}",
@@ -1705,57 +1715,220 @@ def plan_exec_advance(
     return WritePlan([_fm_edit(view, note, [("status", to)], expected_sha256)], base)
 
 
-def plan_res_confirm(
+def _result_edit(
     view: ProjectView,
-    ident: str,
+    note: Note,
+    items: list[tuple[str, str]],
+    expected_sha256: str | None,
     *,
-    decision: str,
-    deviation_impact: str,
-    expected_sha256: str | None = None,
-) -> WritePlan:
+    remove: frozenset[str] = frozenset(),
+    remark: str | None = None,
+) -> FileEdit:
+    """Set/remove frontmatter keys of a result and optionally log a review remark."""
+
+    def transform(text: str) -> str:
+        text = edit_frontmatter(text, items, remove)
+        return text if remark is None else _append_review_remark(text, remark)
+
+    keys = ",".join(key for key, _ in items)
+    return FileEdit(
+        view.abs_path(note),
+        "set-key",
+        f"frontmatter:{keys}",
+        transform=transform,
+        expected_sha256=expected_sha256 or view.file_sha256(note.rel),
+    )
+
+
+REVIEW_REMARKS_HEADING = "## Review remarks"
+
+
+def _append_review_remark(text: str, bullet: str) -> str:
+    """Add `bullet` to the end of the Review remarks section (created at the end)."""
+    lines = text.split("\n")
+    offset = body_line_offset(text)
+    heading = next(
+        (
+            i
+            for i in range(offset, len(lines))
+            if lines[i].strip() == REVIEW_REMARKS_HEADING
+        ),
+        None,
+    )
+    if heading is None:
+        return f"{text.rstrip()}\n\n{REVIEW_REMARKS_HEADING}\n\n{bullet}\n"
+    end = next(
+        (i for i in range(heading + 1, len(lines)) if re.match(r"#{1,2}\s", lines[i])),
+        len(lines),
+    )
+    last = end
+    while last > heading + 1 and not lines[last - 1].strip():
+        last -= 1
+    lines[last:last] = [bullet] if last > heading + 1 else ["", bullet]
+    return "\n".join(lines)
+
+
+def _check_deviation_impact(deviation_impact: str | None) -> str:
     if deviation_impact not in DEVIATION_IMPACT:
         raise ResearchError(
             "USAGE_BAD_OPTION",
             f"--deviation-impact takes one of {', '.join(DEVIATION_IMPACT)}",
             exit_code=2,
         )
+    return deviation_impact
+
+
+def plan_res_submit(
+    view: ProjectView,
+    ident: str,
+    *,
+    deviation_impact: str,
+    expected_sha256: str | None = None,
+) -> WritePlan:
+    """Hand a drafted result to the user (draft -> first-read).
+
+    A running plan moves on to read-out in the same write when its read-out gates
+    pass; when they do not, the result is still submitted and the plan stays put.
+    """
+    deviation_impact = _check_deviation_impact(deviation_impact)
     note = entities.find_by_id(view, "result", ident)
     res_id = note.get("id") or note.stem
     status = note.get("status")
-    if status not in ("first-read", "confirmed"):
+    page = view.snapshot.plan_page_of(note)
+    plan_status = page.get("status") if page is not None else None
+    if status != "draft" and not (status == "first-read" and plan_status == "running"):
         raise gate_failed(
-            f"{res_id} is {status!r}; only a first-read result is confirmed",
+            f"{res_id} is {status!r}; only a draft result is submitted",
             [_gate("RES.TRANSITION", str(status))],
-        )
-    number, row = _decision(view, decision)
-    if row.status == "proposed":
-        raise ResearchError(
-            "USER_ONLY",
-            f"decision {decision} is still proposed; confirming a result needs the "
-            "user's confirmed decision",
-            exit_code=7,
             remediation=(
-                "the user confirms it in the GUI, or you record their words with "
-                "`decision set <id> --status confirmed --authorization ...`"
+                "a returned result is a draft again; the user reviews a first-read "
+                "result in the GUI"
             ),
         )
+    items = [
+        ("status", "first-read"),
+        ("deviation_impact", deviation_impact),
+        ("submitted_on", written_date(view)),
+    ]
+    edits = [
+        _result_edit(
+            view, note, items, expected_sha256, remove=frozenset({"returned_on"})
+        )
+    ]
+    data = {
+        "id": res_id,
+        "from": status,
+        "to": "first-read",
+        "plan": page.get("id") if page is not None else None,
+        "planAdvanced": False,
+        "unmetGates": [],
+    }
+    warnings: list[dict] = []
+    if page is not None and plan_status == "running":
+        current, _ = entities.plan_cycle_members(view, page)
+        if note.cstem in {m.cstem for m in current}:
+            sink = FindingSink()
+            _check_plan(view.snapshot, _clone(page, status="read-out"), sink)
+            unmet = _gate_rows(sink.items)
+            if unmet:
+                data["unmetGates"] = unmet
+                warnings = [
+                    {
+                        "code": gate["code"],
+                        "message": f"plan {page.get('id')} stays running: "
+                        f"{gate['message']}",
+                    }
+                    for gate in unmet
+                ]
+            else:
+                edits.append(_fm_edit(view, page, [("status", "read-out")], None))
+                data["planAdvanced"] = True
+    return WritePlan(edits, data, warnings=warnings)
+
+
+def _require_cited_decision_confirmed(view: ProjectView, authorization: str) -> None:
+    reference = parse_decision_ref(authorization, view.profile, lenient=True)
+    if reference is None:
+        return
+    cited = view.snapshot.decisions.get(reference)
+    if cited is None or cited.status != "confirmed":
+        raise gate_failed(
+            f"authorization cites decision {authorization}, which is not confirmed",
+            [{"code": "DEC.NOT_CONFIRMED", "ok": False, "message": authorization}],
+        )
+
+
+def plan_res_review(
+    view: ProjectView,
+    ident: str,
+    *,
+    verdict: str,
+    deviation_impact: str | None = None,
+    remarks: str | None = None,
+    authorization: str | None = None,
+    by_user: bool = False,
+    expected_sha256: str | None = None,
+) -> WritePlan:
+    """The user's review of a first-read result: pass it (confirmed) or return it.
+
+    `by_user` is the GUI path; the CLI needs the user's own words as `authorization`.
+    """
+    if verdict not in ("pass", "return"):
+        raise ResearchError(
+            "USAGE_BAD_OPTION", "--verdict takes pass or return", exit_code=2
+        )
+    if not by_user:
+        authorization = require_authorization(authorization, "reviewing a result")
+    note = entities.find_by_id(view, "result", ident)
+    res_id = note.get("id") or note.stem
+    status = note.get("status")
+    if status != "first-read":
+        raise gate_failed(
+            f"{res_id} is {status!r}; only a first-read result is reviewed",
+            [_gate("RES.TRANSITION", str(status))],
+            remediation="the agent submits a draft with `expnote res submit`",
+        )
+    if authorization:
+        _require_cited_decision_confirmed(view, authorization)
+    reviewer = "user" if by_user else "agent-for-user"
+    today = written_date(view)
+    if verdict == "return":
+        text = " ".join((remarks or "").split())
+        if not text:
+            raise ResearchError(
+                "USAGE_MISSING_OPTION",
+                "returning a result needs the remarks: say what to revise",
+                exit_code=2,
+            )
+        edit = _result_edit(
+            view,
+            note,
+            [("status", "draft"), ("returned_on", today)],
+            expected_sha256,
+            remark=f"- {today} {reviewer}: {text}",
+        )
+        return WritePlan(
+            [edit],
+            {"id": res_id, "from": status, "to": "draft"},
+            authorization=authorization,
+        )
+    impact = _check_deviation_impact(deviation_impact or note.get("deviation_impact"))
     updates = {
         "status": "confirmed",
-        "confirmed_decision": decision_ref_text(view, note, number),
-        "deviation_impact": deviation_impact,
+        "deviation_impact": impact,
+        "reviewed_by": reviewer,
+        "reviewed_on": today,
     }
     sink = FindingSink()
     _check_result(view.snapshot, _clone(note, **updates), sink)
     unmet = _gate_rows(sink.items)
     if unmet:
         raise gate_failed(f"{res_id} cannot be confirmed", unmet)
-    items = [
-        ("status", "confirmed"),
-        ("confirmed_decision", decision_ref_literal(view, note, number)),
-        ("deviation_impact", deviation_impact),
-    ]
+    items = list(updates.items())
+    if authorization:
+        items.append(("review_authorization", yaml_quote(authorization)))
     base = {"id": res_id, "from": status, "to": "confirmed"}
-    edits = [_fm_edit(view, note, items, expected_sha256)]
+    edits = [_result_edit(view, note, items, expected_sha256)]
     superseded = _earlier_cycle_active_results(view, note)
     link = _stem_link(note)
     for earlier in superseded:
@@ -1768,7 +1941,7 @@ def plan_res_confirm(
             )
         )
     base["supersedes"] = [e.get("id") or e.stem for e in superseded]
-    return WritePlan(edits, base)
+    return WritePlan(edits, base, authorization=authorization)
 
 
 def _earlier_cycle_active_results(view: ProjectView, result: Note) -> list[Note]:

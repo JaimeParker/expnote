@@ -1,4 +1,4 @@
-// The GUI write actions: approve/reject a proposed decision, close a plan, adopt a draft as a plan, close a deviation, save EV labels, add and tick TODOs.
+// The GUI write actions: approve/reject a proposed decision, close a plan, adopt a draft as a plan, close a deviation, save EV labels, review a result, add and tick TODOs.
 // Every change is previewed first (the server's dry-run diff) and applied only from an explicit click.
 // Text from the vault or the user only ever goes through text nodes here.
 import { nav } from "/research/nav.js";
@@ -420,6 +420,54 @@ export function evLabelEditor(ctx, data) {
     h("div", { class: "table-wrap" }, h("table", { class: "label-table" }, h("thead", null, h("tr", null, table.header.map((c) => h("th", { scope: "col" }, c)))), h("tbody", null, rows))),
     remarkInput,
     h("div", { class: "act-bar" }, buttons),
+    hint,
+    confirmSlot,
+  );
+}
+
+// ---- result review -------------------------------------------------------------------------------------
+
+const IMPACTS = ["none", "weak", "moderate", "affects"];
+
+// The user's review of a first-read result: check the proposed deviation impact, then pass it or return it with remarks.
+export function resReviewPanel(ctx, n) {
+  const fm = n.frontmatter || {};
+  if (n.type !== "result" || fm.status !== "first-read" || !n.sha256) return null;
+  const P = ctx.project;
+  const ident = fm.id || n.stem;
+  const proposed = IMPACTS.includes(fm.deviation_impact) ? fm.deviation_impact : "";
+  const select = h("select", { class: "impact-select", "aria-label": "Deviation impact" }, [proposed ? null : h("option", { value: "", selected: true }, "Choose..."), IMPACTS.map((v) => h("option", { value: v, selected: v === proposed ? true : null }, v))]);
+  const remarks = h("textarea", { class: "note-input remarks-input", rows: "4", placeholder: "Remarks (required to return the result)", "aria-label": "Review remarks", maxlength: "2000" });
+  const confirmSlot = h("div", { class: "confirm-slot" });
+  const hint = h("p", { class: "muted small", "aria-live": "polite" });
+
+  function review(verdict) {
+    const impact = select.value ?? proposed;
+    const text = (remarks.value ?? "").trim();
+    if (verdict === "return" && !text) {
+      clear(hint).append("Say what to revise before returning the result.");
+      return;
+    }
+    if (verdict === "pass" && !impact) {
+      clear(hint).append("Choose the deviation impact before passing the result.");
+      return;
+    }
+    clear(hint);
+    openConfirm(confirmSlot, {
+      title: verdict === "pass" ? `Pass the review of ${ident}` : `Return ${ident} for revision`,
+      send: (dryRun) => ctx.post(`${projectPath(P)}/res/${enc(ident)}/review`, { expectedSha256: n.sha256, verdict, deviationImpact: impact || undefined, remarks: text || undefined, dryRun }),
+      success: () => (verdict === "pass" ? "Result confirmed" : "Result returned to the agent"),
+    });
+  }
+
+  return h(
+    "section",
+    { class: "res-review", "aria-label": "Review this result" },
+    h("h2", null, "Review this result"),
+    h("p", { class: "muted small" }, "Read the result, check the deviation impact the agent proposed, then pass it or return it with remarks."),
+    h("label", { class: "reason-label" }, "Deviation impact", select),
+    h("label", { class: "reason-label" }, "Remarks", remarks),
+    h("div", { class: "act-bar" }, h("button", { type: "button", class: "btn primary", onclick: () => review("pass") }, icon("check"), "Pass review"), h("button", { type: "button", class: "btn", onclick: () => review("return") }, "Return for revision")),
     hint,
     confirmSlot,
   );
