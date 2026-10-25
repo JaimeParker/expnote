@@ -499,7 +499,8 @@ def ev_tables(view: ProjectView, note: Note) -> dict:
             column = profile.label_value_columns[0]
             labels = {
                 "header": header,
-                "valueColumns": list(profile.label_value_columns),
+                "valueColumns": list(range(1, len(header))),
+                "filledColumn": column,
                 "rows": [
                     {
                         "key": row[0] if row else "",

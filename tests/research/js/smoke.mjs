@@ -222,6 +222,21 @@ if (reviewable) {
   check("mark-labelled waits for an empty first-column cell", commit.hasAttribute("disabled"));
 }
 
+{
+  const wideTable = { header: ["臂", "a", "b", "c", "d"], valueColumns: [1, 2, 3, 4], filledColumn: 1, rows: [{ key: "a", values: ["x", "", "", ""] }] };
+  const editor = actions.evLabelEditor({ project, post: async () => ({}) }, { ev: { status: "rendered", stem: "x", sha256: "s", labelTable: wideTable } });
+  const commit = buttonLike(editor, "Save and mark labelled");
+  const inputs = editor.byClass("cell-input");
+  check("every non-key column of a wide table is an input", inputs.length === 4);
+  check("mark-labelled depends only on the filled column", commit && !commit.hasAttribute("disabled"));
+  inputs[0].value = "";
+  inputs[0].dispatch("input");
+  check("mark-labelled waits for the filled column in a wide table", commit.hasAttribute("disabled"));
+  inputs[0].value = "y";
+  inputs[0].dispatch("input");
+  check("mark-labelled ignores empty columns 2-4", !commit.hasAttribute("disabled"));
+}
+
 await go(`#/p/${enc(project)}/todos`);
 await afterFetch();
 check("TODO page has the add form and a tick on manual items", buttonLike(main, "Add TODO") && main.byClass("todo-tick").length >= 1);

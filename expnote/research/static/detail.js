@@ -232,7 +232,7 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
     section(
       "Labels",
       [
-        label && !editor ? dataTable({ header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]) }, { filledColumn: label.valueColumns[0] || 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]), htmlHeader: label.headerHtml }) : null,
+        label && !editor ? dataTable({ header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]) }, { filledColumn: label.filledColumn ?? label.valueColumns[0] ?? 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]), htmlHeader: label.headerHtml }) : null,
         label ? null : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
         e.remark ? h("div", { class: "remark" }, h("h4", null, "Remark"), h("pre", null, e.remark)) : null,
         h("div", { class: "row-actions", "data-slot": "ev-label-actions" }, editor),

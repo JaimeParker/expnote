@@ -204,6 +204,8 @@ PROFILE_KEYS: dict[str, tuple[bool, str]] = {
     "templates.files": (False, "map"),
     "images.dir": (False, "str"),
     "labels.remark_prefix": (False, "str"),
+    # Only the first entry is used: the column filled in every row before the page is
+    # marked labelled. Every non-key column is editable regardless.
     "labels.value_columns": (False, "ints"),
     "deviation.id_regex": (True, "regex"),
     "deviation.columns": (True, "map"),

@@ -347,7 +347,7 @@ function openPlanClose(slot, ctx, plan, url) {
 
 const cellValue = (input) => (input.value ?? input.getAttribute("value") ?? "").trim();
 
-// An editable label table for a rendered page: only the columns the profile says the user fills.
+// An editable label table for a rendered page: every non-key column is editable; `filledColumn` alone gates "mark labelled".
 export function evLabelEditor(ctx, data) {
   const e = data.ev;
   const table = e.labelTable;
@@ -372,7 +372,7 @@ export function evLabelEditor(ctx, data) {
   const remarkInput = data.write && data.write.remark ? h("input", { type: "text", class: "note-input", placeholder: "Remark (optional)", "aria-label": "Remark, optional", maxlength: "300", autocomplete: "off" }) : null;
   const confirmSlot = h("div", { class: "confirm-slot" });
   const hint = h("p", { class: "muted small", "aria-live": "polite" });
-  const allFilled = () => inputs.filter((c) => c.columnIndex === table.valueColumns[0]).every((c) => cellValue(c.input));
+  const allFilled = () => inputs.filter((c) => c.columnIndex === (table.filledColumn ?? table.valueColumns[0])).every((c) => cellValue(c.input));
   const commitButton = h("button", { type: "button", class: "btn", onclick: () => save(true) }, icon("check"), "Save and mark labelled");
   const saveButton = h("button", { type: "button", class: "btn primary", onclick: () => save(false) }, "Save labels");
 

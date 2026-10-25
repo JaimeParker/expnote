@@ -25,6 +25,11 @@ from expnote.research.web_routes import create_research_app
 BASE = "http://127.0.0.1:8812"
 P = "/api/research/projects/off2on"
 EV_STEM = "EV--PLAN-900A 新卡"
+WIDE_TABLE = (
+    "| Arm | 熵变化 | 随机行为 | 确定性行为 | 备注 |\n"
+    "|---|---|---|---|---|\n"
+    "| ... |  |  |  |  |"
+)
 NOTE = '用户说 "可以"：<script>alert(1)</script> # 备注: x'
 
 
@@ -596,7 +601,32 @@ def test_ev_labels_refusals(world):
 def test_ev_detail_tells_the_page_whether_a_remark_can_be_saved(world):
     shown = world.client.get(f"{P}/ev/{quote(EV_STEM)}").json()["data"]
     assert shown["write"] == {"remark": True}
-    assert shown["ev"]["labelTable"]["valueColumns"] == [1]
+    table = shown["ev"]["labelTable"]
+    assert table["header"] == ["Arm", "Value"]
+    assert table["valueColumns"] == [1] and table["filledColumn"] == 1
+
+
+def test_every_non_key_label_column_is_editable_whatever_the_profile_lists(world):
+    text = read(world.ev)
+    world.ev.write_text(
+        text.replace("| Arm | Value |\n|---|---|\n| ... |  |", WIDE_TABLE),
+        encoding="utf-8",
+    )
+    table = world.client.get(f"{P}/ev/{quote(EV_STEM)}").json()["data"]["ev"][
+        "labelTable"
+    ]
+    assert table["valueColumns"] == [1, 2, 3, 4] and table["filledColumn"] == 1
+    done = ev_labels(
+        world, [{"key": "...", "values": {"确定性行为": "稳", "备注": "n"}}]
+    )
+    assert done.status_code == 200, done.text
+    assert "| ... |  |  | 稳 | n |" in read(world.ev)
+    for header in ("Arm", "Nope"):
+        error_of(
+            ev_labels(world, [{"key": "...", "values": {header: "x"}}]),
+            422,
+            "ADDRESS_NOT_FOUND",
+        )
 
 
 # ---- result review -----------------------------------------------------------------
