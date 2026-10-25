@@ -16,8 +16,8 @@ before the first block to put the vault somewhere other than `~/research-vault`.
 
 | Place | Holds | Who writes it |
 |---|---|---|
-| **Vault** (Obsidian, synced by WebDAV, Syncthing, ...) | plans, execution plans, evidence pages and appendices, results, theory and protocol notes, TODO note, deviation register, the profile note, the decision backup `ops/decisions.jsonl` | you and your agents (prose); expnote (a few frontmatter keys, through commands) |
-| **State dir** (`~/.local/share/expnote`; `$XDG_DATA_HOME` or `$EXPNOTE_DATA_HOME` relocate it) | the decision store (`research/projects/<id>/decisions.sqlite`), the rebuildable note index (`research/index/`), audit log and pre-image journal, run workspaces (`workspaces/<name>/`) | expnote only |
+| **Vault** (Obsidian, synced by WebDAV, Syncthing, ...) | plans, execution plans, evidence pages and appendices, results, theory and protocol notes, deviation register, the profile note, the decision and TODO backups `ops/decisions.jsonl` and `ops/todos.jsonl` | you and your agents (prose); expnote (a few frontmatter keys, through commands) |
+| **State dir** (`~/.local/share/expnote`; `$XDG_DATA_HOME` or `$EXPNOTE_DATA_HOME` relocate it) | the decision and manual TODO stores (`research/projects/<id>/decisions.sqlite`, `todos.sqlite`), the rebuildable note index (`research/index/`), audit log and pre-image journal, run workspaces (`workspaces/<name>/`) | expnote only |
 | **Registry** (`~/.config/expnote/projects.toml`; `$XDG_CONFIG_HOME` or `$EXPNOTE_CONFIG_HOME` relocate it) | which vault folder is which project | `expnote project init` |
 | **GUI** (`expnote web`) | generated views only: timelines, gates, open items, health | reads the vault and state; never stores anything of its own |
 
@@ -48,9 +48,9 @@ research-vault/                    # the folder you open in Obsidian (has .obsid
     results/                       # one final result (RES) per plan
     theory/  protocols/            # free notes, any layout (conventions, not read specially)
     templates/                     # your note templates (optional)
-    todos.md                       # manual TODO note (created by `todo add`)
     ops/deviations.md              # deviation register (you create it once, see 5.6)
     ops/decisions.jsonl            # decision backup (written by expnote)
+    ops/todos.jsonl                # manual TODO backup (written by expnote)
 ```
 
 Required: the profile note, and a deviation register once you record a deviation.
@@ -136,7 +136,8 @@ is generic English; the keys you are most likely to change:
 | `headings.labels`, `headings.observation` | the label section of an evidence page and the section that stays empty until the labels are in |
 | `decisions.id_prefix` | decision ids are `<prefix>-0001`, ... (default `<PROJECT>-DEC`) |
 | `decisions.layers` | allowed `--layer` values; `options_warn_layers` are the layers whose decisions should list alternatives |
-| `paths.deviation_register`, `paths.todo_file`, `paths.decision_export` | vault-relative paths |
+| `paths.deviation_register`, `paths.decision_export`, `paths.todo_export` | vault-relative paths (`ops/decisions.jsonl`, `ops/todos.jsonl` by default) |
+| `paths.todo_file` | the old manual TODO note; read only by `todo migrate` and, until then, for listing |
 | `images.dir`, `images.required_prefix` | figures folder; an embedded image whose name starts with the prefix must live there |
 | `ids.plan_regex`, `ids.exec_regex`, `ids.res_prefix` | what plan ids, exec ids and result ids look like |
 | `runs.id_regex` | what a run id looks like, so `a7zf90k7` is recognised as a run |
@@ -696,18 +697,25 @@ no date must be placed with `--earlier <stem>` (repeatable).
 never stored (a decision waiting for approval, unlabelled evidence, an open
 deviation, a result waiting for the user's review (or returned to the agent), a decision review date that has come,
 a draft in the plans folder that is not a plan yet, sync-conflict files, runs stuck in
-`running`, ...), with *manual* ones in the TODO
-note. Items are split by owner, the user's first. `expnote next` prints the same
-queue with the exact command for each step.
+`running`, ...), with *manual* ones from the project's TODO store. Items are split by
+owner, the user's first. `expnote next` prints the same queue with the exact command
+for each step.
+
+Manual TODOs are rows of a SQLite file next to the decision store
+(`<data home>/research/projects/<project>/todos.sqlite`), with ids `T-0001`, ...
+and an event log. A row is `open`, `done` or `dropped` (final, with a reason); rows
+are never deleted and each carries a `version` (`todo list --json`) that
+`--expected-version N` checks, so a stale edit exits 5 (`CONFLICT`).
 
 ```bash
 expnote todo add "Archive the raw training logs" --plan PLAN-001 --due 2026-11-01 --by user --apply
-expnote todo list
+expnote todo list                                          # open; --include-done, --include-dropped
 expnote todo add "Review the draft" --owner user --apply   # agents (--by agent, the default) must pass --owner user|agent
 expnote todo edit T-0001 --owner user --apply              # hand a task to the user
 expnote todo edit T-0001 --text "Review the draft" --plan PLAN-001 --due 2026-11-01 --apply
-expnote todo edit T-0001 --clear-plan --clear-due --apply
-expnote todo done T-0001 --apply
+expnote todo edit T-0001 --clear-plan --clear-due --expected-version 2 --apply
+expnote todo done T-0001 --apply                           # --undo reopens
+expnote todo drop T-0002 --reason "superseded by T-0005" --apply
 ```
 
 When the adder is an agent (`--by agent`, the default), `--owner user|agent` is
@@ -716,15 +724,28 @@ the agent's own work, `--owner user` when the user must act, with the text start
 with the user's action. With `--by user` the owner is optional and defaults to the user.
 
 `todo edit` needs at least one of `--text`, `--owner user|agent`, `--plan`,
-`--clear-plan`, `--due`, `--clear-due`. It keeps the checkbox state and the other
-inline fields, replaces existing fields in place and appends new ones. A task that
-waits on the user is owned by the user and its text starts with the action the user
-must take; an agent hands its tasks over with `--owner user` once its work is done.
-Do not hand-edit the TODO file. The GUI has a matching `POST .../todos/{id}/edit`.
+`--clear-plan`, `--due`, `--clear-due`; the text may change (unlike a decision's).
+A task that waits on the user is owned by the user and its text starts with the
+action the user must take; an agent hands its tasks over with `--owner user` once
+its work is done. A dropped TODO refuses `done`, `--undo` and `edit` (`GATE_FAILED`).
+The GUI has matching `POST .../todos`, `.../todos/{id}/done|edit|drop`, all carrying
+`expectedVersion`.
 
-In Obsidian you may also type `- [ ] a task` into `todos.md` yourself;
-`expnote todo adopt --apply` gives such lines real ids. The GUI can add and tick
-TODOs too.
+**Backup.** After every committed change expnote rewrites `ops/todos.jsonl` (TODOs
+plus their event log); a file changed by someone else is reported as
+`EXPORT_DIVERGED` and left alone until `todo export --apply --force`. Rebuild a lost
+store with `todo restore --from ops/todos.jsonl --apply` (refuses a non-empty store
+unless `--replace`). Never hand-edit the export.
+
+**Migrating the old TODO note.** Older projects kept manual TODOs as task lines in
+`paths.todo_file` (`todos.md`). While that file has tasks and no store exists,
+`todo list` still reads the file but every TODO write exits 2 with
+`TODO_NOT_MIGRATED`. Run `expnote todo migrate` (a dry run listing the rows) and then
+`--apply`: ids are kept, id-less lines get the next ones, `[done:: date]` becomes the
+done date, unknown inline fields are reported as warnings and not imported,
+`ops/todos.jsonl` is written, a copy of the file goes to the audit journal
+(`<data home>/research/projects/<project>/journal/`) and the file is deleted. It
+refuses (`TODO_STORE_EXISTS`) once the store exists. `todo adopt` is gone.
 
 ## 6. Decisions
 
@@ -782,7 +803,7 @@ expnote decision new --title "Repeat the study on a second dataset" --layer rese
 
 Agents read and write the vault with their own file tools for **prose** and
 agent-owned frontmatter keys, and use the CLI for everything the tool owns:
-status gates, hashes, confirmations, decisions, TODO ids.
+status gates, hashes, confirmations, decisions, manual TODOs.
 
 Free notes need no ceremony; the index picks up anything you add, and agents can
 search and link them:
@@ -908,5 +929,5 @@ every hygiene check and `INFO` for the rest. Open `expnote web` and go to
 timeline, what waits on you, the agent queue, recent runs and the latest decisions;
 the other tabs are Decisions, Evidence, TODOs, Search and Health. The GUI writes
 only: approve or reject a decision, close a plan, adopt a draft as a plan, save
-evidence labels, add or tick a TODO, close a deviation. Everything else is read-only,
+evidence labels, add, tick or drop a TODO, close a deviation. Everything else is read-only,
 so the vault stays yours.

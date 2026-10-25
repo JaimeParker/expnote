@@ -92,10 +92,17 @@ deviation_app = typer.Typer(
     epilog="Example: `expnote deviation list --json`.",
 )
 todo_app = typer.Typer(
-    help="TODOs, derived and manual: list, add, edit, done, adopt.",
-    epilog="Example: `expnote todo list --owner agent --json`; `expnote next --json` "
-    "orders the agent's steps. Hand a TODO to the user: "
-    "`expnote todo edit T-0001 --owner user --apply`.",
+    help="TODOs, derived and manual: list, add, edit, done, drop, migrate, export, "
+    "restore.",
+    epilog="Manual TODOs live in a per-project SQLite store (never hand-edit the "
+    "export or the old TODO file). Examples: `expnote todo list --owner agent "
+    "--json`; `expnote todo add \"<TEXT>\" --owner agent --apply`; "
+    "`expnote todo done T-0001 --apply`; `expnote todo drop T-0001 --reason "
+    "\"<WHY>\" --apply`; hand a TODO to the user: `expnote todo edit T-0001 "
+    "--owner user --apply`. A project that still has its TODOs in the old file "
+    "reads them but refuses writes until `expnote todo migrate --apply`. Writes "
+    "are dry runs (exit 4) unless --apply; --expected-version N refuses a "
+    "stale row (exit 5).",
 )
 
 
@@ -665,6 +672,9 @@ def todo_list(
     include_done: Annotated[
         bool, typer.Option("--include-done", help="Also show ticked manual TODOs.")
     ] = False,
+    include_dropped: Annotated[
+        bool, typer.Option("--include-dropped", help="Also show dropped manual TODOs.")
+    ] = False,
     fields: FieldsOption = None,
     limit: LimitOption = 200,
     cursor: CursorOption = None,
@@ -677,7 +687,12 @@ def todo_list(
     def build(view: ProjectView) -> list[dict]:
         _one_of("--source", source, ("derived", "manual", "all"))
         _one_of("--owner", owner, ("user", "agent"), optional=True)
-        items, found = all_todos(view, source=source, include_done=include_done)
+        items, found = all_todos(
+            view,
+            source=source,
+            include_done=include_done,
+            include_dropped=include_dropped,
+        )
         warnings.extend(found)
         return filter_todos(items, owner=owner, kind=kind, plan=plan)
 

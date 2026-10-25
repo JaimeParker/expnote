@@ -26,24 +26,17 @@ from expnote.research.decision_export import plan_export, sync_export
 from expnote.research.decision_store import DecisionStore, decision_id, store_path
 from expnote.research.decisions import decision_from_row, parse_decision_ref
 from expnote.research.edits import (
-    adopt_task_line,
     body_line_offset,
     edit_frontmatter,
-    edit_task_line,
     find_row,
     find_tables,
-    find_task_line,
     format_row,
-    format_task_line,
-    mark_task,
-    next_task_id,
     replace_cell,
     yaml_list,
     yaml_quote,
 )
 from expnote.research.envelope import CommandResult
 from expnote.research.errors import ResearchError
-from expnote.research.extract import TODO_FIELD_RE, TODO_LINE_RE, parse_todo_lines
 from expnote.research.model import FindingSink, Note
 from expnote.research.schemas import DEVIATION_IMPACT
 from expnote.research.snapshot import earlier_cycle_links
@@ -68,14 +61,39 @@ EXEC_MOVES = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class StoreBackend:
+    """A SQLite store plus its vault export: what `_execute_store_plan` drives."""
+
+    open: Callable  # (project_id) -> store, creating it
+    open_for_preview: Callable  # (project_id) -> store; in memory before a first write
+    path: Callable  # (project_id) -> Path
+    plan_export: Callable
+    sync_export: Callable
+    export_target: Callable  # (view) -> Path
+    export_command: str  # the repair command a stale export points at
+
+
+DECISION_BACKEND = StoreBackend(
+    DecisionStore.open,
+    DecisionStore.open_for_preview,
+    store_path,
+    plan_export,
+    sync_export,
+    lambda view: view.context.resolved.project_dir / view.profile.decision_export,
+    "expnote decision export --apply",
+)
+
+
 @dataclasses.dataclass
 class StoreOp:
-    """A change to the decision store, applied in one transaction with the edits."""
+    """A change to a SQLite store, applied in one transaction with the edits."""
 
     name: str
     address: str
     summary: str  # what a dry-run shows
     apply: Callable[[DecisionStore, str, str], None]  # (store, actor, timestamp)
+    backend: StoreBackend = DECISION_BACKEND
 
 
 @dataclasses.dataclass
@@ -171,18 +189,19 @@ def _rename_preview(context: WriteContext, source: Path, target: Path) -> dict:
 
 
 def export_target(view: ProjectView):
-    return view.context.resolved.project_dir / view.profile.decision_export
+    return DECISION_BACKEND.export_target(view)
 
 
 def written_at(view: ProjectView) -> str:
     return view.clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _export_warning(error: ResearchError) -> dict:
+def _export_warning(
+    error: ResearchError, repair: str = "expnote decision export --apply"
+) -> dict:
     return {
         "code": error.code,
-        "message": f"{error.message}; try: "
-        f"{error.remediation or 'expnote decision export --apply'}",
+        "message": f"{error.message}; try: {error.remediation or repair}",
     }
 
 
@@ -202,13 +221,14 @@ def _execute_store_plan(
     """A plan that changes the decision store (and perhaps a note) plus the export."""
     op = plan.store_op
     assert op is not None
+    backend = op.backend
     project_id = view.project_id
-    target = export_target(view)
+    target = backend.export_target(view)
     stamp = written_at(view)
     warnings = list(plan.warnings)
     store_change = {
-        "path": store_path(project_id).name,
-        "absPath": str(store_path(project_id)),
+        "path": backend.path(project_id).name,
+        "absPath": str(backend.path(project_id)),
         "op": op.name,
         "address": op.address,
         "beforeSha256": None,
@@ -217,11 +237,11 @@ def _execute_store_plan(
         "diffTruncated": False,
     }
     if not apply:
-        with DecisionStore.open_for_preview(project_id) as store, store.dry_run():
+        with backend.open_for_preview(project_id) as store, store.dry_run():
             op.apply(store, context.actor, stamp)
-            export = plan_export(store, context, target)
+            export = backend.plan_export(store, context, target)
         if export.problem is not None:
-            warnings.append(_export_warning(export.problem))
+            warnings.append(_export_warning(export.problem, backend.export_command))
         listed = [store_change, *(c.as_dict() for c in changes)]
         if export.change is not None:
             listed.append(export.change.as_dict())
@@ -233,7 +253,7 @@ def _execute_store_plan(
         )
         return CommandResult(data, warnings, meta, exit_code=DRY_RUN_EXIT)
     applied = [store_change]
-    with DecisionStore.open(project_id) as store:
+    with backend.open(project_id) as store:
         with store.transaction():
             op.apply(store, context.actor, stamp)
             if changes:
@@ -247,10 +267,10 @@ def _execute_store_plan(
                 applied += result.applied
                 warnings += result.warnings
         try:
-            _, record = sync_export(store, context, target, command=command)
+            _, record = backend.sync_export(store, context, target, command=command)
         except ResearchError as error:
-            # The decision is committed; a stale export is repaired by `export`.
-            warnings.append(_export_warning(error))
+            # The change is committed; a stale export is repaired by `export`.
+            warnings.append(_export_warning(error, backend.export_command))
         else:
             if record is not None:
                 applied.append(record)
@@ -867,245 +887,6 @@ def _value_column_names(view: ProjectView, note: Note) -> set[str]:
         return set()
     header = table["header"]
     return {header[i].strip() for i in table["valueColumns"] if 0 < i < len(header)}
-
-
-# ---- manual TODO file --------------------------------------------------------
-
-
-def todo_file_path(view: ProjectView):
-    name = view.profile.todo_file
-    if not name:
-        raise ResearchError(
-            "PROFILE_KEY_MISSING",
-            "the profile has no paths.todo_file",
-            exit_code=2,
-        )
-    return view.context.resolved.project_dir / name
-
-
-TODO_SKELETON = "---\ntype: todo-list\n---\n# Todo\n\n"
-
-
-def plan_todo_add(
-    view: ProjectView,
-    text: str,
-    *,
-    plan: str | None = None,
-    due: str | None = None,
-    by: str = "agent",
-    owner: str | None = None,
-    expected_sha256: str | None = None,
-) -> WritePlan:
-    if TODO_FIELD_RE.search(text):
-        raise ResearchError(
-            "USAGE_BAD_VALUE",
-            "the task text may not contain `[key:: value]` fields; use the options",
-            exit_code=2,
-        )
-    if due is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
-        raise ResearchError("USAGE_BAD_OPTION", "--due takes YYYY-MM-DD", exit_code=2)
-    if owner is None and by == "agent":
-        raise ResearchError(
-            "USAGE_MISSING_OPTION",
-            "an agent adding a task must pass --owner: `--owner agent` for the "
-            "agent's own work, `--owner user` when the user must act (the text "
-            "then starts with the user's action)",
-            exit_code=2,
-        )
-    if owner is not None and owner not in ("user", "agent"):
-        raise ResearchError(
-            "USAGE_BAD_OPTION", "--owner takes one of user, agent", exit_code=2
-        )
-    path = todo_file_path(view)
-    allocated: list[str] = []
-
-    def line_for(existing: str) -> str:
-        task_id = next_task_id(existing)
-        allocated[:] = [task_id]
-        fields = [("id", task_id)]
-        if plan:
-            fields.append(("plan", plan))
-        if due:
-            fields.append(("due", due))
-        fields.append(("by", by))
-        if owner:
-            fields.append(("owner", owner))
-        return format_task_line(text, fields)
-
-    if not path.exists():
-        content = f"{TODO_SKELETON}{line_for('')}\n"
-        edit = FileEdit(path, "create", "new-file", new_text=content)
-    else:
-
-        def append(existing: str) -> str:
-            head = existing if existing.endswith("\n") else existing + "\n"
-            return f"{head}{line_for(existing)}\n"
-
-        edit = FileEdit(
-            path,
-            "add-task",
-            "task:new",
-            transform=append,
-            expected_sha256=expected_sha256,
-        )
-
-    def finalize(data: dict) -> None:
-        data["id"] = allocated[0] if allocated else None
-
-    return WritePlan([edit], {"id": None}, finalize=finalize)
-
-
-def plan_todo_done(
-    view: ProjectView,
-    ident: str,
-    *,
-    undo: bool = False,
-    expected_sha256: str | None = None,
-) -> WritePlan:
-    path = todo_file_path(view)
-    today = written_date(view)
-    assigned: list[str] = []
-
-    def transform(text: str) -> str:
-        lines = text.split("\n")
-        index = find_task_line(lines, ident)
-        if index is None:
-            raise ResearchError(
-                "ADDRESS_NOT_FOUND",
-                f"no task {ident!r} in {path.name}",
-                exit_code=3,
-                remediation="expnote todo list --source manual --include-done",
-            )
-        match = TODO_LINE_RE.match(lines[index].rstrip())
-        assert match is not None
-        is_done = match.group(1) in "xX"
-        if is_done != undo:
-            return text  # already in the requested state
-        has_id = "[id::" in match.group(2)
-        new_id = None if has_id else next_task_id(text)
-        if new_id:
-            assigned.append(new_id)
-        lines[index] = mark_task(
-            lines[index], done=not undo, today=today, new_id=new_id
-        )
-        return "\n".join(lines)
-
-    edit = FileEdit(path, "edit-task", f"task:{ident}", transform=transform,
-                    expected_sha256=expected_sha256)  # fmt: skip
-    return WritePlan([edit], {"id": ident, "done": not undo, "assignedIds": assigned})
-
-
-def plan_todo_edit(
-    view: ProjectView,
-    ident: str,
-    *,
-    text: str | None = None,
-    owner: str | None = None,
-    plan: str | None = None,
-    clear_plan: bool = False,
-    due: str | None = None,
-    clear_due: bool = False,
-    expected_sha256: str | None = None,
-) -> WritePlan:
-    changes = (text, owner, plan, clear_plan, due, clear_due)
-    if all(change in (None, False) for change in changes):
-        raise ResearchError(
-            "USAGE_MISSING_OPTION",
-            "give at least one of --text, --owner, --plan, --clear-plan, --due, "
-            "--clear-due",
-            exit_code=2,
-        )
-    if plan is not None and clear_plan:
-        raise ResearchError(
-            "USAGE_BAD_OPTION", "--plan and --clear-plan conflict", exit_code=2
-        )
-    if due is not None and clear_due:
-        raise ResearchError(
-            "USAGE_BAD_OPTION", "--due and --clear-due conflict", exit_code=2
-        )
-    if owner is not None and owner not in ("user", "agent"):
-        raise ResearchError(
-            "USAGE_BAD_OPTION", "--owner takes one of user, agent", exit_code=2
-        )
-    if due is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
-        raise ResearchError("USAGE_BAD_OPTION", "--due takes YYYY-MM-DD", exit_code=2)
-    if text is not None:
-        if TODO_FIELD_RE.search(text):
-            raise ResearchError(
-                "USAGE_BAD_VALUE",
-                "the task text may not contain `[key:: value]` fields; use the options",
-                exit_code=2,
-            )
-        if "\n" in text or "\r" in text:
-            raise ResearchError(
-                "USAGE_MULTILINE_VALUE", "the task text must be one line", exit_code=2
-            )
-        if not text.strip():
-            raise ResearchError(
-                "USAGE_EMPTY_TEXT", "the task text is empty", exit_code=2
-            )
-    if plan is not None and (not plan.strip() or "]" in plan or "\n" in plan):
-        raise ResearchError("USAGE_BAD_VALUE", "--plan is not a plan id", exit_code=2)
-    set_fields = {
-        key: value
-        for key, value in (("owner", owner), ("plan", plan), ("due", due))
-        if value is not None
-    }
-    clear_fields = tuple(
-        key for key, flag in (("plan", clear_plan), ("due", clear_due)) if flag
-    )
-    path = todo_file_path(view)
-
-    def transform(existing: str) -> str:
-        lines = existing.split("\n")
-        index = find_task_line(lines, ident)
-        if index is None:
-            raise ResearchError(
-                "ADDRESS_NOT_FOUND",
-                f"no task {ident!r} in {path.name}",
-                exit_code=3,
-                remediation="expnote todo list --source manual --include-done",
-            )
-        lines[index] = edit_task_line(
-            lines[index],
-            text=text,
-            set_fields=set_fields,
-            clear_fields=clear_fields,
-        )
-        return "\n".join(lines)
-
-    edit = FileEdit(path, "edit-task", f"task:{ident}", transform=transform,
-                    expected_sha256=expected_sha256)  # fmt: skip
-    return WritePlan([edit], {"id": ident})
-
-
-def plan_todo_adopt(
-    view: ProjectView, ref: str | None, *, expected_sha256: str | None = None
-) -> WritePlan:
-    path = todo_file_path(view)
-    mapping: dict[str, str] = {}
-
-    def transform(text: str) -> str:
-        lines = text.split("\n")
-        synthetic = [t for t in parse_todo_lines(text) if t.synthetic]
-        chosen = [t for t in synthetic if ref is None or t.todo_id == ref]
-        if ref is not None and not chosen:
-            raise ResearchError(
-                "ADDRESS_NOT_FOUND",
-                f"no id-less task {ref!r} in {path.name}",
-                exit_code=3,
-            )
-        working = text
-        for record in chosen:
-            new_id = next_task_id(working)
-            lines[record.line - 1] = adopt_task_line(lines[record.line - 1], new_id)
-            working = "\n".join(lines)
-            mapping[record.todo_id] = new_id
-        return working
-
-    edit = FileEdit(path, "edit-task", "task:adopt", transform=transform,
-                    expected_sha256=expected_sha256)  # fmt: skip
-    return WritePlan([edit], {"adopted": mapping})
 
 
 # ---- plan / exec / result lifecycle ------------------------------------------

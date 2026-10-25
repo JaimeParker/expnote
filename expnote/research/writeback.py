@@ -783,7 +783,12 @@ def rename_path(ctx: WriteContext, source: Path, target: Path, *, command: str) 
 # ---- tool-owned derived files (the decision export) --------------------------------
 
 
-def plan_owned_file(ctx: WriteContext, path: Path, data: bytes) -> Change | None:
+def plan_owned_file(
+    ctx: WriteContext,
+    path: Path,
+    data: bytes,
+    address: str = "decision-export",
+) -> Change | None:
     """The change that makes a tool-owned file hold `data`; None when it already does.
 
     No CAS and no quiet window: the tool alone writes this file. The caller decides
@@ -806,7 +811,7 @@ def plan_owned_file(ctx: WriteContext, path: Path, data: bytes) -> Change | None
         path,
         rel,
         "export",
-        "decision-export",
+        address,
         sha256_bytes(before) if before is not None else None,
         sha256_bytes(data),
         before,

@@ -2,7 +2,7 @@
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
 GET except the GUI writes (decision approve/reject, plan close, plan adopt, EV
-labels, result review, TODO add/edit/tick, deviation close); those need the
+labels, result review, TODO add/edit/tick/drop, deviation close); those need the
 per-process token and a loopback Origin/Host, and go through `writes.py` and
 `writeback.py` with actor `gui`. Responses carry the research CSP.
 """
@@ -32,7 +32,7 @@ from fastapi.responses import (
     Response,
 )
 
-from expnote.research import adopt, entities, writes
+from expnote.research import adopt, entities, todo_writes, writes
 from expnote.research.bundle import (
     build_bundle,
     byte_size,
@@ -64,7 +64,7 @@ from expnote.research.render import (
     render_markdown,
 )
 from expnote.research.search import SearchFilters, search_notes
-from expnote.research.todos import all_todos, filter_todos
+from expnote.research.todos import all_todos, filter_todos, manual_backend
 from expnote.research.view import ProjectView, open_view
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -486,6 +486,7 @@ def build_router(service: ResearchService) -> APIRouter:
         plan: str | None = None,
         source: str = "all",
         include_done: bool = False,
+        include_dropped: bool = False,
         refresh: bool = False,
     ) -> JSONResponse:
         if source not in ("derived", "manual", "all"):
@@ -497,14 +498,23 @@ def build_router(service: ResearchService) -> APIRouter:
                 "USAGE_BAD_OPTION", "owner is user or agent", exit_code=2
             )
         with service.view(project_id, refresh) as view:
-            items, warnings = all_todos(view, source=source, include_done=include_done)
+            items, warnings = all_todos(
+                view,
+                source=source,
+                include_done=include_done,
+                include_dropped=include_dropped,
+            )
             items = filter_todos(items, owner=owner, kind=kind, plan=plan)
-            todo_file = view.profile.todo_file
+            backend = manual_backend(view)
             data = {
                 "todos": items,
-                "manualFile": {
-                    "path": view.vault_rel(todo_file) if todo_file else None,
-                    "sha256": view.file_sha256(todo_file) if todo_file else None,
+                # `store` takes writes; `file` still awaits `todo migrate`.
+                "manual": {
+                    "backend": backend,
+                    "writable": backend != "file",
+                    "migrateCommand": "expnote todo migrate --apply"
+                    if backend == "file"
+                    else None,
                 },
             }
             return _ok("todos", data, view, warnings, total=len(items))
@@ -720,6 +730,12 @@ def build_router(service: ResearchService) -> APIRouter:
             request, project_id, "todo edit", _todo_edit_builder(todo_id)
         )
 
+    @router.post(f"{api}/projects/{{project_id}}/todos/{{todo_id}}/drop")
+    async def todo_drop(project_id: str, todo_id: str, request: Request):
+        return await gui_write(
+            request, project_id, "todo drop", _todo_drop_builder(todo_id)
+        )
+
     return router
 
 
@@ -882,20 +898,30 @@ def _res_review_builder(ident: str):
     return build
 
 
+def _expected_version(body: dict) -> int:
+    value = body.get("expectedVersion")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ResearchError(
+            "USAGE_MISSING_OPTION",
+            "expectedVersion (the TODO version the page was read at) is required",
+            exit_code=2,
+            remediation="reload the page and try again",
+        )
+    return value
+
+
 def _todo_add_builder(view: ProjectView, body: dict) -> writes.WritePlan:
     owner = _text(body, "owner") or "user"
     if owner not in ("user", "agent"):
         raise _bad_value("owner is user or agent")
-    path = writes.todo_file_path(view)
-    return writes.plan_todo_add(
+    return todo_writes.plan_todo_add(
         view,
         _text(body, "text", required=True) or "",
         plan=_text(body, "plan") or None,
         due=_text(body, "due") or None,
         by="user",
         owner=owner,
-        # The first add creates the file, so there is nothing to compare against yet.
-        expected_sha256=_expected_sha(body, optional=not path.exists()),
+        source="gui",
     )
 
 
@@ -904,8 +930,8 @@ def _todo_done_builder(todo_id: str):
         done = body.get("done")
         if not isinstance(done, bool):
             raise _bad_value("done must be true or false")
-        return writes.plan_todo_done(
-            view, todo_id, undo=not done, expected_sha256=_expected_sha(body)
+        return todo_writes.plan_todo_done(
+            view, todo_id, undo=not done, expected_version=_expected_version(body)
         )
 
     return build
@@ -913,7 +939,7 @@ def _todo_done_builder(todo_id: str):
 
 def _todo_edit_builder(todo_id: str):
     def build(view: ProjectView, body: dict) -> writes.WritePlan:
-        return writes.plan_todo_edit(
+        return todo_writes.plan_todo_edit(
             view,
             todo_id,
             text=_text(body, "text"),
@@ -922,7 +948,19 @@ def _todo_edit_builder(todo_id: str):
             clear_plan=body.get("clearPlan") is True,
             due=_text(body, "due"),
             clear_due=body.get("clearDue") is True,
-            expected_sha256=_expected_sha(body),
+            expected_version=_expected_version(body),
+        )
+
+    return build
+
+
+def _todo_drop_builder(todo_id: str):
+    def build(view: ProjectView, body: dict) -> writes.WritePlan:
+        return todo_writes.plan_todo_drop(
+            view,
+            todo_id,
+            reason=_text(body, "reason", required=True) or "",
+            expected_version=_expected_version(body),
         )
 
     return build

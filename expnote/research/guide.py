@@ -23,7 +23,8 @@ RESEARCH_GUIDE = {
     "principles": [
         "Markdown notes in the vault are the truth for plans, evidence and results; "
         "decisions are records in a SQLite store outside the vault (text never "
-        "changes: supersede instead) with a JSONL backup export in the vault; the "
+        "changes: supersede instead) with a JSONL backup export in the vault, and "
+        "manual TODOs likewise (todos.sqlite, export ops/todos.jsonl); the "
         "index is rebuildable and lives outside the vault",
         "Every command takes --project ID (default: the active project) and --json",
         "--json prints one envelope: ok, schemaVersion, command, data, warnings, meta",
@@ -35,7 +36,9 @@ RESEARCH_GUIDE = {
         "Never invent a user decision: confirmations need the user's own words "
         "(--authorization) or a click in the GUI",
         "The GUI writes only: approve/reject a decision, close a plan, adopt a "
-        "draft as a plan, save EV labels, add/tick/edit a TODO, close a deviation",
+        "draft as a plan, save EV labels, add/tick/edit/drop a TODO, close a "
+        "deviation (a TODO write goes through the TODO store like the CLI: "
+        "never hand-edit the old TODO file or ops/todos.jsonl)",
     ],
     "essentialCommands": [
         _step("expnote next --json", "what is actionable now, with exact commands"),
@@ -58,7 +61,16 @@ RESEARCH_GUIDE = {
             "text must start with the action the user must take; hand an "
             "agent-owned TODO over this way (`todo add --owner user|agent` sets "
             "it at creation and is required for agents) once your prerequisite "
-            "work is done; `--text` rewords it; never hand-edit the TODO file",
+            "work is done; `--text` rewords it; manual TODOs live in a SQLite "
+            "store (never hand-edit the old TODO file or the ops/todos.jsonl "
+            "export)",
+        ),
+        _step(
+            "expnote todo done <ID> --apply",
+            "also `todo drop <ID> --reason <WHY>` for a TODO nobody will do "
+            "(final); --expected-version N refuses a stale row; a project that "
+            "still keeps TODOs in the old file refuses writes (TODO_NOT_MIGRATED) "
+            "until `expnote todo migrate --apply`",
         ),
     ],
     "lifecycle": {

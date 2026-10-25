@@ -26,6 +26,7 @@ from expnote.research.model import Decision, Note
 from expnote.research.runs import stale_running_runs
 from expnote.research.schemas import EV_LABELLED_STATUSES, SUPPORTED_SCHEMAS
 from expnote.research.textkit import fold, iter_links, link_stem
+from expnote.research.todo_store import read_rows, store_exists
 from expnote.research.view import ProjectView
 
 SEVERITY_RANK = {"action": 0, "warn": 1, "info": 2}
@@ -680,41 +681,76 @@ def derived_todos(
     return items, warnings
 
 
-def manual_todos(view: ProjectView, include_done: bool = False) -> list[dict]:
+def _manual_item(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "source": "manual",
+        "kind": "manual",
+        "owner": row["owner"],
+        "severity": "info",
+        "ref": row["id"],
+        "message": row["text"],
+        "action": None,
+        "plan": row["plan"],
+        "command": None,
+        "state": row["state"],
+        "due": row["due"],
+        "by": row["by"],
+        "version": row["version"],
+        "doneOn": row["done_on"],
+        "droppedOn": row["dropped_on"],
+        "dropReason": row["drop_reason"],
+    }
+
+
+def _file_rows(view: ProjectView) -> list[dict]:
+    """The old TODO file's tasks (indexed), shaped like store rows; not yet migrated."""
     todo_file = view.profile.todo_file
     if not todo_file:
         return []
     rows = view.conn.execute(
-        "SELECT t.todo_id, t.synthetic, t.state, t.line, t.text, t.fields_json "
+        "SELECT t.todo_id, t.state, t.text, t.fields_json "
         "FROM todos t JOIN files f ON f.id = t.src_file_id WHERE f.rel = ? "
         "ORDER BY t.line",
         (view.vault_rel(todo_file),),
     ).fetchall()
-    items = []
+    out = []
     for row in rows:
-        if row["state"] == "done" and not include_done:
-            continue
         fields = json.loads(row["fields_json"])
-        items.append(
+        out.append(
             {
                 "id": row["todo_id"],
-                "source": "manual",
-                "kind": "manual",
+                "text": row["text"],
                 "owner": fields.get("owner", "user"),
-                "severity": "info",
-                "ref": row["todo_id"],
-                "message": row["text"],
-                "action": None,
                 "plan": fields.get("plan"),
-                "command": None,
                 "state": row["state"],
                 "due": fields.get("due"),
                 "by": fields.get("by"),
-                "line": row["line"],
-                "synthetic": bool(row["synthetic"]),
+                "version": None,
+                "done_on": fields.get("done"),
+                "dropped_on": None,
+                "drop_reason": None,
             }
         )
-    return items
+    return out
+
+
+def manual_backend(view: ProjectView) -> str:
+    """`store` once the TODO store exists, else `file` while the old file has tasks."""
+    if store_exists(view.project_id):
+        return "store"
+    return "file" if _file_rows(view) else "empty"
+
+
+def manual_todos(
+    view: ProjectView, include_done: bool = False, include_dropped: bool = False
+) -> list[dict]:
+    """Manual TODOs from the store; from the old file until `todo migrate` ran."""
+    loaded = read_rows(view.project_id)
+    rows = loaded[0] if loaded is not None else _file_rows(view)
+    shown = {"open"} | ({"done"} if include_done else set())
+    shown |= {"dropped"} if include_dropped else set()
+    return [_manual_item(row) for row in rows if row["state"] in shown]
 
 
 def sort_todos(items: list[dict]) -> list[dict]:
@@ -735,6 +771,7 @@ def all_todos(
     source: str = "all",
     include_runs: bool = True,
     include_done: bool = False,
+    include_dropped: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     items: list[dict] = []
     warnings: list[dict] = []
@@ -742,7 +779,7 @@ def all_todos(
         derived, warnings = derived_todos(view, include_runs=include_runs)
         items += derived
     if source in ("manual", "all"):
-        items += manual_todos(view, include_done)
+        items += manual_todos(view, include_done, include_dropped)
     return sort_todos(items), warnings
 
 

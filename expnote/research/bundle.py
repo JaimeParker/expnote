@@ -335,6 +335,12 @@ def build_bundle(
                     "command",
                 )
             }
+            # A manual item also carries what a write against it needs.
+            | (
+                {"state": item["state"], "version": item["version"]}
+                if item["source"] == "manual"
+                else {}
+            )
             for item in [*derived, *manual]
             if item["plan"] == plan_id
         ]

@@ -273,10 +273,11 @@ async function todosPage(ctx) {
   const { api, params } = ctx;
   const P = ctx.project;
   const includeDone = params.get("include_done") || "";
-  const body = await api(`${base(P)}/todos`, { include_done: includeDone });
+  const includeDropped = params.get("include_dropped") || "";
+  const body = await api(`${base(P)}/todos`, { include_done: includeDone, include_dropped: includeDropped });
   const all = body.data.todos;
   const filters = { owner: params.get("owner") || "", source: params.get("source") || "", kind: params.get("kind") || "" };
-  const hashFor = (id) => route.todos(P, { ...filters, include_done: includeDone, sel: id });
+  const hashFor = (id) => route.todos(P, { ...filters, include_done: includeDone, include_dropped: includeDropped, sel: id });
   const byId = new Map(all.map((t) => [t.id, t]));
   const md = masterDetail({
     hashFor,
@@ -284,7 +285,7 @@ async function todosPage(ctx) {
     load: async (id) => {
       if (!byId.has(id)) throw Object.assign(new Error("This item is no longer listed."), { code: "NOT_FOUND" });
       const t = byId.get(id);
-      return { kind: "TODO", node: todoDetail(ctx, t, { extras: await todoExtras(ctx, t), manualSha: body.data.manualFile.sha256, heading: "h2" }) };
+      return { kind: "TODO", node: todoDetail(ctx, t, { extras: await todoExtras(ctx, t), heading: "h2" }) };
     },
     hint: [h("p", null, "Select a TODO to see what it needs."), h("p", { class: "muted small" }, "j and k move, Enter opens the item, Esc closes.")],
   });
@@ -293,8 +294,7 @@ async function todosPage(ctx) {
   const heading = h("div", { class: "md-title" });
   const filterBox = h("div", { class: "facets" });
   const list = h("div", { class: "md-list" });
-  const manualSha = body.data.manualFile.sha256;
-  const addForm = todoAddForm(ctx, body.data.manualFile);
+  const addForm = todoAddForm(ctx, body.data.manual);
   const setFilter = (key) => (value) => {
     filters[key] = value;
     writeHash(hashFor(md.current()));
@@ -321,7 +321,7 @@ async function todosPage(ctx) {
     const ul = h("ul", { class: "todos" });
     for (const t of items) {
       // Wide screens select the row in the preview pane; narrow ones open the item's own page.
-      const row = todoRow(ctx, t, { manualSha, href: isMaster() ? hashFor(t.id) : todoTarget(ctx, t) || route.todo(P, t.id) });
+      const row = todoRow(ctx, t, { tickable: true, href: isMaster() ? hashFor(t.id) : todoTarget(ctx, t) || route.todo(P, t.id) });
       md.bind(t.id, row);
       ul.append(row);
     }
@@ -333,7 +333,7 @@ async function todosPage(ctx) {
     md.reset();
     clear(list).append(h("div", { class: "row-actions", "data-slot": "todo-add" }, addForm));
     if (!rows.length) {
-      list.append(emptyState("Nothing here.", all.length ? "Clear a filter on the left." : "Derived items are computed from the notes; manual items come from the TODO note."));
+      list.append(emptyState("Nothing here.", all.length ? "Clear a filter on the left." : "Derived items are computed from the notes; manual items come from the TODO store."));
       md.setOrder([]);
       return;
     }
@@ -358,8 +358,8 @@ async function todosPage(ctx) {
     append(clear(filterBox), [
       facet("Owner", [["user", "Yours"], ["agent", "Agents"]].map(([v, l]) => ({ value: v, label: l, count: all.filter((t) => matches(t, { ...filters, owner: v })).length })), filters.owner, setFilter("owner")),
       facet("Kind", kinds.map(([k, n]) => ({ value: k, label: kindPhrase(k, 2), count: n })), filters.kind, setFilter("kind")),
-      h("label", { class: "field check" }, h("input", { type: "checkbox", checked: includeDone ? true : null, onchange: (e) => (window.location.hash = route.todos(P, { ...filters, include_done: e.target.checked ? "true" : "" })) }), h("span", null, "Show ticked manual items")),
-      body.data.manualFile.path ? h("p", { class: "muted small" }, "Manual items come from ", h("span", { title: body.data.manualFile.path }, "the TODO note"), ".") : null,
+      h("label", { class: "field check" }, h("input", { type: "checkbox", checked: includeDone ? true : null, onchange: (e) => (window.location.hash = route.todos(P, { ...filters, include_done: e.target.checked ? "true" : "", include_dropped: includeDropped })) }), h("span", null, "Show ticked manual items")),
+      h("label", { class: "field check" }, h("input", { type: "checkbox", checked: includeDropped ? true : null, onchange: (e) => (window.location.hash = route.todos(P, { ...filters, include_done: includeDone, include_dropped: e.target.checked ? "true" : "" })) }), h("span", null, "Show dropped manual items")),
     ]);
     drawList();
   }
@@ -373,11 +373,11 @@ async function todosPage(ctx) {
 // One TODO as a full page: where the rows of a narrow screen lead, and the target of "Open page" for items with no page of their own.
 async function todoPage(ctx) {
   const P = ctx.project;
-  const body = await ctx.api(`${base(P)}/todos`, { include_done: "true" });
+  const body = await ctx.api(`${base(P)}/todos`, { include_done: "true", include_dropped: "true" });
   const t = body.data.todos.find((item) => item.id === ctx.arg);
   const crumbs = h("nav", { class: "crumbs", "aria-label": "Breadcrumb" }, link(route.home(), "Research"), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.project(P), projectName(ctx)), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.todos(P, t ? { sel: t.id } : {}), "TODOs"));
   if (!t) return { node: h("div", { class: "page full-detail" }, crumbs, emptyState("This TODO is gone: it was done or its cause is resolved.", link(route.todos(P), "Back to the TODOs"))), title: "TODO" };
-  const detail = todoDetail(ctx, t, { extras: await todoExtras(ctx, t), manualSha: body.data.manualFile.sha256, heading: "h1" });
+  const detail = todoDetail(ctx, t, { extras: await todoExtras(ctx, t), heading: "h1" });
   return { node: h("div", { class: "page full-detail" }, crumbs, detail), title: "TODO" };
 }
 

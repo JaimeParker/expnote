@@ -19,6 +19,7 @@ from writekit import (
 )
 
 from expnote.research.decision_store import read_rows
+from expnote.research.todo_store import read_rows as read_todo_rows
 from expnote.research.web_routes import create_research_app
 
 BASE = "http://127.0.0.1:8812"
@@ -192,6 +193,7 @@ def test_only_the_listed_endpoints_can_write(world):
         ("POST", f"{prefix}/todos"),
         ("POST", f"{prefix}/todos/{{todo_id}}/done"),
         ("POST", f"{prefix}/todos/{{todo_id}}/edit"),
+        ("POST", f"{prefix}/todos/{{todo_id}}/drop"),
     }
     for method in ("put", "patch", "delete"):
         for path in ("/decisions/2", "/todos", f"/ev/{quote(EV_STEM)}/labels"):
@@ -309,9 +311,7 @@ def test_version_is_required_and_a_stale_one_is_a_conflict(world):
     error_of(post(world, path, {}), 422, "USAGE_MISSING_OPTION")
     for bad in ("abc", 0, True, 1.5):
         error_of(post(world, path, {"version": bad}), 422, "USAGE_MISSING_OPTION")
-    error_of(
-        post(world, path, {"version": 1, "dryRun": "yes"}), 422, "USAGE_BAD_VALUE"
-    )
+    error_of(post(world, path, {"version": 1, "dryRun": "yes"}), 422, "USAGE_BAD_VALUE")
     for raw in (b"[1]", b"not json"):
         response = world.client.post(
             f"{P}{path}", content=raw, headers={"X-Expnote-Token": world.token}
@@ -392,12 +392,12 @@ def test_close_plan_needs_the_token_origin_sha_and_reason(world):
     for token in (False, "wrong"):
         response = post(world, "/plans/PLAN-901A/close", good, token=token)
         error_of(response, 403, "FORBIDDEN_TOKEN")
-    evil = post(world, "/plans/PLAN-901A/close", good, headers={"Origin": "http://evil"})
+    evil = post(
+        world, "/plans/PLAN-901A/close", good, headers={"Origin": "http://evil"}
+    )
     error_of(evil, 403, "FORBIDDEN_ORIGIN")
     rebinding = TestClient(world.app, base_url="http://evil.example:8812")
-    response = rebinding.post(
-        url, json=good, headers={"X-Expnote-Token": world.token}
-    )
+    response = rebinding.post(url, json=good, headers={"X-Expnote-Token": world.token})
     error_of(response, 403, "FORBIDDEN_ORIGIN")
     no_sha = {k: v for k, v in good.items() if k != "expectedSha256"}
     error_of(post(world, "/plans/PLAN-901A/close", no_sha), 422, "USAGE_MISSING_OPTION")
@@ -701,45 +701,40 @@ def test_res_review_refusals(world):
     assert read(path) == RES_NOTE and new_audit(world) == []
 
 
-# ---- manual TODOs ------------------------------------------------------------------
+# ---- manual TODOs (the store) ------------------------------------------------------
 
 
-def todo_sha(world):
-    listing = world.client.get(f"{P}/todos", params={"source": "manual"}).json()
-    return listing["data"]["manualFile"]["sha256"]
+def todo_rows():
+    loaded = read_todo_rows("off2on")
+    return loaded[0] if loaded else []
 
 
-def test_todo_add_creates_the_file_then_appends_for_the_chosen_owner(world):
-    assert not world.todo.exists()
+def todo_row(ident):
+    return next(r for r in todo_rows() if r["id"] == ident)
+
+
+def listed_todos(world, **params):
+    response = world.client.get(f"{P}/todos", params={"source": "manual", **params})
+    return response.json()["data"]["todos"]
+
+
+def test_todo_add_creates_the_store_for_the_chosen_owner(world):
+    assert read_todo_rows("off2on") is None
     first = post(world, "/todos", {"text": "回看 [[别的笔记]]", "plan": "PLAN-900A"})
     assert first.status_code == 200, first.text
     assert first.json()["data"]["id"] == "T-0001"
-    assert read(world.todo).endswith(
-        "- [ ] 回看 [[别的笔记]] [id:: T-0001] [plan:: PLAN-900A] "
-        "[by:: user] [owner:: user]\n"
-    )
-    stale = todo_sha(world)
-    second = post(
-        world, "/todos", {"text": "给执行员", "owner": "agent", "expectedSha256": stale}
-    )
+    row = todo_row("T-0001")
+    assert (row["text"], row["plan"], row["by"], row["owner"], row["source"]) == (
+        "回看 [[别的笔记]]", "PLAN-900A", "user", "user", "gui",
+    )  # fmt: skip
+    second = post(world, "/todos", {"text": "给执行员", "owner": "agent"})
     assert second.status_code == 200
-    assert read(world.todo).endswith(
-        "- [ ] 给执行员 [id:: T-0002] [by:: user] [owner:: agent]\n"
-    )
-    listed = world.client.get(f"{P}/todos", params={"source": "manual"}).json()["data"][
-        "todos"
-    ]
-    assert {t["id"]: t["owner"] for t in listed} == {
+    assert {t["id"]: t["owner"] for t in listed_todos(world)} == {
         "T-0001": "user",
         "T-0002": "agent",
     }
-    set_mtime(world.todo, 3600)
-    error_of(
-        post(world, "/todos", {"text": "晚了", "expectedSha256": stale}),
-        409,
-        "CAS_MISMATCH",
-    )
-    error_of(post(world, "/todos", {"text": "缺 sha"}), 422, "USAGE_MISSING_OPTION")
+    assert not world.todo.exists()
+    assert world.todo.parent.joinpath("ops", "todos.jsonl").exists()
     assert {r["payload"]["actor"] for r in new_audit(world)} == {"gui"}
 
 
@@ -755,43 +750,106 @@ def test_todo_add_validation(world):
     ):
         response = post(world, "/todos", body)
         assert response.status_code == 422, (body, response.text)
-    assert not world.todo.exists()
+    assert read_todo_rows("off2on") is None
     dry = post(world, "/todos", {"text": "试一试", "dryRun": True})
-    assert dry.status_code == 200 and not world.todo.exists()
-    assert "+- [ ] 试一试" in dry.json()["data"]["changes"][0]["unifiedDiff"]
+    assert dry.status_code == 200 and read_todo_rows("off2on") is None
+    assert "+text: 试一试" in dry.json()["data"]["changes"][0]["unifiedDiff"]
 
 
 def test_todo_tick_untick_and_the_second_tick_is_a_no_op(world):
     post(world, "/todos", {"text": "一件事"})
-    set_mtime(world.todo, 3600)
     path = "/todos/T-0001/done"
-    ticked = post(world, path, {"done": True, "expectedSha256": sha(world.todo)})
+    ticked = post(world, path, {"done": True, "expectedVersion": 1})
     assert ticked.status_code == 200, ticked.text
-    line = read(world.todo).splitlines()[-1]
-    assert line.startswith("- [x] 一件事 [id:: T-0001]") and "[done:: " in line
-    events, stamp = len(new_audit(world)), world.todo.stat().st_mtime_ns
-    again = post(world, path, {"done": True, "expectedSha256": sha(world.todo)})
+    row = todo_row("T-0001")
+    assert (row["state"], row["version"]) == ("done", 2) and row["done_on"]
+    events = len(new_audit(world))
+    again = post(world, path, {"done": True, "expectedVersion": 2})
     assert again.status_code == 200 and again.json()["data"]["changes"] == []
-    assert len(new_audit(world)) == events and world.todo.stat().st_mtime_ns == stamp
-    undone = post(world, path, {"done": False, "expectedSha256": sha(world.todo)})
-    assert undone.status_code == 200 and "[done::" not in read(world.todo)
+    assert len(new_audit(world)) == events and todo_row("T-0001")["version"] == 2
+    undone = post(world, path, {"done": False, "expectedVersion": 2})
+    assert undone.status_code == 200 and todo_row("T-0001")["state"] == "open"
     error_of(
-        post(
-            world,
-            "/todos/T-0404/done",
-            {"done": True, "expectedSha256": sha(world.todo)},
-        ),
+        post(world, "/todos/T-0404/done", {"done": True, "expectedVersion": 1}),
         422,
         "ADDRESS_NOT_FOUND",
     )
+    error_of(post(world, path, {"expectedVersion": 3}), 422, "USAGE_BAD_VALUE")
+    error_of(post(world, path, {"done": True}), 422, "USAGE_MISSING_OPTION")
+    error_of(post(world, path, {"done": True, "expectedVersion": 1}), 409, "CONFLICT")
     error_of(
-        post(world, path, {"expectedSha256": sha(world.todo)}), 422, "USAGE_BAD_VALUE"
+        post(world, path, {"done": True, "expectedVersion": True}),
+        422,
+        "USAGE_MISSING_OPTION",
+    )
+    assert todo_row("T-0001")["version"] == 3
+
+
+def test_todo_edit_and_drop_carry_the_row_version(world):
+    post(world, "/todos", {"text": "一件事"})
+    edit = "/todos/T-0001/edit"
+    error_of(post(world, edit, {"owner": "agent"}), 422, "USAGE_MISSING_OPTION")
+    changed = post(
+        world, edit, {"owner": "agent", "plan": "PLAN-900A", "expectedVersion": 1}
+    )
+    assert changed.status_code == 200, changed.text
+    row = todo_row("T-0001")
+    assert (row["owner"], row["plan"], row["version"]) == ("agent", "PLAN-900A", 2)
+    cleared = post(world, edit, {"clearPlan": True, "expectedVersion": 2})
+    assert cleared.status_code == 200 and todo_row("T-0001")["plan"] is None
+    error_of(
+        post(world, edit, {"owner": "user", "expectedVersion": 1}), 409, "CONFLICT"
+    )
+    drop = "/todos/T-0001/drop"
+    error_of(post(world, drop, {"expectedVersion": 3}), 422, "USAGE_BAD_VALUE")
+    error_of(
+        post(world, drop, {"reason": "  ", "expectedVersion": 3}),
+        422,
+        "USAGE_EMPTY_TEXT",
+    )
+    error_of(post(world, drop, {"reason": "x"}), 422, "USAGE_MISSING_OPTION")
+    error_of(post(world, drop, {"reason": "x", "expectedVersion": 1}), 409, "CONFLICT")
+    dry = post(
+        world, drop, {"reason": "做完了别的", "expectedVersion": 3, "dryRun": True}
+    )
+    assert dry.status_code == 200 and todo_row("T-0001")["state"] == "open"
+    assert "+drop_reason: 做完了别的" in dry.json()["data"]["changes"][0]["unifiedDiff"]
+    dropped = post(world, drop, {"reason": "做完了别的", "expectedVersion": 3})
+    assert dropped.status_code == 200, dropped.text
+    row = todo_row("T-0001")
+    assert (row["state"], row["drop_reason"], row["version"]) == (
+        "dropped",
+        "做完了别的",
+        4,
     )
     error_of(
-        post(world, path, {"done": True, "expectedSha256": "1" * 64}),
-        409,
-        "CAS_MISMATCH",
+        post(world, "/todos/T-0001/done", {"done": True, "expectedVersion": 4}),
+        422,
+        "GATE_FAILED",
     )
+    error_of(post(world, edit, {"text": "x", "expectedVersion": 4}), 422, "GATE_FAILED")
+    assert listed_todos(world) == []
+    kept = listed_todos(world, include_dropped="true")
+    assert [(t["id"], t["state"], t["dropReason"]) for t in kept] == [
+        ("T-0001", "dropped", "做完了别的")
+    ]
+
+
+def test_todo_writes_are_refused_until_the_old_file_is_migrated(world):
+    write(world.todo, "---\ntype: todo-list\n---\n- [ ] 旧事项 [id:: T-0004]\n")
+    listing = world.client.get(f"{P}/todos", params={"source": "manual"}).json()
+    assert listing["data"]["manual"]["backend"] == "file"
+    assert listing["data"]["manual"]["writable"] is False
+    assert [t["id"] for t in listing["data"]["todos"]] == ["T-0004"]
+    for path, body in (
+        ("/todos", {"text": "新的"}),
+        ("/todos/T-0004/done", {"done": True, "expectedVersion": 1}),
+        ("/todos/T-0004/edit", {"owner": "agent", "expectedVersion": 1}),
+        ("/todos/T-0004/drop", {"reason": "x", "expectedVersion": 1}),
+    ):
+        error = error_of(post(world, path, body), 422, "TODO_NOT_MIGRATED")
+        assert "todo migrate" in error["remediation"]
+    assert read_todo_rows("off2on") is None
 
 
 # ---- deviation register ------------------------------------------------------------
@@ -833,7 +891,9 @@ def test_deviation_close_needs_the_token_origin_and_sha(world):
     for token in (False, "wrong", ""):
         response = post(world, "/deviations/D-02/close", good, token=token)
         error_of(response, 403, "FORBIDDEN_TOKEN")
-    evil = post(world, "/deviations/D-02/close", good, headers={"Origin": "http://evil"})
+    evil = post(
+        world, "/deviations/D-02/close", good, headers={"Origin": "http://evil"}
+    )
     error_of(evil, 403, "FORBIDDEN_ORIGIN")
     rebinding = TestClient(world.app, base_url="http://evil.example:8812")
     response = rebinding.post(
@@ -872,9 +932,12 @@ def test_deviation_close_replaces_the_disposition_and_leaves_an_audit_trail(worl
     assert len(records) == 1
     assert records[0]["payload"]["actor"] == "gui"
     assert records[0]["payload"]["command"] == "deviation close"
-    assert close_deviation(world, disposition="已处理：见 PLAN-900A").json()["data"][
-        "changes"
-    ] == []  # closing twice is a no-op
+    assert (
+        close_deviation(world, disposition="已处理：见 PLAN-900A").json()["data"][
+            "changes"
+        ]
+        == []
+    )  # closing twice is a no-op
 
 
 def test_deviation_close_with_a_status_column_sets_it_and_the_disposition(world):

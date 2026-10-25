@@ -1,4 +1,4 @@
-// The GUI write actions: approve/reject a proposed decision, close a plan, adopt a draft as a plan, close a deviation, save EV labels, review a result, add and tick TODOs.
+// The GUI write actions: approve/reject a proposed decision, close a plan, adopt a draft as a plan, close a deviation, save EV labels, review a result, add, tick and drop TODOs.
 // Every change is previewed first (the server's dry-run diff) and applied only from an explicit click.
 // Text from the vault or the user only ever goes through text nodes here.
 import { nav } from "/research/nav.js";
@@ -54,7 +54,7 @@ export function describeError(error) {
     case "CAS_MISMATCH":
       return { message: "This note changed since you opened it. Reload to see the new version.", reload: true };
     case "CONFLICT":
-      return { message: "This decision changed since you opened it. Reload to see the new version.", reload: true };
+      return { message: "This item changed since you opened it. Reload to see the new version.", reload: true };
     case "FORBIDDEN_TOKEN":
       return { message: "The page is out of date. Reload it and try again.", reload: true };
     case "RECENTLY_MODIFIED":
@@ -475,9 +475,10 @@ export function resReviewPanel(ctx, n) {
 
 // ---- manual TODOs ------------------------------------------------------------------------------------------
 
-// A button that opens the add form. `manualFile` is the TODO payload's `{path, sha256}`.
-export function todoAddForm(ctx, manualFile) {
-  if (!manualFile || !manualFile.path) return null;
+// A button that opens the add form. `manual` is the TODO payload's `{backend, writable, migrateCommand}`.
+export function todoAddForm(ctx, manual) {
+  if (!manual) return null;
+  if (!manual.writable) return h("p", { class: "muted small" }, "Manual TODOs are still in the old TODO file. Run ", h("code", null, manual.migrateCommand || "expnote todo migrate --apply"), " to add and tick them here.");
   const P = ctx.project;
   const text = h("input", { type: "text", name: "text", class: "todo-text", placeholder: "What needs doing?", "aria-label": "TODO text", maxlength: "300", autocomplete: "off", required: true });
   const plan = h("select", { name: "plan", "aria-label": "Plan, optional" }, h("option", { value: "" }, "No plan"));
@@ -522,7 +523,7 @@ export function todoAddForm(ctx, manualFile) {
     submit.setAttribute("disabled", "");
     clear(feedback);
     try {
-      const envelope = await ctx.post(`${projectPath(P)}/todos`, { text: value, plan: plan.value || undefined, owner: owner.value || "user", expectedSha256: manualFile.sha256 || null });
+      const envelope = await ctx.post(`${projectPath(P)}/todos`, { text: value, plan: plan.value || undefined, owner: owner.value || "user" });
       const first = (envelope.data.changes || [])[0];
       toggle(false);
       text.value = "";
@@ -538,8 +539,8 @@ export function todoAddForm(ctx, manualFile) {
 }
 
 // Mark a manual TODO done (or open again). Throws the API error; the caller says what went wrong.
-async function setTodoDone(ctx, t, manualSha, done) {
-  const envelope = await ctx.post(`${projectPath(ctx.project)}/todos/${enc(t.id)}/done`, { done, expectedSha256: manualSha });
+async function setTodoDone(ctx, t, done) {
+  const envelope = await ctx.post(`${projectPath(ctx.project)}/todos/${enc(t.id)}/done`, { done, expectedVersion: t.version });
   const first = (envelope.data.changes || [])[0];
   toast(done ? "TODO ticked" : "TODO re-opened", { journal: first ? first.journal || first.path : null });
   await refresh();
@@ -550,16 +551,19 @@ function toastWriteError(error) {
   toast(info.message, { tone: "bad", action: info.reload ? { label: "Reload", run: () => window.location.reload() } : null });
 }
 
-// A checkbox for a manual TODO line. A failed write puts the box back and says why.
-export function todoTick(ctx, t, manualSha) {
-  if (t.source !== "manual" || !manualSha) return null;
+// Only a manual TODO in the store (it has a version) can be changed; a dropped one is final.
+const changeable = (t) => t.source === "manual" && t.version != null && t.state !== "dropped";
+
+// A checkbox for a manual TODO. A failed write puts the box back and says why.
+export function todoTick(ctx, t) {
+  if (!changeable(t)) return null;
   const box = h("input", { type: "checkbox", class: "todo-tick", "aria-label": `Mark done: ${t.message}`, checked: t.state === "done" ? true : null });
   box.addEventListener("click", (event) => event.stopPropagation());
   box.addEventListener("change", async () => {
     const done = Boolean(box.checked);
     box.setAttribute("disabled", "");
     try {
-      await setTodoDone(ctx, t, manualSha, done);
+      await setTodoDone(ctx, t, done);
     } catch (error) {
       box.checked = !done;
       toastWriteError(error);
@@ -570,14 +574,14 @@ export function todoTick(ctx, t, manualSha) {
 }
 
 // The same action as a button for the detail pane: "Mark done", or "Open again" for a ticked item.
-export function todoDoneButton(ctx, t, manualSha) {
-  if (t.source !== "manual" || !manualSha) return null;
+export function todoDoneButton(ctx, t) {
+  if (!changeable(t)) return null;
   const done = t.state !== "done";
   const button = h("button", { type: "button", class: done ? "btn primary" : "btn" }, icon("check"), done ? "Mark done" : "Open again");
   button.addEventListener("click", async () => {
     button.setAttribute("disabled", "");
     try {
-      await setTodoDone(ctx, t, manualSha, done);
+      await setTodoDone(ctx, t, done);
     } catch (error) {
       toastWriteError(error);
       button.removeAttribute("disabled");
@@ -630,6 +634,51 @@ export function deviationCloseAction(ctx, deviation) {
     if (disposition.focus) disposition.focus();
   };
   return h("div", { class: "deviation-close" }, h("button", { type: "button", class: "btn primary", onclick: open }, icon("check"), "Close deviation"), slot);
+}
+
+// "Drop" for a manual TODO nobody will do: a reason, then the server's dry run and Apply. Dropping is final.
+export function todoDropAction(ctx, t) {
+  if (!changeable(t)) return null;
+  const slot = h("div", { class: "confirm-slot" });
+  const url = `${projectPath(ctx.project)}/todos/${enc(t.id)}/drop`;
+  const open = () => {
+    const reason = h("textarea", { class: "reason-input", rows: "2", "aria-label": "Why it is dropped", maxlength: "300" });
+    const review = h("button", { type: "button", class: "btn primary" }, "Review change");
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const confirmSlot = h("div", { class: "confirm-slot" });
+    const hint = h("p", { class: "muted small" }, "Dropping is final: the TODO stays listed with this reason.");
+    const typed = () => oneLine(reason.value ?? reason.textContent ?? "");
+    const lock = (locked) => {
+      for (const control of [reason, review]) (locked ? control.setAttribute("disabled", "") : control.removeAttribute("disabled"));
+    };
+    review.addEventListener("click", () => {
+      if (!typed()) {
+        clear(hint).append("Say why it is dropped first.");
+        return;
+      }
+      lock(true);
+      openConfirm(confirmSlot, {
+        title: `Drop TODO ${t.id}`,
+        send: (dryRun) => ctx.post(url, { reason: typed(), expectedVersion: t.version, dryRun }),
+        success: () => `TODO ${t.id} dropped`,
+        onClose: () => {
+          lock(false);
+          if (reason.focus) reason.focus();
+        },
+      });
+    });
+    cancel.addEventListener("click", () => clear(slot));
+    const panel = h("section", { class: "confirm-panel", role: "group", "aria-label": `Drop TODO ${t.id}` }, h("h3", null, `Drop TODO ${t.id}`), h("label", { class: "reason-label" }, "Why it is dropped", reason), hint, h("div", { class: "confirm-buttons" }, review, cancel), confirmSlot);
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        clear(slot);
+      }
+    });
+    clear(slot).append(panel);
+    if (reason.focus) reason.focus();
+  };
+  return h("div", { class: "todo-drop" }, h("button", { type: "button", class: "btn", onclick: open }, icon("close"), "Drop"), slot);
 }
 
 // ---- adopt a draft as a plan -------------------------------------------------------------------------------------

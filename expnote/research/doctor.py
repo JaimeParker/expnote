@@ -142,6 +142,7 @@ def run_doctor(
         meta["index"] = stats.meta()
     if index_check:
         checks += _hygiene_checks(context, now or datetime.now().astimezone())
+    checks += _todo_store_checks(context)
     checks += _decision_store_checks(context)
     return checks, meta
 
@@ -312,6 +313,58 @@ def _decision_store_checks(context: ProjectContext) -> list[Check]:
     )
     code = f"EXPORT_{state['status'].upper()}"
     return [Check("decision-store", "warn", f"{code}: {message}", remediation)]
+
+
+def _todo_store_checks(context: ProjectContext) -> list[Check]:
+    """The manual TODO store: rows and export, or an old TODO file left to migrate."""
+    from expnote.research.todo_export import export_state
+    from expnote.research.todo_writes import NOT_MIGRATED_REMEDIATION
+    from expnote.research.writeback import WriteContext
+
+    target = context.resolved.project_dir / context.profile.todo_export
+    try:
+        state = export_state(
+            context.entry.id, WriteContext.for_project(context), target
+        )
+    except ResearchError as error:
+        return [Check("todo-store", "fail", error.message, error.remediation)]
+    if not state["exists"]:
+        old = context.profile.todo_file
+        old_path = context.resolved.project_dir / old if old else None
+        if old_path is not None and old_path.is_file():
+            from expnote.research.extract import parse_todo_lines
+
+            if parse_todo_lines(old_path.read_text(encoding="utf-8")):
+                return [
+                    Check(
+                        "todo-store",
+                        "warn",
+                        f"TODO_NOT_MIGRATED: manual TODOs are still in {old_path.name}",
+                        NOT_MIGRATED_REMEDIATION,
+                    )
+                ]
+        return [
+            Check(
+                "todo-store",
+                "info",
+                "no TODO store yet (created by the first `todo add`)",
+            )
+        ]
+    where = f"{state['rows']} TODO(s) in {state['store']}"
+    if state["status"] == "in-sync":
+        return [_ok("todo-store", f"{where}; export {target.name} is current")]
+    message = {
+        "diverged": f"{where}; {target.name} was changed outside expnote",
+        "missing": f"{where}; {target.name} does not exist yet",
+        "stale": f"{where}; {target.name} is behind the store",
+    }[state["status"]]
+    remediation = (
+        "inspect it, then `expnote todo export --apply --force`"
+        if state["status"] == "diverged"
+        else "expnote todo export --apply"
+    )
+    code = f"EXPORT_{state['status'].upper()}"
+    return [Check("todo-store", "warn", f"{code}: {message}", remediation)]
 
 
 def _hygiene_checks(context: ProjectContext, now: datetime) -> list[Check]:

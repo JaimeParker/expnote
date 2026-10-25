@@ -183,6 +183,7 @@ PROFILE_KEYS: dict[str, tuple[bool, str]] = {
     "paths.deviation_register": (True, "str"),
     "paths.todo_file": (False, "str"),
     "paths.decision_export": (False, "str"),
+    "paths.todo_export": (False, "str"),
     "runs.id_regex": (False, "regex"),
     "scan.skip_dirs": (False, "strs"),
     "scan.template_dirs": (False, "strs"),

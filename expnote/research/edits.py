@@ -1,4 +1,4 @@
-"""Pure text edits on Markdown notes: frontmatter keys, table cells, task lines.
+"""Pure text edits on Markdown notes: frontmatter keys, table cells.
 
 Nothing here touches the filesystem. `writeback` decodes a file into LF text, hands
 it to one of these functions and re-encodes the result with the file's own BOM and
@@ -12,8 +12,7 @@ import re
 from dataclasses import dataclass
 
 from expnote.research.errors import ResearchError
-from expnote.research.extract import TODO_FIELD_RE, TODO_LINE_RE, parse_todo_lines
-from expnote.research.textkit import is_separator_row, sha256_text, split_table_row
+from expnote.research.textkit import is_separator_row, split_table_row
 
 BOM = b"\xef\xbb\xbf"
 KEY_NAME = r"[A-Za-z_][\w-]*"
@@ -21,8 +20,6 @@ KEY_NAME = r"[A-Za-z_][\w-]*"
 KEY_LINE_RE = re.compile(rf"^(?:\"({KEY_NAME})\"|'({KEY_NAME})'|({KEY_NAME}))\s*:")
 SIMPLE_SCALAR_RE = re.compile(r"[0-9A-Za-z_.-]+")
 UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
-DONE_FIELD_RE = re.compile(r"\s*\[done::\s*[^\]]*\]")
-TASK_ID_RE = re.compile(r"\[id::\s*([^\]]*)\]")
 
 
 # ---- bytes <-> LF text -------------------------------------------------------------
@@ -298,96 +295,3 @@ def find_row(lines: list[str], table: TableLines, key_column: int, key: str):
         if len(cells) > key_column and cells[key_column].strip() == key.strip():
             return index
     return None
-
-
-# ---- task lines --------------------------------------------------------------
-
-
-def task_ids(text: str) -> list[str]:
-    return [t.todo_id for t in parse_todo_lines(text) if not t.synthetic]
-
-
-def next_task_id(text: str, prefix: str = "T-", width: int = 4) -> str:
-    numbers = [
-        int(m.group(1))
-        for ident in task_ids(text)
-        if (m := re.fullmatch(re.escape(prefix) + r"(\d+)", ident))
-    ]
-    return f"{prefix}{max(numbers, default=0) + 1:0{width}d}"
-
-
-def find_task_line(lines: list[str], ident: str) -> int | None:
-    """Line index of a task by `[id::]`, or by `T~<sha8>` for a line without one."""
-    for index, line in enumerate(lines):
-        match = TODO_LINE_RE.match(line.rstrip())
-        if not match:
-            continue
-        found = TASK_ID_RE.search(match.group(2))
-        if found:
-            if found.group(1).strip() == ident:
-                return index
-        elif ident == f"T~{sha256_text(line.rstrip())[:8]}":
-            return index
-    return None
-
-
-def format_task_line(text: str, fields: list[tuple[str, str]]) -> str:
-    _single_line(text)
-    if not text.strip():
-        raise ResearchError("USAGE_EMPTY_TEXT", "the task text is empty", exit_code=2)
-    parts = [f"- [ ] {text.strip()}"]
-    for key, value in fields:
-        _single_line(value)
-        if "]" in value:
-            raise ResearchError(
-                "USAGE_BAD_VALUE", f"field {key!r} cannot contain ']'", exit_code=2
-            )
-        parts.append(f"[{key}:: {value}]")
-    return " ".join(parts)
-
-
-def mark_task(line: str, *, done: bool, today: str, new_id: str | None) -> str:
-    """Flip `[ ]`/`[x]`, set or drop `[done::]`, optionally append a real id."""
-    stripped = line.rstrip()
-    match = TODO_LINE_RE.match(stripped)
-    assert match is not None
-    body = DONE_FIELD_RE.sub("", match.group(2))
-    if new_id is not None and not TASK_ID_RE.search(body):
-        body = f"{body} [id:: {new_id}]"
-    if done:
-        body = f"{body} [done:: {today}]"
-    return f"- [{'x' if done else ' '}] {body}"
-
-
-def edit_task_line(
-    line: str,
-    *,
-    text: str | None = None,
-    set_fields: dict[str, str] | None = None,
-    clear_fields: tuple[str, ...] = (),
-) -> str:
-    """Rewrite a task line: replace the text and/or set/clear inline fields.
-
-    Existing fields stay where they are (their values replaced in place); new ones
-    are appended at the end. The checkbox state is kept.
-    """
-    match = TODO_LINE_RE.match(line.rstrip())
-    assert match is not None
-    body = match.group(2)
-    for key, value in (set_fields or {}).items():
-        field_re = re.compile(rf"\[{key}::\s*[^\]]*\]")
-        replacement = f"[{key}:: {value}]"
-        if field_re.search(body):
-            body = field_re.sub(lambda _m, new=replacement: new, body, count=1)
-        else:
-            body = f"{body} {replacement}"
-    for key in clear_fields:
-        body = re.sub(rf"\s*\[{key}::\s*[^\]]*\]", "", body)
-    if text is not None:
-        fields = " ".join(m.group(0) for m in TODO_FIELD_RE.finditer(body))
-        body = f"{text.strip()} {fields}".rstrip()
-    return f"- [{match.group(1)}] {body}"
-
-
-def adopt_task_line(line: str, new_id: str) -> str:
-    return f"{line.rstrip()} [id:: {new_id}]"

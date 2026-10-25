@@ -1,6 +1,6 @@
 // Renderers shared by full pages and master-detail previews: decisions, evidence, TODOs, notes.
 import { renderMath } from "/research/math.js";
-import { decisionActions, deviationCloseAction, evLabelEditor, planAdoptAction, todoDoneButton, todoTick } from "/research/actions.js";
+import { decisionActions, deviationCloseAction, evLabelEditor, planAdoptAction, todoDoneButton, todoDropAction, todoTick } from "/research/actions.js";
 import {
   chip,
   commandBlock,
@@ -322,9 +322,9 @@ export function kindPhrase(kind, count) {
 }
 
 // `href` is where the row's own link goes (a list page passes its selection link); by default the item's page, or its detail page.
-export function todoRow(ctx, t, { showKind = false, manualSha = null, href = null } = {}) {
+export function todoRow(ctx, t, { showKind = false, tickable = false, href = null } = {}) {
   const target = href || todoTarget(ctx, t) || (t.id ? route.todo(ctx.project, t.id) : null);
-  const tick = todoTick(ctx, t, manualSha);
+  const tick = tickable ? todoTick(ctx, t) : null;
   return h(
     "li",
     { class: "todo", "data-owner": t.owner, "data-severity": t.severity },
@@ -340,6 +340,7 @@ export function todoRow(ctx, t, { showKind = false, manualSha = null, href = nul
         t.plan ? planTag(ctx.project, t.plan) : null,
         t.severity && t.severity !== "info" && t.source !== "manual" ? statusWord(toneOf("severity", t.severity), t.severity) : null,
         t.state === "done" ? statusWord("ok", "done") : null,
+        t.state === "dropped" ? statusWord("muted", "dropped") : null,
         t.due ? statusWord("warn", `due ${t.due}`) : null,
         t.source === "manual" ? h("span", { class: "muted" }, "manual") : null,
       ),
@@ -398,10 +399,10 @@ function aboutPairs(ctx, t, skipReference) {
 }
 
 // Everything a TODO is about and everything that can be done with it, kind by kind.
-export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h1" } = {}) {
+export function todoDetail(ctx, t, { extras = {}, heading = "h1" } = {}) {
   const { deviation = null, decisions = [] } = extras;
   const title = deviation ? `Deviation ${deviation.id} is ${deviation.status}` : t.message;
-  const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, planAdoptAction(ctx, t), todoDoneButton(ctx, t, manualSha)].filter(Boolean);
+  const actions = [deviation ? deviationCloseAction(ctx, deviation) : null, planAdoptAction(ctx, t), todoDoneButton(ctx, t), todoDropAction(ctx, t)].filter(Boolean);
   const evLink = t.kind === "ev-unlabelled" ? h("a", { class: "btn primary", href: route.ev(ctx.project, t.ref) }, "Open the label editor", icon("chevron")) : null;
   const reviewLink = t.kind === "res-awaiting-review" ? h("a", { class: "btn primary", href: route.note(ctx.project, t.stem) }, "Open the result to review", icon("chevron")) : null;
   return h(
@@ -410,7 +411,7 @@ export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h
     h(
       "header",
       { class: "detail-head" },
-      h("div", { class: "detail-ident" }, icon(t.owner === "user" ? "user" : "bot"), h("span", null, OWNER_TEXT[t.owner] || t.owner), t.source !== "manual" && t.severity ? statusWord(toneOf("severity", t.severity), t.severity) : null, t.due ? statusWord("warn", `due ${t.due}`) : null, t.state === "done" ? statusWord("ok", "done") : null),
+      h("div", { class: "detail-ident" }, icon(t.owner === "user" ? "user" : "bot"), h("span", null, OWNER_TEXT[t.owner] || t.owner), t.source !== "manual" && t.severity ? statusWord(toneOf("severity", t.severity), t.severity) : null, t.due ? statusWord("warn", `due ${t.due}`) : null, t.state === "done" ? statusWord("ok", "done") : null, t.state === "dropped" ? statusWord("muted", "dropped") : null),
       h(heading, { class: "detail-title" }, title),
     ),
     kv([
@@ -418,6 +419,8 @@ export function todoDetail(ctx, t, { extras = {}, manualSha = null, heading = "h
       ["Owner", t.owner],
       ["Level", t.source === "manual" ? null : t.severity],
       ["Source", t.source],
+      ["Done on", t.state === "done" ? t.doneOn : null],
+      ["Dropped", t.state === "dropped" ? [t.droppedOn || "", t.droppedOn ? ": " : "", t.dropReason || ""] : null],
       ...aboutPairs(ctx, t, Boolean(deviation)),
       ["Next action", t.action],
     ]),

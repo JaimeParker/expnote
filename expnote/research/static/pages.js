@@ -229,10 +229,10 @@ function runsPanel(ctx, home) {
   );
 }
 
-function waitingPanel(ctx, home, userTodos, manualFile) {
+function waitingPanel(ctx, home, userTodos, manual) {
   const awaiting = home.decisions.awaiting;
   const empty = !awaiting.length && !userTodos.length;
-  const addForm = todoAddForm(ctx, manualFile);
+  const addForm = todoAddForm(ctx, manual);
   return panel(
     "Waiting on you",
     [
@@ -240,7 +240,7 @@ function waitingPanel(ctx, home, userTodos, manualFile) {
         ? emptyState("Nothing waits on you.", "Decisions you need to approve and TODOs that are yours appear here.")
         : [
             awaiting.length ? [h("h3", null, "Decisions to approve"), h("ul", { class: "drows" }, awaiting.map((d) => decisionRow(ctx, { ...d, status: "proposed" })))] : null,
-            userTodos.length ? [h("h3", null, "Your TODOs"), h("ul", { class: "todos" }, userTodos.map((t) => todoRow(ctx, t, { showKind: true, manualSha: manualFile.sha256 })))] : null,
+            userTodos.length ? [h("h3", null, "Your TODOs"), h("ul", { class: "todos" }, userTodos.map((t) => todoRow(ctx, t, { showKind: true, tickable: true })))] : null,
           ],
       addForm,
     ],
@@ -311,7 +311,7 @@ async function projectPage(ctx) {
     h(
       "div",
       { class: "overview-grid" },
-      h("div", { class: "col-left" }, waitingPanel(ctx, data, userTodos, todosBody.data.manualFile), queuePanel(ctx, data, agentTodos)),
+      h("div", { class: "col-left" }, waitingPanel(ctx, data, userTodos, todosBody.data.manual), queuePanel(ctx, data, agentTodos)),
       h(
         "section",
         { class: "panel lanes-panel" },
@@ -483,17 +483,17 @@ function railTabs(ctx, shown, b) {
 }
 
 // The plan's open items that are the user's to do; same rows (and ticks) as the Issues tab.
-function waitingOnYou(ctx, b, manualSha) {
+function waitingOnYou(ctx, b) {
   const mine = b.openItems.filter((t) => t.owner === "user");
   if (!mine.length) return null;
   return panel(
     "Waiting on you",
-    h("ul", { class: "todos" }, mine.map((t) => todoRow(ctx, { ...t, plan: null, source: t.kind === "manual" ? "manual" : "derived" }, { showKind: true, manualSha }))),
+    h("ul", { class: "todos" }, mine.map((t) => todoRow(ctx, { ...t, plan: null, source: t.kind === "manual" ? "manual" : "derived" }, { showKind: true, tickable: true }))),
     { count: mine.length, tone: "warn", className: "rail-waiting" },
   );
 }
 
-function contextRail(ctx, shown, b, keyState, manualSha) {
+function contextRail(ctx, shown, b, keyState) {
   const tabs = railTabs(ctx, shown, b);
   const saved = store.get("planTab", "decisions");
   keyState.index = Math.max(0, tabs.findIndex(([key]) => key === saved));
@@ -523,7 +523,7 @@ function contextRail(ctx, shown, b, keyState, manualSha) {
   activate(keyState.index);
   const failCount = b.findings.items.filter((f) => f.level === "FAIL").length;
   const issuesAt = tabs.findIndex(([key]) => key === "issues");
-  return h("aside", { class: "rail", "aria-label": "Plan status" }, waitingOnYou(ctx, b, manualSha), nextStep(ctx, shown.gates, failCount, () => activate(issuesAt)), strip, bodyBox);
+  return h("aside", { class: "rail", "aria-label": "Plan status" }, waitingOnYou(ctx, b), nextStep(ctx, shown.gates, failCount, () => activate(issuesAt)), strip, bodyBox);
 }
 
 function outlineOf(prosebox, project, plan) {
@@ -550,7 +550,7 @@ async function planPage(ctx) {
   const { api } = ctx;
   const P = ctx.project;
   const plan = ctx.arg;
-  const [shown, bundle, todosBody] = await Promise.all([api(`${base(P)}/plans/${enc(plan)}`), api(`${base(P)}/plans/${enc(plan)}/bundle`), api(`${base(P)}/todos`)]);
+  const [shown, bundle] = await Promise.all([api(`${base(P)}/plans/${enc(plan)}`), api(`${base(P)}/plans/${enc(plan)}/bundle`)]);
   const s = shown.data;
   const b = bundle.data;
   const info = s.plan;
@@ -586,7 +586,7 @@ async function planPage(ctx) {
       "div",
       { class: "plan-grid" },
       sideOutline,
-      contextRail(ctx, s, b, keyState, todosBody.data.manualFile.sha256),
+      contextRail(ctx, s, b, keyState),
       h("article", { class: "plan-main" }, foldOutline, proseBox),
     ),
   );

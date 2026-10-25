@@ -354,6 +354,23 @@ if (manualTodo) {
   await go(selHash(manualTodo));
   await afterFetch();
   check("manual TODO offers Mark done", buttonLike(pane(), "Mark done"));
+  check("a stored manual TODO carries its row version", Number.isInteger(manualTodo.version) && manualTodo.version >= 1, JSON.stringify(manualTodo));
+  check("manual TODO offers Drop", buttonLike(pane(), "Drop"));
+  buttonLike(pane(), "Drop").dispatch("click");
+  const dropReason = pane().byClass("reason-input")[0];
+  check("Drop opens a reason box and says it is final", dropReason && pane().textContent.includes("Dropping is final"), pane().textContent);
+  buttonLike(pane(), "Review change").dispatch("click");
+  check("an empty reason is not sent", pane().byClass("confirm-panel").length === 1 && pane().textContent.includes("Say why it is dropped first"), pane().textContent);
+  dropReason.value = "no longer needed <b>x</b>";
+  buttonLike(pane(), "Review change").dispatch("click");
+  await afterFetch();
+  const dropPanel = pane().byClass("confirm-panel")[1];
+  check("the dry run names the TODO and shows the reason as text", dropPanel && dropPanel.textContent.includes(`Drop TODO ${manualTodo.id}`) && pane().byClass("diff").map((n) => n.textContent).join("\n").includes("+drop_reason: no longer needed <b>x</b>") && pane().byTag("b").length === 0, pane().textContent);
+  const stillOpen = (await api(`${P}/todos`)).data.todos.find((t) => t.id === manualTodo.id);
+  check("the dry run changed nothing", stillOpen && stillOpen.state === "open" && stillOpen.version === manualTodo.version, JSON.stringify(stillOpen));
+  check("Apply is offered after the review", buttonLike(dropPanel, "Apply") && !buttonLike(dropPanel, "Apply").hasAttribute("disabled"));
+  buttonLike(dropPanel, "Cancel").dispatch("click");
+  check("Cancel leaves the reason editable", !dropReason.hasAttribute("disabled"));
 }
 await go(`#/p/${enc(project)}/todos?sel=${enc("derived:deviation-open:D-99")}`);
 await afterFetch();
@@ -378,7 +395,7 @@ const railPlan = plans[0];
 const readyGates = (data) => {
   data.gates = { next: [{ to: "running", ok: true, unmet: [] }, { to: "withdrawn", ok: true, unmet: [] }], currentUnmet: [] };
 };
-const userItem = { id: "T-9", kind: "manual", owner: "user", severity: "info", message: "do the user thing", ref: "T-9", action: null, command: null };
+const userItem = { id: "T-9", kind: "manual", owner: "user", severity: "info", message: "do the user thing", ref: "T-9", action: null, command: null, state: "open", version: 1 };
 const agentItem = { id: "d1", kind: "deviation-open", owner: "agent", severity: "warn", message: "agent chore", ref: "D-1", action: null, command: null };
 const failFinding = { level: "FAIL", code: "EV.PARSE", where: "evidence/x.md", message: "cannot parse the page" };
 const rail = () => main.byClass("rail")[0];
@@ -407,8 +424,7 @@ check("Runs, Related and Issues tabs list their rows", bodies.Runs.includes("a r
 const waiting = main.byClass("rail-waiting")[0];
 check("Waiting on you lists the user's open items only", waiting && waiting.textContent.includes("Waiting on you") && waiting.textContent.includes("do the user thing") && !waiting.textContent.includes("agent chore"), waiting && waiting.textContent);
 check("Waiting on you carries a count", waiting && waiting.byClass("count")[0].textContent === "1");
-const sha = (await api(`${P}/todos`)).data.manualFile.sha256;
-check("a manual item in Waiting on you can be ticked", !sha || waiting.byClass("todo-tick").length === 1);
+check("a manual item in Waiting on you can be ticked", waiting.byClass("todo-tick").length === 1);
 check("Waiting on you sits above Next step", railText().indexOf("Waiting on you") >= 0 && railText().indexOf("Waiting on you") < railText().indexOf("Next step"));
 check("a FAIL finding raises a notice", rail().textContent.includes("1 failing check on this plan's notes") && rail().byClass("notice").length >= 1, railText());
 check("an ok gate reads ready, but N failing", railText().includes("ready, but 1 failing check") && !/ready(?!,)/.test(railText().replace("ready, but", "")), railText());

@@ -520,28 +520,3 @@ def test_tables_inside_comments_and_fences_are_not_tables():
     ]
     (table,) = edits.find_tables(lines)
     assert table.header == ["e", "f"] and list(table.row_lines()) == [10]
-
-
-def test_task_helpers_allocate_ids_and_flip_state():
-    text = (
-        "- [ ] one [id:: T-0002]\n- [x] two [id:: T-0009] [done:: 2026-01-01]\n"
-        "- [ ] bare\n"
-    )
-    assert edits.next_task_id(text) == "T-0010"
-    lines = text.split("\n")
-    assert edits.find_task_line(lines, "T-0009") == 1
-    bare = edits.find_task_line(lines, "T~" + writeback.sha256_bytes(b"- [ ] bare")[:8])
-    assert bare == 2
-    assert (
-        edits.mark_task(lines[0], done=True, today="2026-02-02", new_id=None)
-        == "- [x] one [id:: T-0002] [done:: 2026-02-02]"
-    )
-    assert (
-        edits.mark_task(lines[1], done=False, today="x", new_id=None)
-        == "- [ ] two [id:: T-0009]"
-    )
-    assert edits.mark_task(lines[2], done=True, today="d", new_id="T-0010").endswith(
-        "bare [id:: T-0010] [done:: d]"
-    )
-    with pytest.raises(ResearchError):
-        edits.format_task_line("two\nlines", [])

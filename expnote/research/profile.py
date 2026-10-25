@@ -50,6 +50,7 @@ class Profile:
     options_warn_layers: tuple[str, ...]
     deviation_register: str
     decision_export: str
+    todo_export: str
     todo_file: str
     run_id_regex: str
     skip_dirs: frozenset[str]
@@ -238,6 +239,7 @@ def parse_profile_text(text: str) -> ProfileNote:
         options_warn_layers=get("decisions.options_warn_layers", layers[:1]),
         deviation_register=get("paths.deviation_register"),
         decision_export=get("paths.decision_export", "ops/decisions.jsonl"),
+        todo_export=get("paths.todo_export", "ops/todos.jsonl"),
         todo_file=get("paths.todo_file", ""),
         run_id_regex=get("runs.id_regex", ""),
         skip_dirs=DEFAULT_SKIP_DIRS | frozenset(get("scan.skip_dirs", ())),

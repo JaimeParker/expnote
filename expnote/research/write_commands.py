@@ -15,7 +15,16 @@ from typing import Annotated
 
 import typer
 
-from expnote.research import adopt, entities, newnote, split, writes
+from expnote.research import (
+    adopt,
+    entities,
+    newnote,
+    split,
+    todo_export,
+    todo_store,
+    todo_writes,
+    writes,
+)
 from expnote.research.cliutil import confirm_command, render_write
 from expnote.research.commands import (
     NoRefreshOption,
@@ -300,11 +309,11 @@ def decision_set(
     )
 
 
-def _export_context(project: str | None):
+def _export_context(project: str | None, profile_key: str = "decision_export"):
     from expnote.research.registry import open_project
 
     context = open_project(project)
-    target = context.resolved.project_dir / context.profile.decision_export
+    target = context.resolved.project_dir / getattr(context.profile, profile_key)
     return context, WriteContext.for_project(context), target
 
 
@@ -865,13 +874,25 @@ def ev_split(
 
 # ---- manual TODOs ------------------------------------------------------------
 
+ExpectedVersionOption = Annotated[
+    int | None,
+    typer.Option(
+        "--expected-version",
+        min=1,
+        help="Refuse (exit 5) unless the TODO is still at this version "
+        "(`version` in `todo list --json`).",
+    ),
+]
+
 
 @todo_app.command("add")
 def todo_add(
-    text: Annotated[str, typer.Argument(help="Task text (one line).")],
-    plan: Annotated[str | None, typer.Option("--plan")] = None,
+    text: Annotated[str, typer.Argument(help="Task text (one line, no [k:: v]).")],
+    plan: Annotated[str | None, typer.Option("--plan", help="Plan id.")] = None,
     due: Annotated[str | None, typer.Option("--due", help="YYYY-MM-DD")] = None,
-    by: Annotated[str, typer.Option("--by", help="Who adds it.")] = "agent",
+    by: Annotated[str, typer.Option("--by", help="Who adds it: user or agent.")] = (
+        "agent"
+    ),
     owner: Annotated[
         str | None,
         typer.Option(
@@ -881,27 +902,22 @@ def todo_add(
             "text with that action). Optional with --by user (default: user).",
         ),
     ] = None,
-    expected_sha256: ExpectedOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
-    no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Append a task line with a new id to the manual TODO file."""
+    """Add a manual TODO to the project's TODO store; the new id is in the result.
+
+    Example: expnote todo add "re-run seed 3" --owner agent --plan <PLAN_ID> --apply
+    """
     run_write(
         "todo add",
-        lambda view: writes.plan_todo_add(
-            view,
-            text,
-            plan=plan,
-            due=due,
-            by=by,
-            owner=owner,
-            expected_sha256=expected_sha256,
+        lambda view: todo_writes.plan_todo_add(
+            view, text, plan=plan, due=due, by=by, owner=owner
         ),
         project=project,
         apply=apply,
-        no_quiet=no_quiet,
+        no_quiet=False,
         as_json=as_json,
     )
 
@@ -917,16 +933,18 @@ def todo_edit(
     clear_plan: Annotated[bool, typer.Option("--clear-plan")] = False,
     due: Annotated[str | None, typer.Option("--due", help="YYYY-MM-DD")] = None,
     clear_due: Annotated[bool, typer.Option("--clear-due")] = False,
-    expected_sha256: ExpectedOption = None,
+    expected_version: ExpectedVersionOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
-    no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Reword a manual task or change its owner, plan or due date."""
+    """Reword a manual TODO or change its owner, plan or due date (not if dropped).
+
+    Example: expnote todo edit T-0003 --owner user --expected-version 2 --apply
+    """
     run_write(
         "todo edit",
-        lambda view: writes.plan_todo_edit(
+        lambda view: todo_writes.plan_todo_edit(
             view,
             ident,
             text=text,
@@ -935,11 +953,11 @@ def todo_edit(
             clear_plan=clear_plan,
             due=due,
             clear_due=clear_due,
-            expected_sha256=expected_sha256,
+            expected_version=expected_version,
         ),
         project=project,
         apply=apply,
-        no_quiet=no_quiet,
+        no_quiet=False,
         as_json=as_json,
     )
 
@@ -947,47 +965,195 @@ def todo_edit(
 @todo_app.command("done")
 def todo_done(
     ident: Annotated[str, typer.Argument(metavar="ID")],
-    undo: Annotated[bool, typer.Option("--undo", help="Re-open the task.")] = False,
-    expected_sha256: ExpectedOption = None,
+    undo: Annotated[bool, typer.Option("--undo", help="Reopen the task.")] = False,
+    expected_version: ExpectedVersionOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
-    no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Tick (or un-tick) a manual task by id."""
+    """Tick (or with --undo reopen) a manual TODO; a dropped one is refused.
+
+    Example: expnote todo done T-0003 --apply
+    """
     run_write(
         "todo done",
-        lambda view: writes.plan_todo_done(
-            view, ident, undo=undo, expected_sha256=expected_sha256
+        lambda view: todo_writes.plan_todo_done(
+            view, ident, undo=undo, expected_version=expected_version
         ),
         project=project,
         apply=apply,
-        no_quiet=no_quiet,
+        no_quiet=False,
         as_json=as_json,
     )
 
 
-@todo_app.command("adopt")
-def todo_adopt(
-    ref: Annotated[
-        str | None,
-        typer.Argument(metavar="[REF]", help="A T~xxxxxxxx id; default: all."),
-    ] = None,
-    expected_sha256: ExpectedOption = None,
+@todo_app.command("drop")
+def todo_drop(
+    ident: Annotated[str, typer.Argument(metavar="ID")],
+    reason: Annotated[str, typer.Option("--reason", help="Why it is dropped.")],
+    expected_version: ExpectedVersionOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
-    no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
 ) -> None:
-    """Give the id-less task lines of the TODO file real ids."""
+    """Drop a manual TODO nobody will do (final; it stays listed with its reason).
+
+    Example: expnote todo drop T-0003 --reason "superseded by T-0007" --apply
+    """
     run_write(
-        "todo adopt",
-        lambda view: writes.plan_todo_adopt(view, ref, expected_sha256=expected_sha256),
+        "todo drop",
+        lambda view: todo_writes.plan_todo_drop(
+            view, ident, reason=reason, expected_version=expected_version
+        ),
         project=project,
         apply=apply,
-        no_quiet=no_quiet,
+        no_quiet=False,
         as_json=as_json,
     )
+
+
+@todo_app.command("migrate")
+def todo_migrate(
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Move the manual TODOs of the old TODO file into the TODO store (one-shot).
+
+    Keeps ids, gives id-less lines the next ids, writes the export, copies the file
+    to the audit journal and deletes it. Refuses when the store already exists.
+    Example: expnote todo migrate --apply
+    """
+
+    def action() -> CommandResult:
+        with open_view(project) as view:
+            return todo_writes.migrate_todos(
+                view, apply=apply, confirm_command=confirm_command()
+            )
+
+    run_command("todo migrate", as_json, action, render_write)
+
+
+@todo_app.command("export")
+def todo_export_command(
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an export changed elsewhere.")
+    ] = False,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Rewrite the JSONL export in the vault from the store (normally automatic)."""
+
+    def action() -> CommandResult:
+        context, wctx, target = _export_context(project, "todo_export")
+        meta = {"project": context.entry.id}
+        if not todo_store.store_exists(context.entry.id):
+            raise ResearchError(
+                "NOT_FOUND",
+                "this project has no TODO store yet",
+                exit_code=3,
+                remediation="expnote todo add ... --apply (or `todo migrate`)",
+            )
+        with todo_store.TodoStore.open(context.entry.id) as store:
+            if apply:
+                plan, record = todo_export.sync_export(
+                    store, wctx, target, command="todo export", force=force
+                )
+                data = {
+                    "changes": [record] if record else [],
+                    "applied": record is not None,
+                    "dryRun": False,
+                    "rows": store.count(),
+                    "sha256": plan.sha256,
+                }
+                return CommandResult(data, meta=meta)
+            plan = todo_export.plan_export(store, wctx, target, force=force)
+            rows = store.count()
+        changes = [plan.change.as_dict()] if plan.change else []
+        warnings = (
+            [{"code": plan.problem.code, "message": plan.problem.message}]
+            if plan.problem
+            else []
+        )
+        data = {
+            "changes": changes,
+            "applied": False,
+            "dryRun": bool(changes),
+            "confirmCommand": confirm_command() if changes else None,
+            "rows": rows,
+            "sha256": plan.sha256,
+        }
+        return CommandResult(
+            data, warnings, meta, exit_code=writes.DRY_RUN_EXIT if changes else 0
+        )
+
+    run_command("todo export", as_json, action, render_write)
+
+
+@todo_app.command("restore")
+def todo_restore(
+    source: Annotated[Path, typer.Option("--from", help="A todos.jsonl export file.")],
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Overwrite a store that has rows.")
+    ] = False,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Rebuild the TODO store from an export (refuses a non-empty store)."""
+
+    def action() -> CommandResult:
+        context, wctx, target = _export_context(project, "todo_export")
+        pid = context.entry.id
+        try:
+            payload = source.expanduser().read_bytes()
+        except OSError as error:
+            raise ResearchError(
+                "USAGE_PATH_NOT_FOUND", f"cannot read {source}: {error}", exit_code=2
+            ) from None
+        rows, events = todo_export.parse_export(payload)
+        existing = 0
+        if todo_store.store_exists(pid):
+            with todo_store.TodoStore.open(pid) as store:
+                existing = store.count()
+        if existing and not replace:
+            raise ResearchError(
+                "STORE_NOT_EMPTY",
+                f"the TODO store already holds {existing} TODO(s)",
+                exit_code=5,
+                remediation="pass --replace to overwrite them",
+            )
+        data = {
+            "rows": len(rows),
+            "events": len(events),
+            "replacing": existing,
+            "applied": False,
+            "dryRun": not apply,
+            "changes": [],
+        }
+        meta = {"project": pid}
+        if not apply:
+            data["confirmCommand"] = confirm_command()
+            return CommandResult(data, meta=meta, exit_code=writes.DRY_RUN_EXIT)
+        warnings: list[dict] = []
+        with todo_store.TodoStore.open(pid) as store:
+            with store.transaction():
+                todo_export.restore_rows(store, rows, events, replace=replace)
+            try:
+                _, record = todo_export.sync_export(
+                    store, wctx, target, command="todo restore"
+                )
+            except ResearchError as error:
+                if error.code != "EXPORT_DIVERGED":
+                    raise
+                warnings.append({"code": error.code, "message": error.message})
+            else:
+                data["changes"] = [record] if record else []
+        data.update(applied=True, dryRun=False)
+        return CommandResult(data, warnings, meta)
+
+    run_command("todo restore", as_json, action, render_write)
 
 
 # ---- deviations --------------------------------------------------------------

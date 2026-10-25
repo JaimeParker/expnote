@@ -106,6 +106,9 @@ def world(tmp_path):
     )
     register(root, proj, "--workspace", "w1")
     assert run("decision", "export", "--apply")["_exit"] == 0  # the seeded rows' backup
+    assert (
+        run("todo", "migrate", "--apply")["_exit"] == 0
+    )  # the manual TODOs move to the store
     return root, proj
 
 
@@ -285,8 +288,8 @@ def test_todos_search_check_doctor_note(client, world):
     kinds = {t["kind"] for t in todos["todos"]}
     assert {"decision-proposed", "manual"} <= kinds
     assert todos["todos"][0]["owner"] == "user"
-    assert todos["manualFile"]["path"].endswith("待办.md")
-    assert len(todos["manualFile"]["sha256"]) == 64
+    assert todos["manual"]["backend"] == "store" and todos["manual"]["writable"]
+    assert all(t["version"] == 1 for t in todos["todos"] if t["source"] == "manual")
     assert client.get(f"{P}/todos", params={"source": "x"}).status_code == 422
     found = ok(client, f"{P}/search", q="PLAN-900A", type="plan")
     hit = found["data"]["hits"][0]

@@ -273,16 +273,11 @@ def test_manual_todos_follow_the_grammar(vault):
         "user",
     )
     assert (
-        first["source"] == "manual"
-        and first["line"] == 6
-        and first["synthetic"] is False
-    )
-    synthetic = [t for t in manual if t["synthetic"]]
-    assert (
-        len(synthetic) == 1
-        and synthetic[0]["id"].startswith("T~")
-        and synthetic[0]["message"] == "没有编号的一行"
-    )
+        first["source"] == "manual" and first["version"] is None
+    )  # read from the file
+    assert "line" not in first and "synthetic" not in first
+    synthetic = [t for t in manual if t["id"].startswith("T~")]
+    assert len(synthetic) == 1 and synthetic[0]["message"] == "没有编号的一行"
     assert "T-0003" not in by_id  # ticked items are hidden by default
     shown = data("todo", "list", "--source", "manual", "--include-done")["todos"]
     assert {t["id"]: t["state"] for t in shown}["T-0003"] == "done"
