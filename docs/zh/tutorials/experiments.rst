@@ -1,8 +1,6 @@
 记录训练、实验与 benchmark
 ===========================
 
-:doc:`English </tutorials/experiments>`
-
 这篇教程使用合成指标。你会记录两次训练，查询实验结果，再把它们关联到
 benchmark 矩阵。
 

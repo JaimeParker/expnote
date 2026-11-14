@@ -1,8 +1,6 @@
 Record training runs and benchmarks
 ===================================
 
-:doc:`简体中文 </zh/tutorials/experiments>`
-
 Record two training runs, query their results, and link them to a benchmark
 matrix. This example uses synthetic metrics and takes a few minutes.
 

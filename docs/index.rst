@@ -1,30 +1,40 @@
 expnote
 ========
 
-expnote keeps training runs, experiment results, and benchmark matrices in
-SQLite. Use the CLI to record them and the local Web UI to browse and compare
-them. Research adds a workflow for plans, evidence, and results in a vault.
+.. container:: expnote-home-intro
 
-Choose a tutorial
------------------
+   Record training runs and benchmarks in SQLite. Use the local Web UI to
+   compare results and manage research from plan to review.
 
-* :doc:`tutorials/experiments` takes you from your first run to a task-by-algorithm
-  benchmark matrix.
-* :doc:`tutorials/research` takes you from a research question to a reviewed
-  result, using synthetic data.
+.. grid:: 1 1 2 2
+   :gutter: 3
 
-:doc:`简体中文 <zh/index>`
+   .. grid-item-card:: Training and benchmarks
+      :link: tutorials/experiments
+      :link-type: doc
+      :shadow: none
+
+      Record and query runs, then compare tasks and algorithms in a benchmark matrix.
+
+   .. grid-item-card:: Research
+      :link: tutorials/research
+      :link-type: doc
+      :shadow: none
+
+      Walk through a plan, prepare evidence, and review the result with synthetic data.
 
 .. toctree::
    :maxdepth: 2
    :caption: Tutorials
+   :hidden:
 
    tutorials/experiments
    tutorials/research
 
 .. toctree::
    :maxdepth: 1
-   :caption: English reference
+   :caption: Reference
+   :hidden:
 
    research-vault
    agent-quickstart
@@ -33,5 +43,6 @@ Choose a tutorial
 .. toctree::
    :maxdepth: 2
    :caption: 简体中文
+   :hidden:
 
    zh/index

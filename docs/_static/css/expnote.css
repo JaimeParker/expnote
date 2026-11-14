@@ -1,0 +1,286 @@
+@font-face {
+  font-family: Lato;
+  src: url("../fonts/lato-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Lato;
+  src: url("../fonts/lato-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Lato;
+  src: url("../fonts/lato-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Lato;
+  src: url("../fonts/lato-bold-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  --pst-header-height: 0rem;
+  --pst-font-family-base: "Lato", "Helvetica Neue", Arial, "PingFang SC",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --pst-font-family-heading: var(--pst-font-family-base);
+  --pst-font-family-monospace: "SFMono-Regular", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --expnote-card-shadow: 0 4px 12px rgb(0 0 0 / 8%);
+  --expnote-card-shadow-hover: 0 6px 24px rgb(0 0 0 / 13%);
+}
+
+html[data-theme="light"] {
+  --pst-color-primary: #0e6b66;
+  --pst-color-secondary: #0b5759;
+}
+
+html[data-theme="dark"] {
+  --pst-color-primary: #56c2b8;
+  --pst-color-secondary: #8adbda;
+  --expnote-card-shadow: 0 4px 12px rgb(0 0 0 / 26%);
+  --expnote-card-shadow-hover: 0 6px 24px rgb(0 0 0 / 36%);
+}
+
+.bd-page-width {
+  max-width: 100rem;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 84rem;
+}
+
+.bd-sidebar-primary {
+  max-width: 18rem;
+  padding: 0.5rem;
+  gap: 0;
+}
+
+.bd-sidebar-secondary {
+  max-width: 15rem;
+}
+
+.bd-sidebar-primary .sidebar-primary__section {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bd-sidebar-primary .sidebar-primary-items__start {
+  border-top: 0;
+}
+
+.bd-sidebar-primary .sidebar-header-items {
+  display: none;
+}
+
+.bd-sidebar-primary .sidebar-primary-items__start .sidebar-primary-item {
+  padding-block: 0.15rem;
+}
+
+.expnote-sidebar-brand {
+  display: block;
+  padding: 0.25rem 0.45rem 0.5rem;
+  color: var(--pst-color-primary);
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.expnote-sidebar-brand:hover {
+  color: var(--pst-color-secondary);
+}
+
+.bd-sidebar-primary .bd-search {
+  margin-inline: 0.25rem;
+}
+
+.bd-sidebar-primary .bd-search input.form-control {
+  min-height: 1.95rem;
+  font-size: 0.875rem;
+}
+
+.bd-sidebar-primary .bd-search .search-button__kbd-shortcut {
+  padding-inline: 0.3rem;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 0.3rem;
+  background: var(--pst-color-surface);
+  font-size: 0.65rem;
+}
+
+.bd-sidebar-primary .bd-search kbd {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: inherit;
+}
+
+.expnote-sidebar-tools,
+.expnote-sidebar-actions,
+.expnote-sidebar-actions .navbar-icon-links {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.expnote-sidebar-tools {
+  justify-content: space-between;
+  margin: 0.4rem 0.25rem 0;
+}
+
+.expnote-sidebar-tools .btn.dropdown-toggle {
+  border: 1px solid var(--pst-color-border);
+  color: var(--pst-color-text-base);
+}
+
+.expnote-sidebar-tools .btn.dropdown-toggle:hover,
+.expnote-sidebar-tools .btn.dropdown-toggle[aria-expanded="true"] {
+  color: var(--pst-color-primary);
+}
+
+.expnote-sidebar-tools .dropdown-item[aria-current] {
+  color: var(--pst-color-primary);
+  font-weight: 700;
+}
+
+.expnote-sidebar-actions .navbar-icon-links {
+  margin: 0;
+}
+
+.expnote-sidebar-tools .pst-navbar-icon {
+  padding: 0.35rem 0.45rem;
+  color: var(--pst-color-text-muted);
+  font-size: 0.9rem;
+}
+
+.expnote-sidebar-tools .pst-navbar-icon:hover {
+  color: var(--pst-color-primary);
+}
+
+.bd-sidebar-primary .bd-docs-nav {
+  margin: 0.35rem 0 0;
+  padding: 0.45rem 0.25rem 0;
+  border-top: 1px solid var(--pst-color-border);
+}
+
+.bd-sidebar-primary .bd-sidenav li {
+  margin-block: 0;
+}
+
+.bd-sidebar-primary .bd-sidenav li > a {
+  padding-block: 0.32rem;
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.bd-sidebar-primary .bd-sidenav .toctree-l1 > a {
+  font-size: 0.98rem;
+}
+
+.bd-sidebar-primary .bd-docs-nav .caption {
+  margin-block: 0.65rem 0.2rem;
+}
+
+.bd-sidebar-primary .bd-sidenav li.current > a {
+  box-shadow: none;
+}
+
+.bd-sidebar-primary .bd-sidenav li > a:hover {
+  background-color: color-mix(in srgb, var(--pst-color-primary) 7%, transparent);
+  color: var(--pst-color-text-base);
+  text-decoration: none;
+}
+
+.bd-sidebar-primary .bd-sidenav li.current > a.current {
+  background-color: color-mix(in srgb, var(--pst-color-primary) 14%, transparent);
+  color: var(--pst-color-primary);
+  font-weight: 700;
+}
+
+.bd-sidebar-primary .bd-sidenav .toctree-toggle {
+  padding: 0.3rem 0.4rem;
+}
+
+.bd-sidebar-primary .bd-sidenav .toctree-toggle .fa-chevron-down {
+  font-size: 0.8rem;
+}
+
+.bd-header.expnote-mobile-bar {
+  display: none;
+}
+
+.bd-article section:has(> .expnote-home-intro) > h1 {
+  margin-top: 2rem;
+  text-align: center;
+  font-weight: 700;
+}
+
+.bd-article .expnote-home-intro {
+  max-width: 38rem;
+  margin: 0 auto 2rem;
+  color: var(--pst-color-text-muted);
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.expnote-home-intro + .sd-container-fluid {
+  max-width: 60rem;
+}
+
+.expnote-home-intro + .sd-container-fluid .sd-card {
+  border-color: var(--pst-color-border);
+  border-radius: 0.3rem;
+  background-color: var(--pst-color-surface);
+  box-shadow: var(--expnote-card-shadow);
+}
+
+.expnote-home-intro + .sd-container-fluid .sd-card:hover,
+.expnote-home-intro + .sd-container-fluid .sd-card:focus-within {
+  border-color: var(--pst-color-primary);
+  box-shadow: var(--expnote-card-shadow-hover);
+}
+
+@media (max-width: 959.98px) {
+  :root {
+    --pst-header-height: 3rem;
+  }
+
+  .bd-header.expnote-mobile-bar {
+    position: sticky;
+    z-index: 1010;
+    top: 0;
+    display: flex;
+    min-height: var(--pst-header-height);
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 0.75rem;
+    border-bottom: 1px solid var(--pst-color-border);
+    background: var(--pst-color-background);
+    box-shadow: none;
+  }
+
+  .expnote-mobile-bar .sidebar-toggle {
+    display: inline-grid;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0.3rem;
+    background: transparent;
+    color: var(--pst-color-text-muted);
+  }
+
+  .expnote-mobile-bar .sidebar-toggle:hover {
+    color: var(--pst-color-primary);
+  }
+}

@@ -1,8 +1,6 @@
 Run a research project
 ======================
 
-:doc:`简体中文 </zh/tutorials/research>`
-
 Use expnote Research to define a comparison, record a decision, and take the
 result through review. The example uses two short, synthetic loss traces. You'll
 use the CLI for proposals and the Research Web UI for the review steps.

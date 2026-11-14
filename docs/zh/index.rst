@@ -1,17 +1,31 @@
 expnote 中文文档
 ==================
 
-expnote 用 SQLite 保存训练与实验记录和 benchmark 矩阵。用 CLI 写入记录，
-用本地 Web UI 浏览与比较。Research 提供在研究 vault 中管理计划、证据和结论的流程。
+.. container:: expnote-home-intro
 
-* :doc:`tutorials/experiments` 从记录第一次训练开始，建立任务与算法对照矩阵。
-* :doc:`tutorials/research` 用合成数据走完从提出问题到审阅结论的流程。
+   用 SQLite 保存训练与实验记录。在本地 Web UI 比较 benchmark，
+   从研究计划一路跟进到结论审阅。
 
-:doc:`English </index>`
+.. grid:: 1 1 2 2
+   :gutter: 3
+
+   .. grid-item-card:: 训练、实验与 benchmark
+      :link: tutorials/experiments
+      :link-type: doc
+      :shadow: none
+
+      登记和查询训练记录，用矩阵比较不同任务与算法的结果。
+
+   .. grid-item-card:: 用 Research 开展科研
+      :link: tutorials/research
+      :link-type: doc
+      :shadow: none
+
+      用合成数据走完计划、证据整理和结论审阅。
 
 .. toctree::
    :maxdepth: 2
-   :caption: 教程
+   :hidden:
 
    tutorials/experiments
    tutorials/research

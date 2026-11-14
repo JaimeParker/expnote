@@ -1,8 +1,6 @@
 用 Research 开展科研
 ====================
 
-:doc:`English </tutorials/research>`
-
 这篇教程用两条简短的合成损失曲线，走完定义比较、记录决策、整理证据和审阅
 结论的流程。用 CLI 提交草案，用 Research Web UI 完成审批和审阅。
 

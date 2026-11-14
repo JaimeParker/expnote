@@ -1,0 +1,16 @@
+{%- extends "!layout.html" %}
+
+{%- block docs_navbar %}
+<header class="bd-header expnote-mobile-bar d-print-none">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" type="button"
+          aria-label="{{ '文档导航' if sidebar_is_chinese else _('Site navigation') }}">
+    <i class="fa-solid fa-bars" aria-hidden="true"></i>
+  </button>
+  {% if not remove_sidebar_secondary and secondary_sidebar_items %}
+  <button class="pst-navbar-icon sidebar-toggle secondary-toggle" type="button"
+          aria-label="{{ '本页目录' if sidebar_is_chinese else _('On this page') }}">
+    <i class="fa-solid fa-outdent" aria-hidden="true"></i>
+  </button>
+  {% endif %}
+</header>
+{%- endblock %}

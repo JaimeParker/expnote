@@ -1,0 +1,21 @@
+<a class="expnote-sidebar-brand" href="{{ pathto(sidebar_home) }}">{{ project }}</a>
+{% include "components/search-field.html" %}
+<div class="expnote-sidebar-tools">
+  <div class="dropdown">
+    <button class="btn btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown"
+            aria-expanded="false" aria-controls="expnote-languages"
+            aria-label="{{ '语言（简体中文）' if sidebar_is_chinese else 'Language (English)' }}">
+      {{ "中文" if sidebar_is_chinese else "EN" }}
+    </button>
+    <ul class="dropdown-menu" id="expnote-languages">
+      <li><a class="dropdown-item" href="{{ pathto(sidebar_english) }}" lang="en"
+             {% if not sidebar_is_chinese %}aria-current="true"{% endif %}>English</a></li>
+      <li><a class="dropdown-item" href="{{ pathto(sidebar_chinese) }}" lang="zh-CN"
+             {% if sidebar_is_chinese %}aria-current="true"{% endif %}>简体中文</a></li>
+    </ul>
+  </div>
+  <div class="expnote-sidebar-actions">
+    {% include "components/theme-switcher.html" %}
+    {% include "components/navbar-icon-links.html" %}
+  </div>
+</div>
