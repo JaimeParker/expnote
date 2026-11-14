@@ -1,5 +1,8 @@
 # Research vault guide
 
+For a first project, follow the [Research tutorial](tutorials/research.rst)
+with synthetic data, then use this guide for profiles, CLI details, and backup.
+
 Set up an Obsidian research vault where plans, evidence and results are plain
 Markdown, decisions and run records live in expnote's SQLite outside the vault,
 a localhost GUI shows the state and takes the few decisions only you may make,
@@ -28,12 +31,9 @@ Rules that follow from this:
 - **Decisions are records, not notes.** They live in SQLite, their text never
   changes (you supersede instead), and a JSONL backup is exported into the vault so
   your sync client carries it off the machine.
-- **The vault gets no generated files and no run notes.** Servers write run records
-  into run workspaces (state dir), never into the vault. To enforce this, expnote
-  has a *projection guard*: `expnote init --obsidian-root <vault>` (which would
-  project run notes as Markdown into a vault) is refused when that vault, or a
-  folder inside or around it, is registered as a research project. Runs are viewed
-  in `expnote web` and cited from notes by their ids (see 5.5).
+- **Run records live in the linked SQLite workspace.** Training jobs write to
+  that workspace. Open runs in `expnote web` and cite them by ID in evidence
+  notes (see 5.5).
 
 ## 2. Vault layout (one project folder)
 
@@ -116,13 +116,6 @@ one. Running it again changes nothing. Without `--profile-note` the scaffold get
 default file name with a non-English word in it; pass an explicit name as above.
 `--id` is the project id you pass as `--project` to other commands; the first
 project becomes the default, so with a single project you never type it.
-
-With the project registered, the projection guard is active. Trying to project run
-notes into the vault is refused:
-
-```bash
-expnote init --workspace attempt --obsidian-root "$VAULT" --notes-dir runs    # exit 2: projection guard
-```
 
 ### 3.4 The profile note
 
@@ -868,8 +861,8 @@ Paste into your project's `AGENTS.md` / `CLAUDE.md`:
 ```markdown
 ## Research notes (expnote)
 
-- Plans, evidence and results are Markdown in the vault; decisions and runs are in
-  expnote. Never create run notes or generated files in the vault.
+- Write plans, evidence and results in the vault. Record decisions and runs in
+  expnote, then refer to them by ID.
 - Start with `expnote next --json` and `expnote plan bundle <PLAN_ID> --json`.
 - Edit prose and agent-owned frontmatter with file tools. Anything the tool owns
   (status, hashes, confirmations, decisions, TODO ids) goes through `expnote`

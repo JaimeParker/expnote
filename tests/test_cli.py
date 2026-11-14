@@ -113,13 +113,16 @@ def test_guide_agent_json_is_machine_readable():
     assert "--workspace" in data["required_flags"]
     assert "create_run" in data["workflows"]
     assert "run.show" in data["commands"]
-    assert "sync markdown --pull-analysis" in json.dumps(data)
-    assert "sync all" in json.dumps(data)
-    assert "markdown.table.add_topic" in data["commands"]
-    assert "markdown table diff" in json.dumps(data)
+    assert data["examples"]["init"] == "expnote init --workspace <name>"
+    assert data["workflows"]["create_run"][-1] == "run add"
+    assert data["examples"]["web"] == "expnote web --workspace <name> --no-open"
+    assert "benchmark.matrix" in data["commands"]
     assert "doc.add" in data["commands"]
     assert "doc update <doc_id> --body-file <path>" in json.dumps(data)
-    assert "sync markdown --pull-docs" not in json.dumps(data)
+    for legacy_command in (
+        "--obsidian-root", "sync markdown", "sync all", "markdown table"
+    ):
+        assert legacy_command not in result.output
     assert data["doc_charts"]["series_chart"]["example"][0]["source"] == "metrics.csv"
     assert "workspace-dir/doc-assets/<doc_id>" in json.dumps(data)
 
@@ -129,9 +132,13 @@ def test_guide_agent_human_output_mentions_core_workflow():
 
     assert result.exit_code == 0, result.output
     assert "SQLite is the source of truth" in result.output
-    assert "Obsidian Markdown is an optional projection" in result.output
     assert "init -> moc add -> topic add --moc-id -> run add" in result.output
-    assert "expnote markdown table sections" in result.output
+    assert "expnote web --no-open" in result.output
+    assert "expnote benchmark matrix" in result.output
+    for legacy_command in (
+        "--obsidian-root", "sync markdown", "sync all", "markdown table"
+    ):
+        assert legacy_command not in result.output
     assert "expnote doc show <doc_id> --json" in result.output
     assert "Doc chart workflow" in result.output
     assert "{{ chart:<chart_id> }}" in result.output
@@ -568,6 +575,8 @@ def test_workspace_unpack_no_obsidian_and_replace(tmp_path, monkeypatch):
     )
     assert result.exit_code != 0
     assert "no Obsidian projection configured" in result.output
+    assert "`expnote web` to view runs" in result.output
+    assert "--obsidian-root" not in result.output
 
 
 def test_workspace_unpack_rejects_unsafe_archive_member(tmp_path, monkeypatch):
@@ -617,6 +626,8 @@ def test_web_only_workspace_rejects_markdown_projection(tmp_path):
     )
     assert result.exit_code != 0
     assert "no Obsidian projection configured" in result.output
+    assert "`expnote web` to view runs" in result.output
+    assert "--obsidian-root" not in result.output
 
 
 def test_web_detach_starts_background_process_and_returns(tmp_path, monkeypatch):

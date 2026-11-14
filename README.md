@@ -1,14 +1,18 @@
 # expnote
 
-`expnote` is a local-first experiment note CLI. It stores structured experiment
-records in SQLite and renders Markdown for Obsidian, Git, WebDAV, and plain-text
-search.
+`expnote` is a local-first CLI for training runs, experiment records, and
+benchmark matrices. It stores structured records in SQLite. Use the local
+Web UI to browse runs, compare benchmark cells, and edit analysis.
 
-The core tool is generic. Training frameworks, metric trackers, and lab-specific
-layouts should integrate through adapters instead of changing the core schema.
+Research links a run workspace to a vault of plans, evidence, and results.
+Training frameworks and metric trackers can integrate through adapters.
 
-Research notes in an Obsidian vault (plans, evidence, results, decisions, agent
-workflow): see [docs/research-vault.md](docs/research-vault.md).
+- **Tutorials:** [English](docs/index.rst) · [简体中文](docs/zh/index.rst)
+- **Workflows:** [Training and benchmarks](docs/tutorials/experiments.rst) ·
+  [Research](docs/tutorials/research.rst)
+- **Reference:** [Agent Quickstart](docs/agent-quickstart.md) ·
+  [Research vault guide](docs/research-vault.md)
+- **Maintainers:** [Build and publish the docs](docs/README.md)
 
 ## Install for development
 
@@ -59,7 +63,7 @@ expnote web --workspace stackcube-demo --no-open
 `expnote run add --run-id ...`.
 
 When a training run is tracked by wandb, prefer using the wandb run id as the
-expnote run id. That keeps lookup simple across expnote, Obsidian, and wandb.
+expnote run id. That keeps lookup simple across expnote and wandb.
 
 The same workflow without installing:
 
@@ -67,90 +71,16 @@ The same workflow without installing:
 PYTHONPATH=. python -m expnote.cli init --workspace stackcube-demo
 ```
 
-## Obsidian layout
+## Benchmarks
 
-Markdown projection is for plain Obsidian vaults only. expnote refuses to
-project into a vault registered as a research project (and into workspaces with
-`projection = "off"`); those runs stay in SQLite and are viewed with
-`expnote web`.
-
-For an Obsidian vault that is synced by WebDAV, keep expnote state outside the
-vault and write only Markdown into the vault:
-
-```bash
-expnote init \
-  --workspace mani-skill-training \
-  --workspace-dir ~/.local/share/expnote/workspaces/mani-skill-training \
-  --obsidian-root "/home/hazyparker/Documents/Cyber Brain" \
-  --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs"
-```
-
-This creates:
-
-```text
-~/.local/share/expnote/workspaces/mani-skill-training/
-  expnote.sqlite
-  events.jsonl
-  config.toml
-Cyber Brain/
-  10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md
-  10 Projects/AI Lab RFT 项目/ManiSkill Training/runs/
-    <run_id>.md
-  10 Projects/AI Lab RFT 项目/ManiSkill Training/analyses/
-    <doc_id>.md
-```
-
-If `--workspace-dir` is omitted, expnote uses
-`~/.local/share/expnote/workspaces/<workspace>`. For synced Obsidian vaults,
-keep `--workspace-dir` outside the vault and store only generated Markdown under
-`--obsidian-root`.
-If `--docs-dir` is omitted, expnote writes analysis documents next to the run
-notes directory: `.../runs` becomes `.../analyses`.
-
-To move a workspace to another device, pack the state directory and unpack it
-with local paths for that device:
-
-```bash
-expnote workspace pack expnote-workspace.tar.gz --workspace mani-skill-training
-
-expnote workspace unpack expnote-workspace.tar.gz \
-  --workspace mani-skill-training \
-  --workspace-dir ~/.local/share/expnote/workspaces/mani-skill-training \
-  --obsidian-root "/path/to/local/vault" \
-  --notes-dir "10 Projects/AI Lab RFT 项目/ManiSkill Training/runs" \
-  --index-path index.md
-```
-
-`pack` stores SQLite state, events, config, and cache from `workspace_dir`; it
-does not copy generated Obsidian Markdown. Run `expnote sync all` on the target
-device when you want to regenerate Markdown projections. For web-only use, pass
-`--no-obsidian` to `workspace unpack`.
-
-SQLite is the source of truth. Markdown is a projection for reading, linking, and
-searching. `Purpose`, `Relation`, `Result`, `Metadata`, and `Analysis` are stored
-in SQLite and returned by `expnote run show <run_id> --json`.
-
-SQL MOC records are the first-level organization. Topics belong to a MOC; runs
-belong to one topic. Obsidian MOC files are only Markdown projections of that
-SQLite hierarchy.
-
-Generated Markdown is wrapped in managed markers. Edit structured fields through
-the CLI. The only Obsidian-editable field is the run note `Analysis` section
-inside `expnote:analysis` markers. To import those edits back into SQLite, run:
-
-```bash
-expnote sync markdown --pull-analysis
-```
-
-If Analysis was changed in Obsidian, plain `expnote sync markdown` refuses to
-overwrite it. Use `--pull-analysis` to keep the Obsidian text, or `--force` to
-restore the SQLite version.
+Create a task-by-algorithm matrix, link finished or failed runs, and open the cells in
+the Web UI. Follow the [training and benchmarks tutorial](docs/tutorials/experiments.rst).
 
 ## Cross-run analysis documents
 
 Use `doc` commands when one analysis document compares or summarizes multiple
-runs. The document body and run links are stored in SQLite; Obsidian receives a
-generated `analyses/<doc_id>.md` projection.
+runs. SQLite stores the document body and run links. Open the document under
+its MOC in the Web UI.
 
 ```bash
 expnote doc add \
@@ -167,7 +97,6 @@ expnote doc update calql-baseline-summary \
   --json
 
 expnote doc show calql-baseline-summary --json
-expnote sync markdown
 ```
 
 `--body-file`/`--append-body-file` (and the `run` equivalents
@@ -179,10 +108,6 @@ expnote doc update calql-baseline-summary \
   --append-body-file notes.md \
   --json
 ```
-
-If a document body is edited in Obsidian, plain `expnote sync markdown` refuses
-to overwrite it. Use `expnote doc update <doc_id> --body-file <path>` to update
-SQLite, or `--force` to restore the SQLite version.
 
 Doc bodies can reference Web-only charts with placeholders:
 
@@ -242,85 +167,26 @@ from the doc asset directory and expects both a static image and Plotly JSON:
 ]
 ```
 
-Obsidian projections keep `{{ chart:id }}` as text. Chart files are not copied
-to Obsidian, and Markdown sync does not execute Python.
-
 ## Web UI
 
 Start a local Web UI that reads directly from SQLite:
 
 ```bash
-expnote web --workspace example
+expnote web --workspace stackcube-demo
 ```
 
 Run and document detail pages include explicit Edit/Save controls. Saving from
-the Web UI writes only to SQLite and the audit log; run Markdown notes and
-document Markdown projections are updated later by `expnote sync markdown` or
-`expnote sync all`.
+the Web UI writes to SQLite and the audit log.
 
 To start it in the background and return to the shell immediately:
 
 ```bash
-expnote web --workspace example --detach --no-open
+expnote web --workspace stackcube-demo --detach --no-open
 ```
 
-The web UI is independent from Obsidian. It shows SQL MOCs, topics, runs, run
-details, rendered Analysis, and MOC-level analysis documents. It defaults to
+The Web UI shows MOCs, topics, runs, benchmark matrices, and MOC-level
+analysis documents. It defaults to
 `127.0.0.1`; pass `--host 0.0.0.0` only when you explicitly want LAN access.
-
-## Markdown MOC section tables
-
-Add a run to a managed table under a specific level-two heading:
-
-```bash
-expnote markdown table add lu8qk41s \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --section "StackCube SAC"
-```
-
-Markdown table membership is stored in SQLite. The table itself is rendered inside
-`expnote:moc-table` markers under the requested `##` heading. A run can appear in
-multiple Markdown files or sections.
-
-The generated auto index defaults to `workspace_dir/index.md`, outside the
-Obsidian vault. `markdown table` commands own curated MOC section tables inside
-the vault.
-
-See [docs/templates/training-record-example.md](docs/templates/training-record-example.md)
-for an example MOC and generated `runs/<id>.md` note.
-
-Useful operations:
-
-```bash
-expnote markdown table sections \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --json
-
-expnote markdown table add-topic \
-  --topic "260703-StackCube SAC reproduction" \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --section "StackCube SAC" \
-  --json
-
-expnote markdown table list \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --section "StackCube SAC" \
-  --json
-
-expnote markdown table diff \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --section "StackCube SAC" \
-  --json
-
-expnote markdown table remove lu8qk41s \
-  --moc-path "10 Projects/AI Lab RFT 项目/ManiSkill Training MOC.md" \
-  --section "StackCube SAC"
-```
-
-`markdown table sync` re-renders registered rows for an exact section name. It
-does not discover runs by topic. Use `markdown table sections` to inspect
-existing section names and `markdown table add-topic` to register all active
-runs from a topic.
 
 ## Agent-friendly output
 
@@ -385,10 +251,8 @@ expnote run update lu8qk41s --append-analysis "Reward plateaued after 300k steps
 Use `--analysis-file`/`--append-analysis-file` to read long analysis text from
 a file or `-` for stdin instead of an inline string.
 
-When one SQL text field refers to another run, prefer `[[run_id]]`. Obsidian
-renders that as a note link, and the web UI renders it as a run-detail link. The
-web UI also links bare active run ids when it can do so safely, but `[[run_id]]`
-is the clearest format for agents.
+Use `[[run_id]]` to link to a run from another record or from an analysis
+document. The Web UI opens the matching run detail.
 
 `run query` uses a restricted SQL-like syntax. `--where` supports simple
 comparisons joined by `AND`; `--order-by` supports one whitelisted field plus
@@ -410,23 +274,30 @@ Agent contract:
 - Use `expnote workspace use <name>` once, or pass `--workspace <name>` on
   follow-up commands.
 - Treat non-zero exit status as command failure.
-- Do not edit generated Markdown directly except Analysis inside
-  `expnote:analysis` markers. Update document bodies with `expnote doc update`.
-- `Result` is a one-line headline metric only — final return/reward, success
-  rate, or the equivalent terminal number. No comparisons, causes, or next
-  steps. Put interpretation, diagnosis, comparisons, and reasoning in run
+- Update run fields with `expnote run update` and document bodies with
+  `expnote doc update`.
+- Record a one-line headline metric in `Result`, such as the final return or
+  success rate. Put interpretation, comparisons, and next steps in
   `Analysis` or cross-run `doc` records.
 - Refer to runs as `[[run_id]]` inside Purpose, Relation, Result, Analysis, and
-  doc bodies when the reference should be clickable in both Obsidian and web.
+  doc bodies when you want a clickable reference in the Web UI.
 - Run `expnote guide agent --json` and read the `run_record_template` key
   for a full example of a finished record with good Purpose, Relation,
   Result, Analysis, and Metadata content, plus a short checklist.
-- Use `expnote markdown table diff --json` before trusting a manually edited
-  MOC table.
-- Run `expnote sync all` after structured updates if Markdown and curated MOCs
-  were not synced by the caller workflow. `sync markdown` updates run notes,
-  analysis documents, and the auto index only.
 - Use `expnote validate --json` before handing off long-lived notes.
+
+## Move a workspace
+
+Pack the SQLite workspace on the source machine and unpack it on the
+destination.
+
+```bash
+expnote workspace pack training.tar.gz --workspace stackcube-demo
+expnote workspace unpack training.tar.gz --workspace stackcube-demo --no-obsidian
+```
+
+Open the workspace with `expnote web --workspace stackcube-demo`. The
+`--no-obsidian` flag clears the projection settings carried by older archives.
 
 ## Validate locally
 

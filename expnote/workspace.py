@@ -65,7 +65,7 @@ def resolve_workspace(
     if require_obsidian and obsidian_root is None:
         raise typer.BadParameter(
             "This workspace has no Obsidian projection configured. "
-            "Run `expnote init --workspace <name> --obsidian-root <vault> ...` first."
+            "Use `expnote web` to view runs."
         )
     return WorkspaceContext(
         root=obsidian_root or workspace_dir,

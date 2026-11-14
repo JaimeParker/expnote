@@ -18,9 +18,7 @@ def test_top_level_help_points_research_agents_to_the_guide():
     out = " ".join(invoke("--help").output.replace("│", " ").split())
     assert "guide research" in out and "expnote next" in out
     assert "Research layer (vault)" in out and "Run registry" in out
-    assert "refused for registered research vaults" in out.replace("\n", " ") or (
-        "refused" in out
-    )
+    assert "Legacy workspace commands" in out
 
 
 def test_every_top_level_command_is_still_listed():

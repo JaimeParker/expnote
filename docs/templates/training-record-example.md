@@ -1,164 +1,45 @@
-# Training Record Example
+# Training record example
 
-This file shows the intended Obsidian projection for one training MOC and one
-generated run note. SQLite remains the source of truth; Markdown is for reading,
-linking, and review.
+This example records a StackCube training run, updates it after evaluation,
+and links it to an analysis document. The metrics are illustrative.
 
-## Example Layout
-
-```text
-Cyber Brain/
-  10 Projects/Robot Learning/Training MOC.md
-  10 Projects/Robot Learning/runs/
-    stackcube-sac-seed1.md
-  10 Projects/Robot Learning/analyses/
-    stackcube-seed-summary.md
-~/.local/share/expnote/workspaces/robot-learning/
-  expnote.sqlite
-  events.jsonl
-  config.toml
-```
-
-## Setup Commands
+## Record a run
 
 ```bash
-expnote init \
-  --workspace robot-learning \
-  --workspace-dir ~/.local/share/expnote/workspaces/robot-learning \
-  --obsidian-root "/home/user/Documents/Cyber Brain" \
-  --notes-dir "10 Projects/Robot Learning/runs"
+expnote init --workspace robot-learning
+expnote moc add --workspace robot-learning \
+  --moc-id robot-learning --title "Robot Learning Training"
+expnote topic add "StackCube SAC" --workspace robot-learning --moc-id robot-learning
 
-expnote moc add \
-  --workspace robot-learning \
-  --moc-id robot-learning \
-  --title "Robot Learning Training"
+expnote run add --workspace robot-learning \
+  --moc-id robot-learning --topic "StackCube SAC" --run-id stack000 \
+  --purpose "Train SAC on StackCube with seed 1" \
+  --relation "Baseline for later ablations" \
+  --status running --meta algo=sac --meta env_id=StackCube-v1 --meta-json seed=1
 
-expnote topic add "StackCube SAC" \
-  --workspace robot-learning \
-  --moc-id robot-learning
-
-expnote run add \
-  --workspace robot-learning \
-  --moc-id robot-learning \
-  --topic "StackCube SAC" \
-  --run-id stackcube-sac-seed1 \
-  --purpose "Train SAC on StackCube with seed=1" \
-  --relation "Baseline run for later ablations" \
-  --result "Training in progress" \
-  --analysis "Watch success rate and critic loss stability." \
-  --status running \
-  --meta algo=sac \
-  --meta env_id=StackCube-v1 \
-  --meta-json seed=1
-
-expnote markdown table add stackcube-sac-seed1 \
-  --workspace robot-learning \
-  --moc-path "10 Projects/Robot Learning/Training MOC.md" \
-  --section "StackCube SAC"
-
-expnote doc add \
-  --workspace robot-learning \
-  --doc-id stackcube-seed-summary \
-  --moc-id robot-learning \
-  --title "StackCube seed summary" \
-  --run-id stackcube-sac-seed1 \
-  --body "Initial cross-run comparison."
+expnote run update stack000 --workspace robot-learning --status finished \
+  --result "82% success over 100 evaluation episodes" \
+  --append-analysis "Success rate plateaued around 300k steps."
 ```
 
-## MOC Example
+The run ID is stable across updates. Purpose records the question or objective,
+Relation connects the run to other work, and Metadata stores filterable
+parameters. Result carries a headline metric with its evaluation scope.
+Use Analysis for observations as the run progresses.
 
-```markdown
-# Training MOC
-
-## StackCube SAC
-
-<!-- expnote:moc-table:start -->
-
-| # | run | purpose | relation | result | status |
-| --- | --- | --- | --- | --- | --- |
-| 1 | [[stackcube-sac-seed1]] | Train SAC on StackCube with seed=1 | Baseline run for later ablations | Training in progress | running |
-
-<!-- expnote:moc-table:end -->
-```
-
-## Run Note Example
-
-```markdown
-<!-- expnote:managed:start -->
-
-# stackcube-sac-seed1
-
-- status: `running`
-- started_at: `2026-07-28T12:00:00+00:00`
-
-## Purpose
-
-Train SAC on StackCube with seed=1
-
-## Relation
-
-Baseline run for later ablations
-
-## Result
-
-Training in progress
-
-## Metadata
-
-- `algo`: sac
-- `env_id`: StackCube-v1
-- `seed`: 1
-
-## Analysis
-
-<!-- expnote:analysis:start -->
-
-Watch success rate and critic loss stability.
-
-<!-- expnote:analysis:end -->
-
-<!-- expnote:managed:end -->
-```
-
-## Analysis Document Example
-
-```markdown
-<!-- expnote:managed:start -->
-
-# StackCube seed summary
-
-- id: `stackcube-seed-summary`
-- moc: Robot Learning Training
-- updated_at: `2026-07-28T12:00:00+00:00`
-
-## Metadata
-
-_No metadata recorded._
-
-## Related Runs
-
-| # | run | role | note | status | result |
-| --- | --- | --- | --- | --- | --- |
-| 1 | [[stackcube-sac-seed1]] |  |  | running | Training in progress |
-
-## Body
-
-<!-- expnote:doc-body:start -->
-
-Initial cross-run comparison.
-
-<!-- expnote:doc-body:end -->
-
-<!-- expnote:managed:end -->
-```
-
-Human run-note edits should stay inside `expnote:analysis` markers and can be
-imported back into SQLite with:
+## Link a cross-run analysis
 
 ```bash
-expnote sync markdown \
-  --workspace robot-learning \
-  --pull-analysis
+expnote doc add --workspace robot-learning --moc-id robot-learning \
+  --doc-id stackcube-seed-summary --title "StackCube seed summary" \
+  --run-id stack000 --body "Baseline observation from [[stack000]]."
+expnote run show stack000 --workspace robot-learning --json
+expnote web --workspace robot-learning --no-open
 ```
 
-Document body edits should be made with `expnote doc update --body-file`.
+Open the localhost address printed by the CLI. The **Robot Learning Training**
+MOC shows the topic and the analysis document. Add more runs to the document
+with `expnote doc link` as their results arrive.
+
+See the [training and benchmarks tutorial](../tutorials/experiments.rst) for
+a complete matrix example.

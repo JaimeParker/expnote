@@ -80,13 +80,9 @@ moc_topic_app = typer.Typer(help="Manage topics inside a SQL MOC.")
 benchmark_app = typer.Typer(help="Manage benchmark tasks x algos matrices.")
 benchmark_task_app = typer.Typer(help="Manage tasks inside a benchmark.")
 benchmark_algo_app = typer.Typer(help="Manage algos inside a benchmark.")
-markdown_app = typer.Typer(
-    help="Manage Markdown projections (refused for registered research vaults)."
-)
-markdown_table_app = typer.Typer(help="Manage Markdown MOC section tables.")
-sync_app = typer.Typer(
-    help="Sync projections (refused for registered research vaults)."
-)
+markdown_app = typer.Typer(help="Manage existing Markdown projections.")
+markdown_table_app = typer.Typer(help="Manage existing Markdown MOC section tables.")
+sync_app = typer.Typer(help="Refresh W&B run status and legacy projections.")
 import_app = typer.Typer(help="Import external metadata.")
 workspace_app = typer.Typer(help="Manage expnote workspaces.")
 
@@ -100,9 +96,11 @@ moc_app.add_typer(moc_topic_app, name="topic")
 app.add_typer(benchmark_app, name="benchmark", rich_help_panel="Run registry")
 benchmark_app.add_typer(benchmark_task_app, name="task")
 benchmark_app.add_typer(benchmark_algo_app, name="algo")
-app.add_typer(markdown_app, name="markdown", rich_help_panel="Run registry")
+app.add_typer(
+    markdown_app, name="markdown", rich_help_panel="Legacy workspace commands"
+)
 markdown_app.add_typer(markdown_table_app, name="table")
-app.add_typer(sync_app, name="sync", rich_help_panel="Run registry")
+app.add_typer(sync_app, name="sync", rich_help_panel="Setup and maintenance")
 app.add_typer(import_app, name="import", rich_help_panel="Setup and maintenance")
 app.add_typer(workspace_app, name="workspace", rich_help_panel="Setup and maintenance")
 app.add_typer(
@@ -171,7 +169,7 @@ WorkspaceDirOption = Annotated[
 ]
 ObsidianRootOption = Annotated[
     Path | None,
-    typer.Option("--obsidian-root", help="Optional Obsidian vault root."),
+    typer.Option("--obsidian-root", help="Vault root for legacy workspaces."),
 ]
 
 
@@ -179,9 +177,7 @@ _AGENT_GUIDE = {
     "topic": "agent",
     "principles": [
         "SQLite is the source of truth",
-        "Markdown is a projection",
-        "Markdown projection into a registered research vault is disabled; "
-        "view runs with expnote web",
+        "Browse runs and benchmarks with expnote web",
         "Use --json for automation",
         "Use --workspace or expnote workspace use <name> on follow-up commands",
         "Edit structured fields through the CLI",
@@ -196,8 +192,6 @@ _AGENT_GUIDE = {
             "import rlgarden <config.json> for rl-garden runs",
             "run add --from <run_id> for sibling runs",
             "run add",
-            "markdown table add",
-            "sync all",
         ],
         "query_run": [
             "run show <run_id> --json",
@@ -206,31 +200,30 @@ _AGENT_GUIDE = {
             "run query --status running --json",
             'run query --where "metadata.seed = 1" --json',
         ],
-        "analysis_import": [
-            "sync markdown",
-            "sync markdown --pull-analysis",
-            "doc update <doc_id> --body-file <path>",
+        "benchmark": [
+            "benchmark add --benchmark-id <id> --title <title>",
+            "benchmark task add <id> --title <task>",
+            "benchmark algo add <id> --title <algorithm>",
+            "benchmark link <id> <run_id> --task <task> --algo <algorithm>",
+            "benchmark matrix <id> --json",
         ],
         "create_doc": [
             "doc add --doc-id <id> --moc-id <moc_id> --title <title>",
             "doc link <doc_id> <run_id>",
-            "write .expnote/doc-assets/<doc_id>/charts.json when charts are needed",
+            "write workspace-dir/doc-assets/<doc_id>/charts.json when needed",
             "add {{ chart:<chart_id> }} placeholders to doc body",
-            "sync markdown",
         ],
         "transfer_workspace": [
             "workspace pack <archive.tar.gz> --workspace <name>",
             "workspace unpack <archive.tar.gz> --workspace <name> "
-            "--workspace-dir <dir>",
-            "sync all",
+            "--workspace-dir <dir> --no-obsidian",
         ],
         "handoff": [
             "validate --json",
-            "markdown table diff --moc-path <path> --section <heading> --json",
         ],
     },
     "commands": {
-        "init": "Create the workspace and configure Markdown projection paths",
+        "init": "Create a SQLite workspace",
         "topic.add": "Create a training or experiment topic",
         "run.add": "Create a SQL-backed run record",
         "run.show": "Read SQL-backed Purpose, Relation, Result, Metadata, Analysis",
@@ -251,37 +244,20 @@ _AGENT_GUIDE = {
         "moc.add": "Create a SQL-backed first-level MOC record",
         "moc.show": "Read a SQL-backed MOC with topics and docs",
         "moc.topic.add": "Create a topic inside a SQL MOC",
-        "markdown.table.add": "Add a run to a Markdown MOC section table",
-        "markdown.table.add_topic": "Add all active topic runs to a Markdown table",
-        "markdown.table.sections": "List registered Markdown table sections",
-        "markdown.table.diff": "Compare a managed Markdown table with SQLite",
+        "benchmark.add": "Create a task-by-algorithm benchmark",
+        "benchmark.link": "Link a finished or failed run to a benchmark cell",
+        "benchmark.matrix": "Display the benchmark matrix",
         "web": "Start the SQL-backed web UI",
         "import.rlgarden": "Import run metadata from an rl-garden resolved config.json",
-        "sync.markdown": "Render SQLite records into Markdown",
-        "sync.all": "Render run notes, analysis documents, auto index, and MOCs",
-        "sync.markdown.pull_analysis": "Import Obsidian Analysis into SQLite",
-        "sync.markdown.pull_docs": "Deprecated; document body imports are disabled",
         "validate": "Check active record counts before handoff",
     },
     "conflict_policy": {
-        "structured_fields": (
-            "Edit Purpose, Relation, Result, Metadata through CLI only"
-        ),
-        "analysis": "Obsidian edits require sync markdown --pull-analysis",
-        "documents": "Document body edits must be written through doc update",
-        "moc_tables": (
-            "Managed Markdown MOC tables should be repaired with markdown table sync"
-        ),
-        "projection_paths": (
-            "auto index defaults to workspace-dir/index.md; Markdown tables use "
-            "markdown table --moc-path"
-        ),
+        "structured_fields": "Use run update or Edit and Save in the Web UI",
+        "analysis": "Use run update --append-analysis to add an observation",
+        "documents": "Use doc update <doc_id> --body-file <path> for document prose",
     },
     "examples": {
-        "init": (
-            "expnote init --workspace <name> --obsidian-root <vault> "
-            "--notes-dir <runs-dir>"
-        ),
+        "init": "expnote init --workspace <name>",
         "create_moc": (
             "expnote moc add --workspace <name> "
             "--moc-id <moc_id> --title <title> --json"
@@ -339,20 +315,7 @@ _AGENT_GUIDE = {
             "expnote doc update <doc_id> --workspace <name> "
             "--append-body '{{ chart:eval_return }}'"
         ),
-        "moc_diff": (
-            "expnote markdown table diff --workspace <name> "
-            "--moc-path <moc.md> --section <heading> --json"
-        ),
-        "moc_sections": (
-            "expnote markdown table sections --workspace <name> "
-            "--moc-path <moc.md> --json"
-        ),
-        "moc_add_topic": (
-            "expnote markdown table add-topic --workspace <name> "
-            "--topic <topic> --moc-path <moc.md> --section <heading> --json"
-        ),
         "web": "expnote web --workspace <name> --no-open",
-        "sync_all": "expnote sync all --workspace <name> --json",
     },
     "common_pitfalls": {
         "run_create": "run create is supported as an alias for run add",
@@ -369,21 +332,15 @@ _AGENT_GUIDE = {
             "run update <id> --status finished, or use run refresh for W&B runs"
         ),
         "result": (
-            "Result is a one-line headline metric only (return, success "
-            "rate, final score); no comparisons or causes; put "
-            "interpretation, diagnosis, and comparisons in run Analysis or "
-            "cross-run docs"
+            "Use one headline metric in Result. Put interpretation and comparisons "
+            "in run Analysis or cross-run docs"
         ),
-        "documents": (
-            "doc body is stored in SQLite; use doc update --body-file "
-            "instead of editing Obsidian projections"
-        ),
+        "documents": "Use doc update --body-file to save document prose",
         "web_edit": (
             "expnote web can edit run Purpose/Relation/Result/Analysis and "
             "doc Title/Body after explicit Edit+Save; saves write SQLite only"
         ),
         "doc_charts": (
-            "charts are Web-only; Obsidian keeps {{ chart:id }} text. "
             "Put data and charts.json under workspace-dir/doc-assets/<doc_id>."
         ),
         "run_charts": (
@@ -395,12 +352,8 @@ _AGENT_GUIDE = {
             "rl-garden, prefer import rlgarden <config.json>"
         ),
         "benchmark": (
-            "when work is naturally tasks x algorithms, use benchmark commands "
-            "instead of flattening the matrix into topic prose"
-        ),
-        "curated_mocs": (
-            "sync markdown does not update curated Markdown tables; use "
-            "sync all or markdown table sync/add/add-topic"
+            "Use benchmark commands for task-by-algorithm comparisons. "
+            "Each cell links to one finished or failed run"
         ),
     },
     "doc_charts": {
@@ -413,7 +366,7 @@ _AGENT_GUIDE = {
             "Create workspace-dir/doc-assets/<doc_id>/",
             "Place CSV or NPZ data files in that directory",
             "Write charts.json as a JSON array",
-            "Open expnote web and view the doc; Obsidian shows placeholder text only",
+            "Open the document in expnote web",
         ],
         "series_chart": {
             "file": "workspace-dir/doc-assets/<doc_id>/charts.json",
@@ -784,15 +737,13 @@ def _render_agent_guide() -> str:
             "",
             "Core rules:",
             "- SQLite is the source of truth",
-            "- Obsidian Markdown is an optional projection",
-            "- Projection into a registered research vault is disabled; "
-            "view runs with expnote web",
+            "- Browse runs and benchmarks with expnote web",
             "- Use --json for automation",
             "- Use expnote workspace use <name> before follow-up commands",
             "",
             "Minimal workflow:",
-            "init -> moc add -> topic add --moc-id -> run add -> "
-            "markdown table add -> sync all",
+            "init -> moc add -> topic add --moc-id -> run add",
+            "expnote web --no-open",
             "For rl-garden runs, prefer expnote import rlgarden <config.json>.",
             "For sibling runs, prefer expnote run add --from <existing_run_id>.",
             "Prefer using the wandb run id as expnote run id when available.",
@@ -814,14 +765,13 @@ def _render_agent_guide() -> str:
             "",
             "Web editing:",
             "expnote web detail pages allow explicit Edit+Save for core run/doc text.",
-            "Web saves write SQLite and events only; "
-            "run sync markdown or sync all later.",
+            "Web saves write to SQLite and the audit log.",
             "",
             "Doc chart workflow:",
             "1. Put data in <workspace-dir>/doc-assets/<doc_id>/, e.g. metrics.csv",
             "2. Write <workspace-dir>/doc-assets/<doc_id>/charts.json",
             "3. Add {{ chart:<chart_id> }} to the doc body with doc update",
-            "4. View the chart in expnote web; Obsidian keeps placeholder text",
+            "4. View the chart in expnote web",
             "Minimal charts.json for CSV/NPZ:",
             '[{"id":"eval_return","title":"Eval Return","type":"series",'
             '"source":"metrics.csv","x":"step",'
@@ -835,34 +785,25 @@ def _render_agent_guide() -> str:
             "If tensorboard_dir/<run_id> exists, that child logdir is used.",
             "TensorBoard hparam/* and single-point scalars are skipped.",
             "",
-            "MOC workflow:",
-            "expnote markdown table sections --moc-path <path> --json",
-            "expnote markdown table add-topic --topic <topic> "
-            "--moc-path <path> --section <heading> --json",
-            "expnote web --no-open",
-            "expnote sync all --json",
+            "Benchmark workflow:",
+            "Create a benchmark and register its tasks and algorithms.",
+            "expnote benchmark link <id> <run_id> --task <task> --algo <algorithm>",
+            "expnote benchmark matrix <id> --json",
+            "",
+            "Workspace transfer:",
             "expnote workspace pack <archive.tar.gz> --workspace <name>",
             "expnote workspace unpack <archive.tar.gz> --workspace <name> "
-            "--workspace-dir <dir> --obsidian-root <vault>",
+            "--workspace-dir <dir> --no-obsidian",
             "",
-            "Obsidian conflict policy:",
-            "- Edit Purpose, Relation, Result, Metadata through CLI only",
-            "- Import Obsidian Analysis with sync markdown --pull-analysis",
-            "- Update document body through expnote doc update --body-file",
-            "- Check managed Markdown tables with expnote markdown table diff --json",
-            "- Auto index defaults to workspace-dir/index.md, outside Obsidian",
+            "Record updates:",
             "- status is manual; update completed runs with "
             "expnote run update <id> --status finished",
-            "- Result is a one-line headline metric only (return, success "
-            "rate, final score); no comparisons or causes; put "
-            "interpretation, diagnosis, and comparisons in Analysis or docs",
-            "- validate --json reports stale running runs and missing topic "
-            "schema metadata",
-            "- Use benchmark commands when a topic is really tasks x algorithms",
+            "- Put one headline metric in Result and interpretation in Analysis.",
+            "- Update the document body with expnote doc update --body-file.",
             "",
             "Handoff checks:",
+            "expnote validate --json reports stale runs and missing topic metadata",
             "expnote validate --json",
-            "expnote markdown table diff --moc-path <path> --section <heading> --json",
             "",
             "Good run record template (run_id a7zf90k7):",
             "- Purpose: Train SAC on StackCube seed=1",

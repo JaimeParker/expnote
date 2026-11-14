@@ -10,3 +10,6 @@ build/
 # Local handoff/reference material.
 tmp.md
 reference/
+
+# Sphinx build output.
+docs/_build/

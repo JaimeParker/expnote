@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "expnote"
 version = "0.1.0"
-description = "A local-first experiment note CLI with SQLite and Markdown projections."
+description = "A local-first CLI and Web UI for experiment records, benchmarks, and research."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
