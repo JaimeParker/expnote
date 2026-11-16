@@ -28,8 +28,8 @@ from expnote.research.registry import (
 )
 
 project_app = typer.Typer(
-    help="Research projects: init, register, list, show, use, rebind (registry "
-    "bindings and profile).",
+    help="Research projects: init, register, list, show, use, rebind, "
+    "migrate-layout, restore-layout, results-in-vault.",
     epilog="First step for a vault project: `expnote project init --project-dir "
     "PATH --images-dir PATH` (dry-run; add --apply), then `expnote check`.",
 )
@@ -45,9 +45,17 @@ def _project_meta(project_id: str, path_note: str | None) -> dict:
 
 
 def _resolved_paths(resolved: ResolvedProject) -> dict:
+    from expnote.research.results import result_dir
+
+    profile = read_profile_note(resolved.profile_note).profile
     return {
         "absVaultRoot": str(resolved.vault_root),
         "absProjectDir": str(resolved.project_dir),
+        "layout": resolved.entry.layout,
+        "absResearchDir": str(resolved.research_dir) if resolved.research_dir else None,
+        "absMaterialDir": str(resolved.material_dir),
+        "resultsInVault": resolved.entry.results_in_vault,
+        "absResultsDir": str(result_dir(resolved, profile)),
         "absImagesDir": str(resolved.images_dir),
         "absProfileNote": str(resolved.profile_note),
     }
@@ -87,6 +95,7 @@ def project_init_command(
         list[str] | None,
         typer.Option("--workspace", help="Linked workspace (repeatable)."),
     ] = None,
+    layout: Annotated[str, typer.Option("--layout")] = "vault",
     apply: Annotated[
         bool, typer.Option("--apply", help="Create the profile note and register.")
     ] = False,
@@ -97,6 +106,7 @@ def project_init_command(
     def action() -> CommandResult:
         return project_init(
             project_dir=project_dir,
+            layout=layout,
             project_id=project_id,
             name=name,
             vault_root=vault_root,
@@ -108,6 +118,52 @@ def project_init_command(
         )
 
     run_command("project init", as_json, action, render_init)
+
+
+@project_app.command("migrate-layout")
+def migrate_layout(
+    project_id: str,
+    manifest: Annotated[Path | None, typer.Option("--manifest")] = None,
+    expect: Annotated[str | None, typer.Option("--expect")] = None,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Move an existing project to the split Research layout."""
+    from expnote.research.layout import migration
+
+    run_command(
+        "project migrate-layout",
+        as_json,
+        lambda: migration(project_id, manifest, apply, expect),
+    )
+
+
+@project_app.command("restore-layout")
+def restore_project_layout(
+    project_id: str,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Restore the verified backup from a layout migration."""
+    from expnote.research.layout import restore_layout
+
+    run_command(
+        "project restore-layout", as_json, lambda: restore_layout(project_id, apply)
+    )
+
+
+@project_app.command("results-in-vault")
+def results_in_vault(
+    project_id: str,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Move the editable results to the Obsidian project."""
+    from expnote.research.results import migrate_results
+
+    run_command(
+        "project results-in-vault", as_json, lambda: migrate_results(project_id, apply)
+    )
 
 
 @project_app.command("register")
@@ -212,7 +268,7 @@ def project_show(
                 "problems": note.problems,
             },
             "profileSha256": note.sha256,
-            "index": read_index_stats(entry.vault_id),
+            "index": read_index_stats(resolved.index_id),
         }
         return CommandResult(data, meta=_project_meta(entry.id, resolved.path_note))
 
@@ -254,8 +310,16 @@ def project_rebind(
             entry,
             vault_root=new_root,
             project_dir=rebase(entry.project_dir, entry.vault_root, new_root),
-            images_dir=rebase(entry.images_dir, entry.vault_root, new_root),
-            profile_note=rebase(entry.profile_note, entry.vault_root, new_root),
+            images_dir=(
+                entry.images_dir
+                if entry.layout == "split"
+                else rebase(entry.images_dir, entry.vault_root, new_root)
+            ),
+            profile_note=(
+                entry.profile_note
+                if entry.layout == "split"
+                else rebase(entry.profile_note, entry.vault_root, new_root)
+            ),
         )
         resolved = revalidate(rebound)
         profile_or_raise(read_profile_note(resolved.profile_note), entry.id)

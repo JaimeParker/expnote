@@ -128,8 +128,12 @@ class _Derive:
         return items
 
     def evidence(self) -> list[dict]:
+        from expnote.research.lifecycle import evidence_review_required
+
         items = []
         for note in notes_of(self.view, "evidence"):
+            if evidence_review_required(self.view, note) is False:
+                continue
             if note.get("status") not in EV_LABELLED_STATUSES:
                 items.append(
                     _item(
@@ -159,8 +163,10 @@ class _Derive:
 
     def plan_waiting_on_decisions(self, page: Note) -> list[dict]:
         """Draft plans: a proposed decision waits, or a confirmed one is unapplied."""
+        from expnote.research.lifecycle import strict
+
         plan_id = str(page.get("id", ""))
-        if page.get("status") != "draft":
+        if page.get("status") != "draft" or strict(self.view, page):
             return []
         items = []
         concerning = [d for d, _ in self.snap.decisions_for_plan(plan_id)]
@@ -387,9 +393,37 @@ class _Derive:
 
     def approved_plan_next_step(self, page: Note) -> list[dict]:
         """An approved plan: write the exec-plan, decide its rules, or start runs."""
+        from expnote.research.lifecycle import flow_of
+
         if page.get("status") != "approved" or page.rel in self.unmarked:
             return []  # an unmarked reopen comes first
         plan_id = str(page.get("id", ""))
+        if flow := flow_of(self.view, page):
+            frozen = bool(flow["checklist"])
+            return [
+                _item(
+                    "plan-ready-to-run" if frozen else "plan-needs-checklist",
+                    "agent",
+                    "action",
+                    plan_id,
+                    f"{plan_id} has a frozen checklist"
+                    if frozen
+                    else f"Freeze the execution checklist for {plan_id}",
+                    "advance the PLAN, then start the staged runs"
+                    if frozen
+                    else "prepare and freeze the approved stages",
+                    plan=plan_id,
+                    command=(
+                        f"expnote plan advance {plan_id} --to running --apply"
+                        if frozen
+                        else (
+                            f"expnote plan checklist {plan_id} --from-file <FILE> "
+                            "--apply"
+                        )
+                    )
+                    + self.flag,
+                )
+            ]
         execs = [
             m
             for m in self.snap.current_plan_members(plan_id)

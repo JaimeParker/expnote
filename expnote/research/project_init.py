@@ -205,6 +205,7 @@ def project_init(
     workspaces: list[str],
     apply: bool,
     confirm_command: str | None = None,
+    layout: str = "vault",
 ) -> CommandResult:
     project_dir = _absolute(project_dir)
     registry = load_registry()
@@ -266,6 +267,12 @@ def project_init(
         )
     display_name = name or project_dir.name
 
+    if layout == "split":
+        from expnote.research.layout import init_split
+
+        return init_split(project_dir, root, entry_id, display_name, workspaces, apply)
+    if layout != "vault":
+        raise ResearchError("USAGE_LAYOUT", "choose vault or split", exit_code=2)
     images = _absolute(images_dir) if images_dir is not None else None
     if images is None and note is not None:
         images = images_from_profile(note, root)

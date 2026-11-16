@@ -58,7 +58,7 @@ class ProjectView:
 
     def abs_path(self, note_or_rel: Note | str) -> Path:
         rel = note_or_rel.rel if isinstance(note_or_rel, Note) else note_or_rel
-        return self.context.resolved.project_dir / rel
+        return self.context.resolved.physical_path(self.vault_rel(rel))
 
     def meta(self, **extra) -> dict:
         return {
@@ -87,6 +87,20 @@ class ProjectView:
         ).fetchone()
         return row[0] if row else None
 
+    def write_token(self, rel: str) -> str | None:
+        raw = self.file_sha256(rel)
+        if "workflow" not in self.cache or raw is None:
+            return raw
+        import json
+
+        from expnote.research.workflow import digest, identity
+
+        note = next((item for item in self.snapshot.notes if item.rel == rel), None)
+        if note is None:
+            return raw
+        state = self.cache["workflow"].get(identity(self.project_id, note), {})
+        return digest((raw + json.dumps(state, sort_keys=True)).encode())
+
 
 def open_view(
     project_id: str | None = None,
@@ -99,12 +113,20 @@ def open_view(
     """Refresh the index (unless `refresh` is False) and load the snapshot from it."""
     context = context or open_project(project_id)
     index = ensure_index(context, refresh=refresh, full=full)
+    states = submissions = None
+    proposals = {}
     try:
-        snapshot = snapshot_from_index(context, index.conn)
+        if context.entry.layout == "split":
+            from expnote.research.workflow import read_state
+
+            states, submissions = read_state(context.entry.id, proposals=proposals)
+        snapshot = snapshot_from_index(context, index.conn, states)
     except BaseException:
         index.close()
         raise
     view = ProjectView(context, snapshot, index)
+    if states is not None:
+        view.cache.update(workflow=states, submissions=submissions, proposals=proposals)
     if clock is not None:
         view.clock = clock
     return view

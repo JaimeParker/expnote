@@ -140,6 +140,11 @@ if (openPlan) {
   closeButton.dispatch("click");
   await afterFetch();
   const dialog = main.byClass("confirm-panel")[0];
+  // Close can launch a second preview after the first refusal. Wait for its diff.
+  const closeDeadline = Date.now() + 5000;
+  while (!main.byClass("diff").length && Date.now() < closeDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   const forcedButton = dialog && buttonLike(dialog, "Close without final RES");
   check("unmet gates switch the button to Close without final RES", forcedButton && dialog.textContent.includes("LIFE.TRANSITION"), dialog && dialog.textContent);
   check("the forced button waits for a reason", forcedButton && forcedButton.hasAttribute("disabled"));

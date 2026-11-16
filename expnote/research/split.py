@@ -345,10 +345,10 @@ def plan_ev_split(
             expected_sha256=base_sha,
         ),
     ]
-    root = view.context.resolved.vault_root
+    resolved = view.context.resolved
     data = {
         "ev": result.page_stem,
         "appendix": result.appendix_stem,
-        "appendixPath": appendix_path.relative_to(root).as_posix(),
+        "appendixPath": resolved.logical_path(appendix_path),
     }
     return WritePlan(edits, data)

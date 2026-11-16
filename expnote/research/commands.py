@@ -57,7 +57,8 @@ CursorOption = Annotated[
 ]
 
 plan_app = typer.Typer(
-    help="Plans: list, show, bundle, advance, close, reopen, adopt, next-id.",
+    help="Plans: list, show, bundle, submit, checklist, condition, advance, close, "
+    "withdraw, reopen, adopt, next-id.",
     epilog="Examples: `expnote plan bundle <PLAN_ID> --json` (all context of a plan); "
     "`expnote plan advance <PLAN_ID> --to running --apply`; "
     "`expnote plan reopen <PLAN_ID> --decision <DECISION_ID> --apply`. "
@@ -76,11 +77,11 @@ exec_app = typer.Typer(
     "--apply`; `expnote exec advance <EXEC_ID> --to running --apply`.",
 )
 ev_app = typer.Typer(
-    help="Evidence pages: list, split, label (label show, set, commit).",
+    help="Evidence pages: list, split, register, label (label show, set, commit).",
     epilog="Labels are the user's: `expnote ev label show <EV> --json`.",
 )
 res_app = typer.Typer(
-    help="Results: list, submit, review (draft > first-read > confirmed).",
+    help="Results: list, publish, submit, review (draft > first-read > confirmed).",
     epilog="Agent: `expnote res submit <RES_ID> --deviation-impact "
     "<none|weak|moderate|affects> --apply` hands the draft to the user (a running "
     "plan moves to read-out when its gates pass). The user reviews it in the GUI "
@@ -96,9 +97,9 @@ todo_app = typer.Typer(
     "restore.",
     epilog="Manual TODOs live in a per-project SQLite store (never hand-edit the "
     "export or the old TODO file). Examples: `expnote todo list --owner agent "
-    "--json`; `expnote todo add \"<TEXT>\" --owner agent --apply`; "
+    '--json`; `expnote todo add "<TEXT>" --owner agent --apply`; '
     "`expnote todo done T-0001 --apply`; `expnote todo drop T-0001 --reason "
-    "\"<WHY>\" --apply`; hand a TODO to the user: `expnote todo edit T-0001 "
+    '"<WHY>" --apply`; hand a TODO to the user: `expnote todo edit T-0001 '
     "--owner user --apply`. A project that still has its TODOs in the old file "
     "reads them but refuses writes until `expnote todo migrate --apply`. Writes "
     "are dry runs (exit 4) unless --apply; --expected-version N refuses a "

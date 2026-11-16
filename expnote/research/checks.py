@@ -346,7 +346,8 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
             lenient=lenient,
             level=gate_level,
         )
-    if rank >= order.index("running") and not legacy:
+    strict = plan_id in snap.strict_plans
+    if rank >= order.index("running") and not legacy and not strict:
         frozen = [
             m
             for m in members
@@ -370,7 +371,7 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                 "status >= read-out needs exactly one final result (found "
                 f"{len(active)})",
             )
-        if not legacy:
+        if not legacy and not strict:
             for member in members:
                 if (
                     snap.entity_type(member) == "evidence"
@@ -402,7 +403,9 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
                     where,
                     "`result` does not point at a result note",
                 )
-            elif target.get("status") != "confirmed":
+            elif target.get("status") != "confirmed" and (
+                strict or target.get("id") not in snap.previously_confirmed_results
+            ):
                 level = "WARN" if (legacy and lenient) or forced else "FAIL"
                 sink.add(
                     level,
@@ -864,9 +867,15 @@ _NUMBER_RES = (
 )
 
 
+_RESEARCH_LINK_RE = re.compile(
+    r"\[[^\]\n]+\]\(http://[^)]+/research/#/p/[^)]+/record/[^)]+\)"
+)
+
+
 def raw_number_hits(text: str, profile: Profile) -> list[str]:
     cleaned = strip_code(text, comments=True)
     cleaned = WIKILINK_RE.sub(" ", cleaned)
+    cleaned = _RESEARCH_LINK_RE.sub(" ", cleaned)
     cleaned = _URL_RE.sub(" ", cleaned)
     for pattern in profile.number_allow_regexes:
         cleaned = re.sub(pattern, " ", cleaned)
@@ -923,6 +932,26 @@ def _check_parse(notes: list[Note], sink: FindingSink, stats: dict) -> None:
     stats["parse"] = {"notes": len(notes), "failed": bad}
 
 
+def _identical_shared_image(snap: VaultSnapshot, paths: list[str]) -> bool:
+    """Allow a Research original and its byte-identical copy in the vault."""
+    if snap.managed_images_dir is None or len(paths) != 2:
+        return False
+    try:
+        managed_root = snap.managed_images_dir.resolve()
+        vault_root = snap.vault_root.resolve()
+        files = [snap.attachment_paths[name].resolve(strict=True) for name in paths]
+        managed = [path for path in files if path.is_relative_to(managed_root)]
+        vault = [path for path in files if path.is_relative_to(vault_root)]
+        if len(managed) != 1 or len(vault) != 1 or managed[0] == vault[0]:
+            return False
+        return (
+            managed[0].stat().st_size == vault[0].stat().st_size
+            and managed[0].read_bytes() == vault[0].read_bytes()
+        )
+    except (KeyError, OSError):
+        return False
+
+
 def _check_uniqueness(snap: VaultSnapshot, sink: FindingSink, stats: dict) -> None:
     groups = 0
     for key, paths in sorted(snap.md_index.items()):
@@ -936,7 +965,7 @@ def _check_uniqueness(snap: VaultSnapshot, sink: FindingSink, stats: dict) -> No
                 + "; ".join(sorted(paths)),
             )
     for key, paths in sorted(snap.attach_index.items()):
-        if len(paths) > 1:
+        if len(paths) > 1 and not _identical_shared_image(snap, paths):
             groups += 1
             sink.add(
                 "FAIL",

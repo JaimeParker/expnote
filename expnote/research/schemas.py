@@ -42,7 +42,7 @@ DEFAULT_ATTACHMENT_EXTS = frozenset(
 )
 DEFAULT_COMMON_KEYS = frozenset(
     "project date created updated revised aliases tags related author cssclasses "
-    "decision description".split()
+    "decision description record_id".split()
 )
 DEFAULT_SKIP_DIRS = frozenset(
     {".git", ".obsidian", ".trash", "__pycache__", ".pytest_cache"}

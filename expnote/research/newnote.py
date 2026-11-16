@@ -205,7 +205,7 @@ def _template_text(view: ProjectView, kind: str) -> str:
     if not name:
         return BUILTIN_TEMPLATES[kind]
     directory = _section(profile, "templates").get("dir") or "templates"
-    path = view.context.resolved.project_dir / directory / name
+    path = view.context.resolved.material_dir / directory / name
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -288,12 +288,15 @@ def _unique_stem(view: ProjectView, stem: str) -> None:
 
 def _note_path(view: ProjectView, kind: str, stem: str) -> Path:
     folder = folders_for(view.profile)[kind]
-    return view.context.resolved.project_dir / folder / f"{stem}.md"
+    resolved = view.context.resolved
+    vault_owned = kind == "plan" or (kind == "res" and resolved.entry.results_in_vault)
+    root = resolved.project_dir if vault_owned else resolved.material_dir
+    return root / folder / f"{stem}.md"
 
 
 def _created(view: ProjectView, paths: list[Path]) -> list[dict]:
-    root = view.context.resolved.vault_root
-    return [{"path": p.relative_to(root).as_posix(), "absPath": str(p)} for p in paths]
+    resolved = view.context.resolved
+    return [{"path": resolved.logical_path(p), "absPath": str(p)} for p in paths]
 
 
 def _warnings(left: list[str], kind: str) -> list[dict]:
@@ -342,6 +345,8 @@ def plan_new_exec(
     title: str,
     exec_id: str | None = None,
 ) -> WritePlan:
+    from expnote.research.lifecycle import create_exec
+
     page = _plan_page(view, plan_id)
     exec_id = exec_id or f"{plan_id}-{stage}"
     if any(n.get("id") == exec_id for n in entities.notes_of(view, "exec-plan")):
@@ -373,7 +378,9 @@ def plan_new_exec(
         "created": _created(view, [path]),
         "leftoverPlaceholders": left,
     }
-    return WritePlan([edit], data, warnings=_warnings(left, "exec"))
+    return create_exec(
+        view, page, WritePlan([edit], data, warnings=_warnings(left, "exec"))
+    )
 
 
 def plan_new_ev(

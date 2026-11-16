@@ -18,7 +18,7 @@ from expnote.research.index import (
     open_reader,
     project_rel,
     trigram_supported,
-    walk_vault,
+    walk_project,
 )
 from expnote.research.profile import read_profile_note
 from expnote.research.registry import (
@@ -94,7 +94,7 @@ def doctor_data(checks: list[Check], full: bool = False) -> dict:
 def pending_changes(context: ProjectContext) -> int | None:
     """Files that differ from the index by (size, mtime), without writing anything."""
     try:
-        conn = open_reader(context.entry.vault_id)
+        conn = open_reader(context.resolved.index_id)
     except ResearchError:
         return None
     try:
@@ -106,7 +106,7 @@ def pending_changes(context: ProjectContext) -> int | None:
         }
     finally:
         conn.close()
-    entries, _ = walk_vault(context.resolved.vault_root, context.profile)
+    entries, _ = walk_project(context)
     walked = {e.rel: (e.size, e.mtime_ns) for e in entries}
     changed = sum(1 for rel, stat in walked.items() if known.get(rel) != stat)
     return changed + sum(1 for rel in known if rel not in walked)
@@ -282,7 +282,7 @@ def _decision_store_checks(context: ProjectContext) -> list[Check]:
     from expnote.research.decision_export import export_state
     from expnote.research.writeback import WriteContext
 
-    target = context.resolved.project_dir / context.profile.decision_export
+    target = context.resolved.material_dir / context.profile.decision_export
     try:
         state = export_state(
             context.entry.id, WriteContext.for_project(context), target
@@ -321,7 +321,7 @@ def _todo_store_checks(context: ProjectContext) -> list[Check]:
     from expnote.research.todo_writes import NOT_MIGRATED_REMEDIATION
     from expnote.research.writeback import WriteContext
 
-    target = context.resolved.project_dir / context.profile.todo_export
+    target = context.resolved.material_dir / context.profile.todo_export
     try:
         state = export_state(
             context.entry.id, WriteContext.for_project(context), target
@@ -370,7 +370,7 @@ def _todo_store_checks(context: ProjectContext) -> list[Check]:
 def _hygiene_checks(context: ProjectContext, now: datetime) -> list[Check]:
     profile = context.profile
     prefix = project_rel(context)
-    conn = open_reader(context.entry.vault_id)
+    conn = open_reader(context.resolved.index_id)
     try:
         files = conn.execute(
             "SELECT rel, kind, mtime_ns, is_conflict FROM files ORDER BY nrel"

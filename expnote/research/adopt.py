@@ -282,8 +282,10 @@ def _linking_notes(view: ProjectView, note: Note) -> list[tuple[str, str, str]]:
 
 def _check_new_id(view: ProjectView, note: Note, plan_id: str) -> None:
     regex = view.profile.plan_id_regex
-    if not plan_id or plan_id != plan_id.strip() or (
-        regex and re.fullmatch(regex, plan_id) is None
+    if (
+        not plan_id
+        or plan_id != plan_id.strip()
+        or (regex and re.fullmatch(regex, plan_id) is None)
     ):
         raise ResearchError(
             "USAGE_BAD_ID",
@@ -449,7 +451,7 @@ def plan_plan_adopt(
                 link_files += 1
                 edits.append(
                     FileEdit(
-                        view.context.resolved.vault_root / rel,
+                        view.context.resolved.physical_path(rel),
                         "retarget-links",
                         f"links:{note.stem}",
                         transform=lambda t, r=renames: retarget_links(t, r)[0],

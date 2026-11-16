@@ -151,7 +151,7 @@ def search_notes(
     for column, value in (
         ("n.type", filters.note_type),
         ("n.plan_id", filters.plan),
-        ("n.status", filters.status),
+        ("n.status", None if "workflow" in view.cache else filters.status),
     ):
         if value:
             where.append(f"{column} = ?")
@@ -176,6 +176,17 @@ def search_notes(
         raise ResearchError(
             "USAGE_BAD_QUERY", f"search failed: {error}", exit_code=2
         ) from None
+    effective = {}
+    if "workflow" in view.cache:
+        effective = {
+            view.vault_rel(note): note.get("status") for note in view.snapshot.notes
+        }
+        if filters.status:
+            rows = [
+                row
+                for row in rows
+                if effective.get(row["rel"], row["status"]) == filters.status
+            ]
     decision_hits = _decision_hits(view, terms, filters)
     page, next_cursor = paginate([*rows, *decision_hits], limit, cursor)
     hits = []
@@ -198,7 +209,7 @@ def search_notes(
                 "path": row["rel"],
                 "type": row["type"],
                 "entityId": row["entity_id"],
-                "status": row["status"],
+                "status": effective.get(row["rel"], row["status"]),
                 "line": line,
                 "snippet": f"{row['rel']}:{line}: {truncate(text, SNIPPET_LIMIT)}",
             }

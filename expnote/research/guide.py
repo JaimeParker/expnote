@@ -109,6 +109,37 @@ RESEARCH_GUIDE = {
             ),
             _step("expnote web", "the localhost GUI"),
         ],
+        "versioned split plan": [
+            _step(
+                "expnote plan submit <PLAN> --decision <DECISION> "
+                "--workflow <JSON> --apply",
+                "submit questions, files, review criteria and any impact with the PLAN",
+            ),
+            _step(
+                "expnote plan checklist <PLAN> --from-file <JSON> --apply",
+                "after the user's approval, freeze and map the execution stages",
+            ),
+            _step(
+                "expnote plan advance <PLAN> --to running --apply",
+                "check the frozen stages",
+            ),
+            _step(
+                "expnote exec advance <EXEC> --to running --run <RUN_ID> --apply",
+                "bind the linked run to the approved execution and PLAN",
+            ),
+            _step(
+                "expnote ev register <EV> --exec <EXEC> --from-file <JSON> --apply",
+                "record EV, appendices and delivered files under the frozen execution",
+            ),
+            _step(
+                "expnote exec advance <EXEC> --to done --apply",
+                "verify the runs and evidence",
+            ),
+            _step(
+                "expnote res submit <RES> --deviation-impact <IMPACT> --apply",
+                "after execution and EV reviews, submit RES and advance to read-out",
+            ),
+        ],
         "start a plan": [
             _step(
                 'expnote new plan --id <PLAN_ID> --title "<TITLE>" --apply',

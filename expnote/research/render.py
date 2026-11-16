@@ -245,7 +245,19 @@ class WikilinkPattern(InlineProcessor):
         name = link_target(raw)
         heading = raw.split("#", 1)[1] if "#" in raw else ""
         label = alias or (f"{name} › {heading}" if heading else name)
-        return _link(label, self.resolver.note(name)), m.start(0), m.end(0)
+        target = self.resolver.note(name)
+        view = self.resolver.view
+        if target.href is None and view.context.resolved.research_dir and "." in name:
+            found = find_attachment(view, name)
+            if found:
+                path = view.context.resolved.physical_path(found[0])
+                if path.is_relative_to(view.context.resolved.research_dir):
+                    base = api_base(view.project_id)
+                    target = LinkTarget(
+                        f"{base}/attachment/{quote(name, safe='')}",
+                        "file",
+                    )
+        return _link(label, target), m.start(0), m.end(0)
 
 
 class EmbedPattern(InlineProcessor):
@@ -448,9 +460,7 @@ def strip_frontmatter(text: str) -> str:
     return body if fm_text is not None else text
 
 
-def _engine(
-    view: ProjectView, run_app: bool, cells: bool = False
-) -> markdown.Markdown:
+def _engine(view: ProjectView, run_app: bool, cells: bool = False) -> markdown.Markdown:
     return markdown.Markdown(
         extensions=[
             "fenced_code",

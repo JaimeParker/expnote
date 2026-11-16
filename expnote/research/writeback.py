@@ -59,6 +59,7 @@ class WriteContext:
     quiet_window_seconds: int = 10
     actor: str = "cli"
     reindex: Callable[[], object] | None = None
+    resolved: object | None = None
 
     @classmethod
     def for_project(cls, context, actor: str | None = None) -> WriteContext:
@@ -71,6 +72,7 @@ class WriteContext:
             quiet_window_seconds=context.entry.quiet_window_seconds,
             actor=actor or os.environ.get("EXPNOTE_ACTOR") or "cli",
             reindex=lambda: refresh_index(context),
+            resolved=context.resolved,
         )
 
     @property
@@ -239,6 +241,12 @@ def vault_rel(ctx: WriteContext, path: Path) -> str:
     """Vault-relative POSIX path; refuses anything that resolves outside the vault."""
     real = os.path.realpath(path)
     root = ctx.real_root
+    if ctx.resolved and ctx.resolved.research_dir:
+        managed = ctx.resolved.research_dir
+        if Path(real).is_relative_to(managed.resolve()) and path.is_relative_to(
+            managed
+        ):
+            return ctx.resolved.logical_path(path)
     if real != root and not real.startswith(root + os.sep):
         raise ResearchError(
             "USAGE_PATH_OUTSIDE_VAULT",

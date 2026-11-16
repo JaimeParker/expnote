@@ -1,3 +1,4 @@
+import { wireImageViewer } from "/research/image-viewer.js";
 // expnote research GUI: shell, hash router and API client. Pages live in pages.js.
 import { baseOf, nav, parseHash } from "/research/nav.js";
 import { PAGES } from "/research/pages.js";
@@ -145,6 +146,12 @@ async function show({ silent = false } = {}) {
     document.title = `${view.title} · expnote research`;
     if (silent) window.scrollTo(0, scrolledTo);
     else if (!view.keepScroll) window.scrollTo(0, 0);
+    const anchor = parsed.params.get("anchor");
+    if (anchor) {
+      const target = document.getElementById(anchor) ||
+        [...main.querySelectorAll("h1,h2,h3,h4,h5,h6")].find((node) => node.textContent.trim() === anchor);
+      target?.scrollIntoView();
+    }
   } catch (error) {
     if (token !== navigation) return;
     clear(main).append(errorBox(error, () => show()));
@@ -290,6 +297,7 @@ function wireKeys() {
 
 async function start() {
   wireKeys();
+  wireImageViewer(main);
   window.addEventListener("hashchange", () => show());
   // A tab left open goes stale; refresh it on return unless the user has work in progress.
   document.addEventListener("visibilitychange", createRevisitRefresh({ doc: document, scope: main, refresh: refreshPage }));

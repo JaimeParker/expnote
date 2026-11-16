@@ -325,6 +325,37 @@ def build_router(service: ResearchService) -> APIRouter:
                 "html": render_markdown(page.body, view, run_app=service.run_app),
                 "display": display_strings(view),
             }
+            if view.context.entry.layout == "split":
+                from expnote.research.workflow import revision_text
+
+                current = view.cache["workflow"].get(plan_id, {})
+                data["approvedRevision"] = current.get("revision")
+                data["revisionOrigin"] = current.get("origin")
+                current_note = view.conn.execute(
+                    "SELECT n.body FROM notes n JOIN files f ON n.file_id=f.id "
+                    "WHERE f.rel=?",
+                    (view.vault_rel(page),),
+                ).fetchone()
+                if current_note:
+                    data["html"] = render_markdown(
+                        current_note["body"], view, run_app=service.run_app
+                    )
+                    data["sourceChanged"] = (
+                        current_note["body"].strip() != page.body.strip()
+                    )
+                data["submissions"] = [
+                    {
+                        "revision": revision,
+                        "decision": entities.decision_id(view, decision),
+                        "html": render_markdown(
+                            revision_text(project_id, revision), view
+                        ),
+                    }
+                    for number, (owner, revision) in view.cache["submissions"].items()
+                    if owner == plan_id
+                    and (decision := view.snapshot.decisions.get(number))
+                    and decision.status == "proposed"
+                ]
             return _ok("plan", data, view)
 
     @router.get(f"{api}/projects/{{project_id}}/plans/{{plan_id}}/bundle")
@@ -394,6 +425,39 @@ def build_router(service: ResearchService) -> APIRouter:
         with service.view(project_id, refresh) as view:
             data = entities.decision_detail(view, ident, include_body=True)
             item = data["decision"]
+            submitted = view.cache.get("submissions", {}).get(item["number"])
+            if submitted:
+                from difflib import unified_diff
+
+                from expnote.research.model import parse_note
+                from expnote.research.workflow import revision_text
+
+                plan_id, sha = submitted
+                data["submission"] = {
+                    "plan": plan_id,
+                    "revision": sha,
+                    "html": render_markdown(revision_text(project_id, sha), view),
+                }
+                if proposed := view.cache.get("proposals", {}).get(item["number"]):
+                    page = entities.find_plan(view, plan_id)
+                    base = proposed.get("baseRevision")
+                    data["submission"]["workflow"] = proposed
+                    if base:
+                        before = parse_note(
+                            page.path, page.rel, revision_text(project_id, base)
+                        )
+                        after = parse_note(
+                            page.path, page.rel, revision_text(project_id, sha)
+                        )
+                        data["submission"]["diff"] = "\n".join(
+                            unified_diff(
+                                before.body.splitlines(),
+                                after.body.splitlines(),
+                                fromfile="approved PLAN",
+                                tofile="submitted PLAN",
+                                lineterm="",
+                            )
+                        )
             resolver = LinkResolver(view, service.run_app)
             body = item.get("body")
             item["html"] = (
@@ -470,6 +534,12 @@ def build_router(service: ResearchService) -> APIRouter:
             data["ev"]["html"] = render_markdown(
                 note.body, view, run_app=service.run_app
             )
+            if view.context.resolved.research_dir:
+                appendix = entities._linked_note(view, note, "appendix")
+                if appendix:
+                    data["ev"]["appendixHtml"] = render_markdown(
+                        appendix.body, view, run_app=service.run_app
+                    )
             _add_cell_html(data["ev"], view, service.run_app)
             data["display"] = display_strings(view)
             data["write"] = {"remark": writes.remark_supported(view)}
@@ -578,6 +648,123 @@ def build_router(service: ResearchService) -> APIRouter:
 
     # ---- notes and images ---------------------------------------------------------
 
+    @router.get(f"{api}/projects/{{project_id}}/revision/{{sha}}")
+    @_guarded("revision")
+    def revision(project_id: str, sha: str) -> JSONResponse:
+        from expnote.research.model import parse_note
+        from expnote.research.workflow import revision_text
+
+        with service.view(project_id) as view:
+            known = {rev for _, rev in view.cache.get("submissions", {}).values()}
+            files = {}
+            for state in view.cache.get("workflow", {}).values():
+                reviewed = state.get("reviewedEvidenceRevision")
+                known.update(
+                    (state.get("revision"), state.get("planRevision"), reviewed)
+                )
+                known.update(state.get("history", []))
+                evidence = state.get("archivedEvidence", {})
+                files.update(
+                    evidence.get(state.get("revision") if sha == reviewed else sha, {})
+                )
+            if sha not in known:
+                raise _not_found(f"no published revision {sha!r}")
+            text = revision_text(project_id, sha)
+            path = view.context.resolved.research_dir / "revisions" / (sha + ".md")
+            parsed = parse_note(path, path.name, text)
+            return _ok(
+                "revision",
+                {
+                    "revision": sha,
+                    "title": parsed.get("title") or "Research revision",
+                    "html": render_markdown(parsed.body, view, run_app=service.run_app),
+                    "files": files,
+                },
+                view,
+            )
+
+    @router.get(f"{api}/projects/{{project_id}}/revision-file/{{sha}}")
+    @_guarded("revision-file")
+    def revision_file(project_id: str, sha: str):
+        with service.view(project_id) as view:
+            root = view.context.resolved.research_dir
+            if root is None or not re.fullmatch(r"[a-f0-9]{64}", sha):
+                raise _not_found("invalid Research revision file")
+            for state in view.cache.get("workflow", {}).values():
+                for files in state.get("archivedEvidence", {}).values():
+                    for name, digest in files.items():
+                        if digest != sha:
+                            continue
+                        path = root / "revisions" / "assets" / sha
+                        path = (
+                            path
+                            if path.is_file()
+                            else root / "revisions" / (sha + ".md")
+                        )
+                        if (
+                            path.resolve().is_relative_to(root.resolve())
+                            and path.is_file()
+                        ):
+                            return FileResponse(path, filename=Path(name).name)
+            raise _not_found("no published revision file")
+
+    @router.get(f"{api}/projects/{{project_id}}/record/{{ident}}")
+    @_guarded("record")
+    def record(project_id: str, ident: str) -> JSONResponse:
+        from expnote.research.workflow import identity
+
+        with service.view(project_id, True) as view:
+            candidates = [
+                note
+                for note in view.snapshot.notes
+                if identity(project_id, note) == ident
+            ]
+            if len(candidates) != 1:
+                raise _not_found(f"record {ident!r} is missing or ambiguous")
+            note = candidates[0]
+            kind = view.snapshot.entity_type(note)
+            page = "ev" if kind == "evidence" else "plan" if kind == "plan" else "note"
+            return _ok(
+                "record",
+                {"page": page, "arg": ident if page == "plan" else note.stem},
+                view,
+            )
+
+    @router.get(f"{api}/projects/{{project_id}}/attachment/{{name:path}}")
+    @_guarded("attachment")
+    def attachment(project_id: str, name: str):
+        with service.view(project_id) as view:
+            resolved = view.context.resolved
+            if not resolved.research_dir:
+                raise _not_found("attachments require a split Research project")
+            found = find_attachment(view, name)
+            if found is None:
+                raise _not_found(f"no attachment named {name!r}")
+            path = resolved.physical_path(found[0]).resolve()
+            root = resolved.research_dir.resolve()
+            if (
+                not path.is_file()
+                or not path.is_relative_to(root)
+                or path.suffix.lower()
+                not in {
+                    ".json",
+                    ".jsonl",
+                    ".csv",
+                    ".tsv",
+                    ".txt",
+                    ".yaml",
+                    ".yml",
+                    ".npz",
+                }
+            ):
+                raise _not_found(f"no Research data attachment named {name!r}")
+            return FileResponse(
+                path,
+                filename=path.name,
+                media_type="application/octet-stream",
+                headers={"X-Content-Type-Options": "nosniff"},
+            )
+
     @router.get(f"{api}/projects/{{project_id}}/note/{{stem}}")
     @_guarded("note")
     def note(project_id: str, stem: str, refresh: bool = False) -> JSONResponse:
@@ -594,6 +781,25 @@ def build_router(service: ResearchService) -> APIRouter:
             stored = view.conn.execute(
                 "SELECT fm_json, body FROM notes WHERE file_id = ?", (row["file_id"],)
             ).fetchone()
+            effective = next(
+                (n for n in view.snapshot.notes if view.vault_rel(n) == row["rel"]),
+                None,
+            )
+            state = {}
+            if effective and view.context.entry.layout == "split":
+                from expnote.research.workflow import identity
+
+                key = identity(project_id, effective)
+                state = view.cache["workflow"].get(key, {})
+            vault_owned = effective and effective.path.is_relative_to(
+                view.context.resolved.vault_root
+            )
+            current = stored["body"] if vault_owned or not effective else effective.body
+            revision_html = None
+            if vault_owned and state.get("revision"):
+                revision_html = render_markdown(
+                    effective.body, view, run_app=service.run_app
+                )
             outline = view.conn.execute(
                 "SELECT level, text FROM headings WHERE file_id = ? AND level <= 3 "
                 "ORDER BY line",
@@ -612,15 +818,28 @@ def build_router(service: ResearchService) -> APIRouter:
                     "path": row["rel"],
                     "type": row["type"],
                     "entityId": row["entity_id"],
-                    "status": row["status"],
+                    "status": effective.get("status") if effective else row["status"],
                     "title": row["title"],
-                    "sha256": row["sha256"],
-                    "frontmatter": json.loads(stored["fm_json"]),
+                    **{
+                        key: state[key]
+                        for key in ("revision", "planRevision")
+                        if key in state
+                    },
+                    "sha256": view.write_token(effective.rel)
+                    if effective
+                    else row["sha256"],
+                    "frontmatter": effective.fm
+                    if effective
+                    else json.loads(stored["fm_json"]),
                     "outline": [
                         {"level": r["level"], "text": r["text"]} for r in outline
                     ],
                 },
-                "html": render_markdown(stored["body"], view, run_app=service.run_app),
+                "html": render_markdown(
+                    current,
+                    view,
+                    run_app=service.run_app,
+                ),
                 "entityHref": target.href if target.kind != "note" else None,
                 "backlinks": [
                     {
@@ -631,6 +850,13 @@ def build_router(service: ResearchService) -> APIRouter:
                     for r in inbound
                 ],
             }
+            if revision_html is not None:
+                data["revisionHtml"] = revision_html
+                data["sourceChanged"] = current.strip() != effective.body.strip()
+            if state.get("history"):
+                data["history"] = list(dict.fromkeys(state["history"]))
+            if state.get("publication", {}).get("pending"):
+                data["pendingPublication"] = state["publication"]["pending"]
             return _ok("note", data, view)
 
     @router.get(f"{api}/projects/{{project_id}}/image/{{name}}")
@@ -690,6 +916,15 @@ def build_router(service: ResearchService) -> APIRouter:
     async def plan_close(project_id: str, plan_id: str, request: Request):
         return await gui_write(
             request, project_id, "plan close", _plan_close_builder(plan_id)
+        )
+
+    @router.post(f"{api}/projects/{{project_id}}/plans/{{plan_id}}/withdraw")
+    async def withdraw_plan(request: Request, project_id: str, plan_id: str):
+        return await gui_write(
+            request,
+            project_id,
+            "plan withdraw",
+            _plan_close_builder(plan_id, withdrawn=True),
         )
 
     @router.post(f"{api}/projects/{{project_id}}/plans/adopt")
@@ -802,12 +1037,13 @@ def _decision_builder(ident: str, status: str):
             authorization=_text(body, "note"),
             expected_version=_version(body),
             by_user=True,
+            apply=not body.get("dryRun", False),
         )
 
     return build
 
 
-def _plan_close_builder(plan_id: str):
+def _plan_close_builder(plan_id: str, *, withdrawn: bool = False):
     def build(view: ProjectView, body: dict) -> writes.WritePlan:
         force = body.get("force", False)
         if not isinstance(force, bool):
@@ -817,6 +1053,7 @@ def _plan_close_builder(plan_id: str):
             plan_id,
             reason=_text(body, "reason", required=True) or "",
             force=force,
+            withdrawn=withdrawn,
             authorization=_text(body, "note"),
             by_user=True,
             expected_sha256=_expected_sha(body),
@@ -1010,9 +1247,10 @@ def _image_response(view: ProjectView, name: str, request: Request) -> Response:
             f"{name!r} is not an image the viewer serves",
             exit_code=2,
         )
-    root = view.context.resolved.vault_root.resolve()
+    resolved = view.context.resolved
+    root = (resolved.research_dir or resolved.vault_root).resolve()
     try:
-        path = (root / rel).resolve(strict=True)
+        path = resolved.physical_path(rel).resolve(strict=True)
     except OSError:
         raise _not_found(f"image {name!r} is not readable") from None
     if not path.is_relative_to(root) or not path.is_file():

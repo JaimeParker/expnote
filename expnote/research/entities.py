@@ -157,11 +157,12 @@ def find_plan(view: ProjectView, plan_id: str) -> Note:
 
 
 def find_by_id(view: ProjectView, entity: str, ident: str) -> Note:
-    """Entity note by `id` or file stem; ambiguous or absent is an error."""
+    """Find an entity by business ID, stable record ID or file stem."""
     hits = [
         n
         for n in notes_of(view, entity)
-        if n.get("id") == ident or n.stem == ident or n.cstem == ident.casefold()
+        if ident in (n.get("id"), n.get("record_id"), n.stem)
+        or n.cstem == ident.casefold()
     ]
     if not hits:
         raise ResearchError(
@@ -533,13 +534,21 @@ def ev_tables(view: ProjectView, note: Note) -> dict:
 
 
 def ev_detail(view: ProjectView, ident: str) -> dict:
+    from expnote.research.lifecycle import evidence_review_required, state_of
+
     note = find_by_id(view, "evidence", ident)
     item = ev_item(view, note)
     item.update(
-        sha256=view.file_sha256(note.rel),
+        sha256=view.write_token(note.rel),
         frontmatter=note.fm,
         **ev_tables(view, note),
     )
+    required = evidence_review_required(view, note)
+    if required is not None:
+        item["reviewRequired"] = required
+        state = state_of(view, note)
+        item["history"] = state.get("history", [])
+        item["reviewRevision"] = state.get("reviewedEvidenceRevision")
     return {"ev": item}
 
 
@@ -668,6 +677,8 @@ def plan_members(view: ProjectView, plan: Note) -> list[Note]:
 
 def plan_gates(view: ProjectView, plan: Note) -> dict:
     """What blocks each next transition, from the same rules `check` applies."""
+    from expnote.research import lifecycle
+
     snap = view.snapshot
     status = plan.get("status")
 
@@ -690,7 +701,9 @@ def plan_gates(view: ProjectView, plan: Note) -> dict:
         targets += list(PLAN_TERMINAL)
     steps = []
     for target in targets:
-        problems = unmet(clone(target))
+        problems = lifecycle.transition_issues(view, plan, target)
+        if problems is None:
+            problems = unmet(clone(target))
         steps.append({"to": target, "ok": not problems, "unmet": problems})
     return {
         "current": status,
@@ -734,6 +747,8 @@ def plan_item(view: ProjectView, plan: Note, open_items: int | None = None) -> d
 
 
 def plan_core(view: ProjectView, plan: Note, include_body: bool) -> dict:
+    from expnote.research import lifecycle
+
     result = _linked_note(view, plan, "result")
     return {
         "id": _str(plan.get("id")),
@@ -742,7 +757,7 @@ def plan_core(view: ProjectView, plan: Note, include_body: bool) -> dict:
         "legacy": is_legacy(view, plan),
         "path": view.vault_rel(plan),
         "absPath": str(view.abs_path(plan)),
-        "sha256": view.file_sha256(plan.rel),
+        "sha256": view.write_token(plan.rel),
         "owner": _str(plan.get("owner")),
         "reopenedOn": _str(plan.get("reopened_on")),
         "earlierCycle": earlier_cycle_links(plan),
@@ -754,14 +769,26 @@ def plan_core(view: ProjectView, plan: Note, include_body: bool) -> dict:
         "summary": note_one_line(plan),
         "outline": outline(plan),
         "body": plan.body if include_body else None,
+        **(
+            {"strictWorkflow": True, "workflow": lifecycle.describe(view, plan)}
+            if lifecycle.strict(view, plan)
+            else {}
+        ),
     }
 
 
 def exec_detail(view: ProjectView, ident: str, include_body: bool) -> dict:
     note = find_by_id(view, "exec-plan", ident)
     item = exec_item(view, note)
+    state = view.cache.get("workflow", {}).get(str(note.get("id")), {})
+    if state:
+        item.update(
+            revision=state.get("revision"), planRevision=state.get("planRevision")
+        )
+        if state.get("start"):
+            item["runBinding"] = state["start"]
     item.update(
-        sha256=view.file_sha256(note.rel),
+        sha256=view.write_token(note.rel),
         rulesSha256Stored=_str(note.get("rules_sha256")),
         rulesSha256Computed=rules_sha256(note.body, view.profile),
         hasRulesSection=rules_section(note.body, view.profile) is not None,

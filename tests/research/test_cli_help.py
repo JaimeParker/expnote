@@ -46,7 +46,7 @@ def test_validate_has_help_text():
 
 
 def test_res_group_has_the_review_flow_and_no_confirm():
-    assert set(ROOT.commands["res"].commands) == {"list", "submit", "review"}
+    assert set(ROOT.commands["res"].commands) == {"list", "publish", "submit", "review"}
     out = invoke("res", "--help").output
     assert "res submit" in out and "GUI" in out and "res confirm" not in out
 

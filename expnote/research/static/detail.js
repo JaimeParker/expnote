@@ -113,6 +113,29 @@ function historyBlock(history) {
   );
 }
 
+export function deliverablesList(deliverables) {
+  return h("ul", { class: "related" }, Object.entries(deliverables).map(([id, item]) =>
+    h("li", null, h("strong", null, id), " · ", item.question,
+      h("div", null, `Files: ${item.files.join(", ")}`),
+      h("div", null, `${item.review === "user" ? "User review" : "Agent verification"} · ${item.criteria}`),
+      item.condition ? h("div", null, `Condition: ${item.condition}`) : null),
+  ));
+}
+
+function revisionImpact(workflow) {
+  const impact = workflow.impact;
+  const outcomes = { reuse: "Carry forward", redo: "Redo", history: "Keep as history", review: "Review again", finish: "Finish on old version", stop: "Stop", "reuse-body": "Reuse draft text and review again", rewrite: "Update draft and review again" };
+  const items = [
+    ...Object.entries(impact.exec).map(([id, action]) => [id, action]),
+    ...Object.entries(impact.running).map(([id, action]) => [`${id} · ${(workflow.runningDetails[id] || []).join(", ") || "active stage"}`, action]),
+    ...Object.entries(impact.evidence).map(([id, instruction]) => [id, instruction.action || instruction]),
+    ...(impact.result ? [["RES", impact.result]] : []),
+  ];
+  return items.length ? section("Revision impact", h("ul", { class: "related" },
+    items.map(([id, action]) => h("li", null, h("code", null, id), " · ", outcomes[action] || action))),
+  ) : null;
+}
+
 export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
   const P = ctx.project;
   const d = data.decision;
@@ -132,6 +155,18 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
     : d.decisionTextHtml
       ? [h("div", { class: "block" }, prose(d.decisionTextHtml)), d.landsTextHtml ? h("div", { class: "block" }, h("h3", null, "Lands in"), prose(d.landsTextHtml)) : null]
       : [d.html ? h("div", { class: "block" }, prose(d.html)) : emptyState("This decision has no text.")];
+  if (data.submission) {
+    textBlocks.unshift(section("Submitted plan", prose(data.submission.html), { id: "submitted-plan" }));
+    if (data.submission.workflow) {
+      textBlocks.unshift(section("Deliverables", deliverablesList(data.submission.workflow.deliverables)), revisionImpact(data.submission.workflow));
+    }
+    if (data.submission.diff) {
+      textBlocks.unshift(section("Changes from approved PLAN", h("pre", null, data.submission.diff), { open: false }));
+    }
+    if (data.submission.workflow?.reopen) {
+      textBlocks.unshift(h("p", { class: "notice" }, "Approval reopens this PLAN."));
+    }
+  }
   if (d.history && d.history.length) textBlocks.push(historyBlock(d.history));
   return h(
     "article",
@@ -208,7 +243,7 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
   const label = e.labelTable;
   const fm = e.frontmatter || {};
   const figures = e.figures.map((name) => figureTile(P, name));
-  const editor = evLabelEditor(ctx, data);
+  const editor = e.reviewRequired === false ? null : evLabelEditor(ctx, data);
   return h(
     "article",
     { class: "detail" },
@@ -236,11 +271,16 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
         label ? null : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
         e.remark ? h("div", { class: "remark" }, h("h4", null, "Remark"), h("pre", null, e.remark)) : null,
         h("div", { class: "row-actions", "data-slot": "ev-label-actions" }, editor),
-        editor ? null : h("p", { class: "muted small" }, "Labels can be edited here while the page is rendered and not yet labelled."),
+        editor || e.reviewRequired === false ? null : h("p", { class: "muted small" }, "Labels can be edited here while the page is rendered and not yet labelled."),
       ],
       { id: "labels", tone: toneOf("label", e.labelState), count: names[e.labelState] || e.labelState },
     ),
     e.runs.length ? section("Runs", h("p", null, e.runs.map((r) => [runRef(ctx, r), " "])), { count: e.runs.length, open: false }) : null,
+    e.appendixHtml ? section("Appendix", prose(e.appendixHtml), { open: false, id: "appendix" }) : null,
+    e.history?.length || e.reviewRevision ? section("Review versions", h("ul", { class: "related" },
+      [...new Set([e.reviewRevision, ...(e.history || [])].filter(Boolean))].map((sha) =>
+        h("li", null, link(`#/p/${encodeURIComponent(P)}/revision/${encodeURIComponent(sha)}`, short(sha)))),
+    ), { open: false }) : null,
     section("Page text", prose(e.html), { open: false, id: "text" }),
   );
 }

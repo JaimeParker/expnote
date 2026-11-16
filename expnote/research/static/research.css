@@ -758,3 +758,32 @@ a.hit-title:hover { color: var(--accent); }
 .res-review .reason-label { display: grid; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 0.9em; }
 .res-review .remarks-input { width: 100%; resize: vertical; }
 .impact-select { font: inherit; font-size: 15px; color: var(--ink); background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 10px; min-height: 34px; max-width: 14em; }
+
+.image-viewer {
+  width: min(96vw, 1600px);
+  height: 92vh;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+}
+
+.image-viewer::backdrop { background: rgb(0 0 0 / 75%); }
+.image-viewer-tools {
+  display: flex;
+  gap: .5rem;
+  padding: .5rem;
+}
+.image-viewer-viewport {
+  height: calc(100% - 3rem);
+  overflow: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.image-viewer-viewport:active { cursor: grabbing; }
+.image-viewer-viewport img {
+  display: block;
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  user-select: none;
+}

@@ -301,6 +301,7 @@ def decision_set(
             authorization=authorization,
             by=by,
             expected_version=expected_version,
+            apply=apply,
         ),
         project=project,
         apply=apply,
@@ -313,7 +314,7 @@ def _export_context(project: str | None, profile_key: str = "decision_export"):
     from expnote.research.registry import open_project
 
     context = open_project(project)
-    target = context.resolved.project_dir / getattr(context.profile, profile_key)
+    target = context.resolved.material_dir / getattr(context.profile, profile_key)
     return context, WriteContext.for_project(context), target
 
 
@@ -442,6 +443,94 @@ def decision_restore(
 # ---- plans, exec-plans, results ----------------------------------------------
 
 
+@plan_app.command("submit")
+def plan_submit(
+    plan_id: str,
+    decision: Annotated[str, typer.Option("--decision")],
+    workflow: Annotated[
+        Path | None,
+        typer.Option("--workflow", help="JSON deliverables and revision impact."),
+    ] = None,
+    replace: Annotated[
+        bool,
+        typer.Option("--replace", help="Update the same pending decision and TODO."),
+    ] = False,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Bind the current user-authored PLAN to a proposed decision."""
+    from expnote.research.lifecycle import read_json
+    from expnote.research.workflow import plan_submission
+
+    run_write(
+        "plan submit",
+        lambda view: plan_submission(
+            view,
+            plan_id,
+            decision,
+            apply,
+            read_json(workflow) if workflow else None,
+            replace=replace,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=False,
+        as_json=as_json,
+    )
+
+
+@plan_app.command("checklist")
+def plan_checklist(
+    plan_id: str,
+    source: Annotated[
+        Path, typer.Option("--from-file", help="JSON map of execution IDs to stages.")
+    ],
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Freeze execution steps against the approved deliverables."""
+    from expnote.research.lifecycle import plan_checklist, read_json
+
+    run_write(
+        "plan checklist",
+        lambda view: plan_checklist(view, plan_id, read_json(source)),
+        project=project,
+        apply=apply,
+        no_quiet=False,
+        as_json=as_json,
+    )
+
+
+@plan_app.command("condition")
+def plan_condition(
+    plan_id: str,
+    deliverable: Annotated[str, typer.Option("--deliverable")],
+    reason: Annotated[str, typer.Option("--reason")],
+    evidence: Annotated[
+        list[str], typer.Option("--evidence", help="Supporting EV ID (repeatable).")
+    ],
+    triggered: Annotated[bool, typer.Option("--triggered/--not-triggered")] = False,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Record whether an approved conditional deliverable triggered."""
+    from expnote.research.lifecycle import record_condition
+
+    run_write(
+        "plan condition",
+        lambda view: record_condition(
+            view, plan_id, deliverable, reason, evidence, triggered=triggered
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=False,
+        as_json=as_json,
+    )
+
+
 @plan_app.command("advance")
 def plan_advance(
     plan_id: Annotated[str, typer.Argument(metavar="ID")],
@@ -507,6 +596,34 @@ def plan_close(
         project=project,
         apply=apply,
         no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
+@plan_app.command("withdraw")
+def plan_withdraw(
+    plan_id: str,
+    reason: Annotated[str, typer.Option("--reason")],
+    authorization: AuthorizationOption = None,
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Record the user's decision to stop an open PLAN."""
+    run_write(
+        "plan withdraw",
+        lambda view: writes.plan_plan_close(
+            view,
+            plan_id,
+            reason=reason,
+            withdrawn=True,
+            authorization=authorization,
+            expected_sha256=expected_sha256,
+        ),
+        project=project,
+        apply=apply,
+        no_quiet=False,
         as_json=as_json,
     )
 
@@ -656,6 +773,12 @@ def exec_freeze(
 def exec_advance(
     ident: Annotated[str, typer.Argument(metavar="EXEC")],
     to: Annotated[str, typer.Option("--to", help="running, done or aborted.")],
+    runs: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--run", help="Run ID in a linked workspace (repeatable at start)."
+        ),
+    ] = None,
     expected_sha256: ExpectedOption = None,
     project: ProjectOption = None,
     apply: ApplyOption = False,
@@ -666,8 +789,33 @@ def exec_advance(
     run_write(
         "exec advance",
         lambda view: writes.plan_exec_advance(
-            view, ident, to, expected_sha256=expected_sha256
+            view, ident, to, expected_sha256=expected_sha256, runs=tuple(runs or ())
         ),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
+@res_app.command("publish")
+def res_publish(
+    ident: str,
+    candidate: Annotated[
+        Path, typer.Option("--from-file", exists=True, dir_okay=False)
+    ],
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Publish a generated or merged RES with conflict detection."""
+    from expnote.research.results import publish_result
+
+    run_write(
+        "res publish",
+        lambda view: publish_result(view, ident, candidate, expected_sha256, apply),
         project=project,
         apply=apply,
         no_quiet=no_quiet,
@@ -693,9 +841,8 @@ def res_submit(
 ) -> None:
     """Hand a drafted result to the user (draft -> first-read).
 
-    A running plan moves on to read-out in the same write when its gates pass (one
-    active result, every evidence page labelled); otherwise the result is still
-    submitted and the unmet gates come back as warnings.
+    A versioned plan needs completed stages, deliverables and evidence reviews to
+    submit. On the older workflow, a submission may leave the PLAN running.
     """
     run_write(
         "res submit",
@@ -760,6 +907,31 @@ def res_review(
 
 
 # ---- evidence ----------------------------------------------------------------
+
+
+@ev_app.command("register")
+def ev_register(
+    ident: str,
+    exec_id: Annotated[str, typer.Option("--exec")],
+    source: Annotated[
+        Path,
+        typer.Option("--from-file", help="JSON outputs by deliverable and file name."),
+    ],
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Register an EV, its appendix and delivered files for a frozen execution."""
+    from expnote.research.lifecycle import read_json, register_evidence
+
+    run_write(
+        "ev register",
+        lambda view: register_evidence(view, ident, exec_id, read_json(source), apply),
+        project=project,
+        apply=apply,
+        no_quiet=False,
+        as_json=as_json,
+    )
 
 
 @ev_label_app.command("show")

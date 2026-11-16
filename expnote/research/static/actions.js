@@ -253,28 +253,33 @@ export function planCloseAction(ctx, plan) {
   if (!OPEN_PLAN_STATES.has(plan.status) || !plan.sha256) return null;
   const slot = h("div", { class: "confirm-slot" });
   const url = `${projectPath(ctx.project)}/plans/${enc(plan.id)}/close`;
-  const button = h("button", { type: "button", class: "btn", onclick: () => openPlanClose(slot, ctx, plan, url) }, icon("check"), "Close plan");
-  return h("div", { class: "plan-close" }, button, slot);
+  const button = !plan.strictWorkflow || plan.workflow?.closeReady
+    ? h("button", { type: "button", class: "btn", onclick: () => openPlanClose(slot, ctx, plan, url) }, icon("check"), "Close plan")
+    : null;
+  const withdraw = plan.strictWorkflow ? h("button", { type: "button", class: "btn", onclick: () => openPlanClose(slot, ctx, plan, `${projectPath(ctx.project)}/plans/${enc(plan.id)}/withdraw`, true) }, "Withdraw plan") : null;
+  return h("div", { class: "plan-close" }, button, withdraw, slot);
 }
 
-function openPlanClose(slot, ctx, plan, url) {
-  const reason = h("textarea", { class: "reason-input", rows: "3", "aria-label": "Reason for closing", placeholder: "Why is this plan being closed? (kept as the decision's reason)", maxlength: "1000" });
+function openPlanClose(slot, ctx, plan, url, withdraw = false) {
+  const verb = withdraw ? "Withdraw" : "Close";
+  const reason = h("textarea", { class: "reason-input", rows: "3", "aria-label": `Reason to ${verb.toLowerCase()}`, placeholder: "Reason recorded with your decision", maxlength: "1000" });
   const body = h("div", { class: "confirm-body" });
-  const applyButton = h("button", { type: "button", class: "btn primary", disabled: true }, "Close plan");
+  const applyButton = h("button", { type: "button", class: "btn primary", disabled: true }, `${verb} plan`);
   const cancelButton = h("button", { type: "button", class: "btn" }, "Cancel");
-  const panel = h("section", { class: "confirm-panel", role: "group", "aria-label": `Close ${plan.id}` }, h("h3", null, `Close ${plan.id}`), body, h("label", { class: "reason-label" }, "Reason", reason), h("div", { class: "confirm-buttons" }, applyButton, cancelButton));
+  const panel = h("section", { class: "confirm-panel", role: "group", "aria-label": `${verb} ${plan.id}` }, h("h3", null, `${verb} ${plan.id}`), body, h("label", { class: "reason-label" }, "Reason", reason), h("div", { class: "confirm-buttons" }, applyButton, cancelButton));
   let forced = false;
   let busy = false;
+  let canApply = false;
   const typed = () => (reason.value ?? reason.getAttribute("value") ?? "").trim();
   const payload = (dryRun) => ({
     expectedSha256: plan.sha256,
     force: forced,
-    reason: typed() || (forced ? (dryRun ? "(your reason)" : "") : DEFAULT_CLOSE_REASON),
+    reason: typed() || (forced || withdraw ? (dryRun ? "(your reason)" : "") : DEFAULT_CLOSE_REASON),
     dryRun,
   });
   const syncApply = () => {
     if (busy) return;
-    if (forced && !typed()) applyButton.setAttribute("disabled", "");
+    if (!canApply || ((forced || withdraw) && !typed())) applyButton.setAttribute("disabled", "");
     else applyButton.removeAttribute("disabled");
   };
   function close() {
@@ -287,15 +292,17 @@ function openPlanClose(slot, ctx, plan, url) {
   };
 
   async function preview() {
+    canApply = false;
     setBusy(true);
     clear(body).append(skeleton(2));
     try {
       const envelope = await ctx.post(url, payload(true));
-      clear(body).append(h("p", { class: "ok-line" }, icon("check"), " Every gate for closing passes."));
+      clear(body).append(h("p", { class: "ok-line" }, icon("check"), withdraw ? " Record the decision to stop this PLAN." : " Every gate for closing passes."));
       append(body, (envelope.data.changes || []).map(diffBlock));
-      applyButton.textContent = "Close plan";
+      applyButton.textContent = `${verb} plan`;
+      canApply = true;
     } catch (error) {
-      if (error.code !== "GATE_FAILED") {
+      if (error.code !== "GATE_FAILED" || plan.strictWorkflow || withdraw) {
         clear(body).append(errorPanel(error, { retry: preview }));
         setBusy(false);
         return;
@@ -309,6 +316,7 @@ function openPlanClose(slot, ctx, plan, url) {
       try {
         const envelope = await ctx.post(url, payload(true));
         append(body, (envelope.data.changes || []).map(diffBlock));
+        canApply = true;
       } catch (second) {
         body.append(errorPanel(second, { retry: preview }));
       }
@@ -317,12 +325,12 @@ function openPlanClose(slot, ctx, plan, url) {
   }
 
   async function apply() {
-    if (busy) return;
+    if (busy || !canApply) return;
     setBusy(true);
     try {
       const envelope = await ctx.post(url, payload(false));
       close();
-      toast(`${plan.id} closed${forced ? " (gates skipped)" : ""}`, { journal: ((envelope.data.changes || [])[0] || {}).path });
+      toast(`${plan.id} ${withdraw ? "withdrawn" : "closed"}${forced ? " (gates skipped)" : ""}`, { journal: ((envelope.data.changes || [])[0] || {}).path });
       await refresh();
     } catch (error) {
       body.append(errorPanel(error, { retry: apply }));

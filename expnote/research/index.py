@@ -444,7 +444,7 @@ def refresh_index(
 ) -> RefreshStats:
     """Bring the index up to date with the vault (single writer, atomic)."""
     started = time.perf_counter()
-    vault_id = context.entry.vault_id
+    vault_id = context.resolved.index_id
     directory = index_dir(vault_id)
     with _writer_lock(directory):
         conn, rebuilt = _open_writer(directory / "index.sqlite", vault_id, full)
@@ -460,6 +460,31 @@ def refresh_index(
     return stats
 
 
+def walk_project(context: ProjectContext) -> tuple[list[WalkEntry], list[str]]:
+    """Use the same input set for indexing and freshness diagnostics."""
+    profile = context.profile
+    vault_root = context.resolved.vault_root
+    entries, pruned = walk_vault(vault_root, profile)
+    resolved = context.resolved
+    if resolved.research_dir:
+        prefix = resolved.logical_path(resolved.research_dir)
+        for folder in sorted(resolved.research_dir.iterdir()):
+            if (
+                not folder.is_dir()
+                or folder.is_symlink()
+                or folder.name
+                in {"journal", "migration", "revisions", "exports", "proposals"}
+                or folder.name.startswith(".")
+            ):
+                continue
+            managed, _ = walk_vault(folder, profile)
+            for item in managed:
+                rel = f"{prefix}/{folder.name}/{item.rel}"
+                if not resolved.physical_path(rel).is_symlink():
+                    entries.append(dataclasses.replace(item, rel=rel, nrel=nfc(rel)))
+    return entries, pruned
+
+
 def _refresh(
     conn: sqlite3.Connection,
     context: ProjectContext,
@@ -467,11 +492,11 @@ def _refresh(
     workspaces: list[str] | None,
 ) -> RefreshStats:
     profile = context.profile
-    vault_root = context.resolved.vault_root
     stats = RefreshStats(rebuilt=rebuilt)
     conflicts = ConflictMatcher(profile)
     prefixes = project_prefixes(context)
-    entries, pruned = walk_vault(vault_root, profile)
+    entries, pruned = walk_project(context)
+    resolved = context.resolved
     existing = {
         row[0]: _Existing(*row[1:])
         for row in conn.execute(
@@ -496,7 +521,7 @@ def _refresh(
         name_set_changed = name_set_changed or not old.is_conflict
 
     contents = _read_many(
-        vault_root,
+        resolved,
         [
             e.rel
             for e in entries
@@ -620,12 +645,12 @@ def _may_need_parse(old: _Existing | None, entry: WalkEntry) -> bool:
     )
 
 
-def _read_many(vault_root: Path, rels: list[str]) -> dict[str, bytes]:
+def _read_many(resolved, rels: list[str]) -> dict[str, bytes]:
     """File bytes by relative path, read on a thread pool (drvfs reads are slow)."""
 
     def read(rel: str) -> tuple[str, bytes | None]:
         try:
-            return rel, (vault_root / rel).read_bytes()
+            return rel, resolved.physical_path(rel).read_bytes()
         except OSError:
             return rel, None
 
@@ -924,14 +949,14 @@ def ensure_index(
         stats = refresh_index(context, full=full)
     else:
         stats = RefreshStats(refreshed=False)
-    return IndexReader(open_reader(context.entry.vault_id), stats)
+    return IndexReader(open_reader(context.resolved.index_id), stats)
 
 
 # ---- snapshot from the index --------------------------------------------------------
 
 
 def snapshot_from_index(
-    context: ProjectContext, conn: sqlite3.Connection
+    context: ProjectContext, conn: sqlite3.Connection, workflow: dict | None = None
 ) -> VaultSnapshot:
     """Same facts as `scan_vault`, read from the index (conflict files excluded)."""
     resolved, profile = context.resolved, context.profile
@@ -939,12 +964,13 @@ def snapshot_from_index(
     prefix = project_rel(context)
     images_dir = resolved.images_dir
     try:
-        images_rel = images_dir.relative_to(vault_root).as_posix()
+        images_rel = resolved.logical_path(images_dir)
     except ValueError:
         images_rel = images_dir.as_posix()
 
     md_index: dict[str, list[str]] = {}
     attach_index: dict[str, list[str]] = {}
+    attachment_paths: dict[str, Path] = {}
     rel_noext: set[str] = set()
     rel_attach: set[str] = set()
     image_names: list[str] = []
@@ -958,6 +984,8 @@ def snapshot_from_index(
             rel_noext.add(nrel[:-3].casefold())
         else:
             attach_index.setdefault(name.casefold(), []).append(nrel)
+            if resolved.research_dir:
+                attachment_paths[nrel] = resolved.physical_path(rel)
             rel_attach.add(nrel.casefold())
         if rel.startswith(images_prefix) and "/" not in rel[len(images_prefix) :]:
             image_names.append(rel[len(images_prefix) :])
@@ -975,12 +1003,13 @@ def snapshot_from_index(
     for row in rows:
         rel = row["rel"][start:]
         if any(
-            p in profile.skip_dirs or p.startswith(".") for p in rel.split("/")[:-1]
+            p in profile.skip_dirs or (p.startswith(".") and p != ".research")
+            for p in rel.split("/")[:-1]
         ):
             continue
         notes.append(
             Note(
-                path=project_dir / rel,
+                path=resolved.physical_path(row["rel"]),
                 rel=rel,
                 text=row["fm_raw"] + row["body"],
                 body=row["body"],
@@ -991,6 +1020,10 @@ def snapshot_from_index(
                 has_fm=bool(row["has_fm"]),
             )
         )
+    if workflow is not None:
+        from expnote.research.workflow import virtual_note
+
+        notes = [virtual_note(context, note, workflow) for note in notes]
     registry = _registry(notes, profile)
     by_rel = {n.rel: n for n in notes}
     table_name = profile.legacy_decision_table
@@ -1004,6 +1037,11 @@ def snapshot_from_index(
         if deviation_note
         else _read_text(project_dir / profile.deviation_register)
     )
+    if workflow is not None:
+        managed_deviation = resolved.material_dir / profile.deviation_register
+        deviation_text = workflow.get(".deviations", {}).get("text") or _read_text(
+            managed_deviation
+        )
     decisions, problems, deviations = build_decisions_and_deviations(
         profile, context.entry.id, table_text, deviation_text
     )
@@ -1016,6 +1054,16 @@ def snapshot_from_index(
         registry=registry,
         md_index=md_index,
         attach_index=attach_index,
+        previously_confirmed_results=frozenset(
+            ident
+            for ident, state in (workflow or {}).items()
+            if state.get("previousConfirmed")
+        ),
+        strict_plans=frozenset(
+            ident for ident, state in (workflow or {}).items() if state.get("lifecycle")
+        ),
+        managed_images_dir=images_dir if resolved.research_dir else None,
+        attachment_paths=attachment_paths,
         rel_noext=rel_noext,
         rel_attach=rel_attach,
         alias_index=_alias_index(notes),

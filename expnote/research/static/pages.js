@@ -7,6 +7,7 @@ import {
   decisionDetail,
   decisionHref,
   decisionRow,
+  deliverablesList,
   evDetail,
   kindPhrase,
   labels,
@@ -546,6 +547,24 @@ function outlineLinks(items, here) {
   );
 }
 
+function executionChecklist(P, workflow) {
+  if (!workflow) return null;
+  const stages = Object.entries(workflow.checklist);
+  return section("Execution checklist", [
+    stages.length ? h("ul", { class: "related" }, stages.map(([id, step]) =>
+      h("li", null, link(`#/p/${enc(P)}/record/${enc(id)}`, id), " ",
+        statusChip("exec", step.status), ` · ${step.deliverables.join(", ")}`,
+        step.after.length ? h("span", { class: "muted" }, ` · after ${step.after.join(", ")}`) : null),
+    )) : h("p", { class: "muted" }, "Waiting for the agent to freeze the checklist."),
+    Object.entries(workflow.conditions).map(([id, decision]) =>
+      h("p", null, h("strong", null, id), ` · ${decision.reason}`)),
+    Object.entries(workflow.running).map(([id, action]) =>
+      h("p", null, h("code", null, id), action === "stop" ? " · Stop old run" : " · Finish on the old version")),
+    workflow.blockers.length ? h("ul", { class: "gate-list" }, workflow.blockers.map((gate) => h("li", null, gate.message))) : null,
+    section("Approved deliverables", deliverablesList(workflow.deliverables), { open: false }),
+  ]);
+}
+
 async function planPage(ctx) {
   const { api } = ctx;
   const P = ctx.project;
@@ -582,6 +601,17 @@ async function planPage(ctx) {
       h("div", { class: "actions", "data-slot": "page-actions" }, planCloseAction(ctx, info)),
     ),
     warnings,
+    s.approvedRevision ? h("p", { class: "muted" },
+      link(`#/p/${enc(P)}/revision/${enc(s.approvedRevision)}`,
+        s.revisionOrigin === "imported-baseline" ? "Imported baseline" : "Approved revision"),
+      s.sourceChanged ? " · Obsidian source has changes" : null,
+    ) : null,
+    (s.submissions || []).map((item) => section(
+      `Submitted revision ${short(item.revision)}`,
+      h("div", null, link(route.decision(P, item.decision), item.decision), prose(item.html)),
+      { open: false },
+    )),
+    executionChecklist(P, info.workflow),
     h(
       "div",
       { class: "plan-grid" },
@@ -652,10 +682,11 @@ async function notePage(ctx) {
   const P = ctx.project;
   const body = await api(`${base(P)}/note/${enc(ctx.arg)}`);
   const n = body.data.note;
-  const proseBox = prose(body.data.html);
+  const showingReview = ctx.params.has("review") && Boolean(body.data.revisionHtml);
+  const proseBox = prose(showingReview ? body.data.revisionHtml : body.data.html);
   const items = outlineOf(proseBox, P, n.stem);
   const here = route.note(P, n.stem);
-  const reviewPanel = resReviewPanel(ctx, n);
+  const reviewPanel = !body.data.revisionHtml || showingReview ? resReviewPanel(ctx, n) : null;
   const reviewRecord = n.type === "result" ? resReviewRecord(n.frontmatter || {}) : null;
   const node = h(
     "div",
@@ -666,6 +697,12 @@ async function notePage(ctx) {
       chips: [n.type ? chip(n.type, "muted") : null, n.status ? statusWord("muted", n.status) : null],
       meta: [h("span", { class: "muted" }, n.path), h("span", { class: "muted" }, `checksum ${short(n.sha256)}`)],
     }),
+    body.data.revisionHtml ? h("div", { class: "meta-line" },
+      showingReview ? "Submitted version" : "Obsidian source",
+      link(showingReview ? here : `${here}?review=1`, showingReview ? "Current source" : "Review version"),
+      body.data.sourceChanged ? chip("Source has changes since this review", "warn") : null,
+    ) : null,
+    body.data.pendingPublication ? h("p", { class: "notice warn" }, "Generated draft awaiting merge") : null,
     body.data.entityHref ? h("div", { class: "notice info" }, icon("branch"), h("div", null, "This note has its own page: ", link(body.data.entityHref, "open the structured view"))) : null,
     h(
       "div",
@@ -675,6 +712,10 @@ async function notePage(ctx) {
         "aside",
         { class: "note-aside" },
         reviewRecord ? section("Review", reviewRecord, { id: "review-record" }) : null,
+        body.data.history?.length ? section("Previous revisions", body.data.history.map((revision) =>
+          h("p", null, link(`#/p/${enc(P)}/revision/${enc(revision)}`, short(revision))))) : null,
+        n.planRevision ? section("Approved plan at freeze",
+          link(`#/p/${enc(P)}/revision/${enc(n.planRevision)}`, short(n.planRevision))) : null,
         items.length ? section("Contents", outlineLinks(items, here), { count: items.length, open: items.length < 16, foldKey: "note.outline" }) : null,
         section("Linked from", body.data.backlinks.length ? h("ul", { class: "related" }, body.data.backlinks.map((b2) => h("li", null, b2.href ? link(b2.href, b2.stem) : b2.stem, b2.type ? h("span", { class: "muted small" }, ` ${b2.type}`) : null))) : emptyState("Nothing links here."), { count: body.data.backlinks.length, open: false }),
         section("Frontmatter", Object.keys(n.frontmatter).length ? kv(Object.entries(n.frontmatter).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) : emptyState("No frontmatter."), { open: false }),
@@ -682,6 +723,28 @@ async function notePage(ctx) {
     ),
   );
   return { node, title: n.title || n.stem };
+}
+
+async function revisionPage(ctx) {
+  const body = await ctx.api(`${base(ctx.project)}/revision/${enc(ctx.arg)}`);
+  const data = body.data;
+  return {
+    node: h("div", { class: "page" },
+      pageHead({ crumbs: crumbsTo(ctx), title: data.title, meta: [short(data.revision)] }),
+      prose(data.html),
+      Object.keys(data.files || {}).length ? section("Archived evidence files", h("ul", { class: "related" },
+        Object.entries(data.files).map(([name, sha]) => h("li", null,
+          h("a", { href: `${base(ctx.project)}/revision-file/${enc(sha)}` }, name))),
+      )) : null,
+    ),
+    title: data.title,
+  };
+}
+
+async function recordPage(ctx) {
+  const result = await ctx.api(`${base(ctx.project)}/record/${enc(ctx.arg)}`);
+  const { page, arg } = result.data;
+  return PAGES[page]({ ...ctx, arg });
 }
 
 // ---- HEALTH --------------------------------------------------------------------------------------------------
@@ -736,6 +799,8 @@ async function healthPage(ctx) {
 }
 
 export const PAGES = {
+  record: recordPage,
+  revision: revisionPage,
   home: indexPage,
   project: projectPage,
   plan: planPage,

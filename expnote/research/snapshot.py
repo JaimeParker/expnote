@@ -48,6 +48,10 @@ class VaultSnapshot:
     decisions: dict[int, Decision]
     decision_problems: list[tuple[str, str, str]]  # (code, where, message)
     deviations: dict[str, DeviationRow]
+    previously_confirmed_results: frozenset[str] = frozenset()
+    strict_plans: frozenset[str] = frozenset()
+    managed_images_dir: Path | None = None
+    attachment_paths: dict[str, Path] = dataclasses.field(default_factory=dict)
     _by_cstem: dict[str, Note] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):

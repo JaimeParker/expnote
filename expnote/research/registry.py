@@ -34,6 +34,9 @@ class ProjectEntry:
     workspaces: list[str] = dataclasses.field(default_factory=list)
     quiet_window_seconds: int = 10
 
+    layout: str = "vault"
+    results_in_vault: bool = False
+
     PATH_KEYS = ("vault_root", "project_dir", "images_dir", "profile_note")
 
 
@@ -67,6 +70,8 @@ def load_registry(path: Path | None = None) -> Registry:
                 vault_root_alternates=list(raw.get("vault_root_alternates", [])),
                 workspaces=list(raw.get("workspaces", [])),
                 quiet_window_seconds=int(raw.get("quiet_window_seconds", 10)),
+                layout=raw.get("layout", "vault"),
+                results_in_vault=raw.get("results_in_vault", False),
             )
         except KeyError as error:
             raise ResearchError(
@@ -104,6 +109,10 @@ def dump_registry(registry: Registry) -> str:
         lines.append(f"images_dir = {_toml_string(entry.images_dir)}")
         lines.append(f"profile_note = {_toml_string(entry.profile_note)}")
         lines.append(f"workspaces = {_toml_list(entry.workspaces)}")
+        if entry.layout == "split":
+            lines.append('layout = "split"')
+        if entry.results_in_vault:
+            lines.append("results_in_vault = true")
         lines.append(f"quiet_window_seconds = {int(entry.quiet_window_seconds)}")
         lines.append("")
     return "\n".join(lines)
@@ -166,6 +175,42 @@ class ResolvedProject:
     profile_note: Path
     path_note: str | None = None
 
+    @property
+    def research_dir(self) -> Path | None:
+        if self.entry.layout == "split":
+            from expnote.research.writeback import project_state_dir
+
+            return project_state_dir(self.entry.id)
+        return None
+
+    @property
+    def index_id(self) -> str:
+        if self.research_dir:
+            import hashlib
+
+            suffix = hashlib.sha256(self.entry.id.encode()).hexdigest()[:16]
+            return f"{self.entry.vault_id}-split-{suffix}"
+        return self.entry.vault_id
+
+    @property
+    def material_dir(self) -> Path:
+        return self.research_dir or self.project_dir
+
+    def logical_path(self, path: Path) -> str:
+        if self.research_dir and path.is_relative_to(self.research_dir):
+            prefix = self.project_dir.relative_to(self.vault_root)
+            return (
+                prefix / ".research" / path.relative_to(self.research_dir)
+            ).as_posix()
+        return path.relative_to(self.vault_root).as_posix()
+
+    def physical_path(self, rel: str) -> Path:
+        if self.research_dir:
+            prefix = self.logical_path(self.research_dir) + "/"
+            if rel.startswith(prefix):
+                return self.research_dir / rel[len(prefix) :]
+        return self.vault_root / rel
+
 
 def _candidate_roots(entry: ProjectEntry) -> list[str]:
     roots: list[str] = []
@@ -181,7 +226,14 @@ def revalidate(entry: ProjectEntry) -> ResolvedProject:
     tried = []
     for index, root in enumerate(_candidate_roots(entry)):
         project_dir = Path(rebase(entry.project_dir, entry.vault_root, root))
-        profile_note = Path(rebase(entry.profile_note, entry.vault_root, root))
+        if entry.layout == "split":
+            from expnote.research.writeback import project_state_dir
+
+            state = project_state_dir(entry.id)
+            profile_note, images_dir = state / "profile.md", state / "images"
+        else:
+            profile_note = Path(rebase(entry.profile_note, entry.vault_root, root))
+            images_dir = Path(rebase(entry.images_dir, entry.vault_root, root))
         tried.append(root)
         if (
             (Path(root) / ".obsidian").is_dir()
@@ -197,7 +249,7 @@ def revalidate(entry: ProjectEntry) -> ResolvedProject:
                 entry,
                 Path(root),
                 project_dir,
-                Path(rebase(entry.images_dir, entry.vault_root, root)),
+                images_dir,
                 profile_note,
                 note,
             )
@@ -298,6 +350,7 @@ def register_project(
     alternates: list[str] | None = None,
     quiet_window_seconds: int = 10,
     vault_id: str | None = None,
+    layout: str = "vault",
 ) -> tuple[dict, ResolvedProject]:
     """Bind a project to its vault and profile note (the note must exist).
 
@@ -311,6 +364,8 @@ def register_project(
         "--profile-note": str(profile_note.expanduser().absolute()),
     }
     for option, value in paths.items():
+        if layout == "split" and option in {"--profile-note", "--images-dir"}:
+            continue
         if not is_inside(value, root):
             raise ResearchError(
                 "USAGE_PATH_OUTSIDE_VAULT",
@@ -332,6 +387,7 @@ def register_project(
         profile_note=paths["--profile-note"],
         workspaces=list(workspaces or []),
         quiet_window_seconds=quiet_window_seconds,
+        layout=layout,
     )
     resolved = revalidate(entry)
     registry.projects[entry_id] = entry

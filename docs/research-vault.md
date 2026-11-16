@@ -224,6 +224,64 @@ expnote check       # a fresh project: FAIL 0 (an INFO about the empty images fo
 
 ## 5. The research lifecycle
 
+### Versioned workflow for split projects
+
+New split-layout plans use the approved PLAN version for execution and review.
+Prepare the PLAN in Obsidian, open a proposed decision targeting it and attach a
+workflow file with `expnote plan submit PLAN-001 --decision DEC-0001 --workflow
+workflow.json`. Apply the submission before the user opens the decision. The
+decision shows the PLAN snapshot, deliverables and any revision impact.
+
+```json
+{
+  "deliverables": [
+    {
+      "id": "replication",
+      "question": "Does the run reproduce the reference curve?",
+      "files": ["curve", "run inventory"],
+      "review": "user",
+      "criteria": "Compare recovery and final performance on the same axes"
+    }
+  ]
+}
+```
+
+Use `review: agent` for evidence verified by the agent. An optional `condition`
+describes when a deliverable is needed. `plan condition` records whether it
+triggered with a reason and supporting EV IDs.
+
+After approval, create and freeze execution notes. Freeze a checklist with
+`expnote plan checklist PLAN-001 --from-file stages.json`. Its keys are frozen
+execution IDs and each entry has `deliverables` and optional `after` execution
+IDs. Advance the PLAN to `running`, then start its stages in dependency order.
+Pass `--run RUN_ID` to `exec advance --to running` for each linked workspace run
+at launch. The command also attaches additional runs to an already running stage.
+
+Register an EV and its appendix with `expnote ev register EV_ID --exec PLAN-001-S1
+--from-file files.json`. This file maps deliverable IDs to their file names and
+Research-relative paths. For example, `{"replication":{"curve":"images/a.png",
+"run inventory":"ops/runs.json"}}`. A stage needs recorded evidence before it
+can finish. Users get TODOs for evidence requiring their review. When stages,
+files and reviews are complete, `res submit` saves the review snapshot and
+advances the PLAN to `read-out`. The user reviews the submitted version in
+Research and chooses when to close the confirmed PLAN. For an early stop use
+`plan withdraw` with the user's authorization and reason. Analysis is optional.
+
+For a revision, include an `impact` object beside `deliverables`. Its `exec`
+map records `reuse`, `redo` or `history` by stage. Its `running` map records
+`finish` or `stop` for each running stage. Its `evidence` map records `reuse`,
+`review` or `history` by stable EV ID, with review reused only for identical
+evidence and criteria. To attach an existing EV during enrollment, use
+`{"action":"review","exec":"PLAN-001-S1","outputs":{...}}` as the entry. Set
+`result` to `reuse-body` or `rewrite` for the existing RES. The user approves
+these choices with the revised PLAN in one decision. The final RES is submitted
+and reviewed against the new approval. Open split-layout plans created before
+this workflow can enroll through the same submission and decision.
+
+All these writing commands preview by default. Add `--apply` to record a change.
+
+### Lifecycle statuses
+
 The state machines (`expnote guide research` prints them):
 
 ```text
@@ -924,3 +982,57 @@ the other tabs are Decisions, Evidence, TODOs, Search and Health. The GUI writes
 only: approve or reject a decision, close a plan, adopt a draft as a plan, save
 evidence labels, add, tick or drop a TODO, close a deviation. Everything else is read-only,
 so the vault stays yours.
+
+## Split storage for a local Research project
+
+Use `expnote project init --layout split --project-dir PATH --apply` to create
+a split project. Write the user-facing PLAN and Analysis in Obsidian. Research
+stores execution plans, evidence, results, original figures, templates, and the
+profile beside its SQLite stores. Keep the Vault path mounted while using
+Research. `expnote project show ID --json` exposes the resolved material and
+image directories for report generators.
+
+Create a proposed decision targeting the plan, then run
+`expnote plan submit PLAN-ID --decision DEC-ID --apply`. Research shows the
+submitted text with the decision. Confirming it adopts that revision. Submit
+substantive edits with a fresh decision. Frozen execution plans record the
+approved PLAN revision. Use the Research Web UI to label evidence and review
+results. Click a figure to open the viewer, then zoom or drag to inspect it.
+
+### Move an existing project
+
+Rehearse the migration in a copy using isolated `EXPNOTE_CONFIG_HOME` and
+`EXPNOTE_DATA_HOME`. Copy the project's SQLite stores and any linked workspace
+used in the rehearsal. Run `expnote project migrate-layout ID --json` and
+inspect the moves, conflicts, and rewritten references. Use the displayed
+`planHash` with `--expect HASH --apply` to apply that preview. A JSON
+`--manifest` can specify `retain`, a map from old project-relative file paths
+to new paths within the Obsidian project, and `baseUrl`, the loopback address
+used for Research links. The default is `http://localhost:8765`.
+
+Pause report writers for the project during migration or restore. The command
+creates a backup under the Research project's `migration/split-backup` directory.
+`expnote project restore-layout ID` previews recovery. Add `--apply` to
+restore the backed-up layout before retrying an interrupted migration. If later
+edits conflict with the backup, restore to an isolated copy for comparison.
+Include the Research project directory and the Vault's user notes in backups.
+
+### Keep the editable RES in Obsidian
+
+For an existing split project, preview `expnote project results-in-vault ID
+--json` and then add `--apply` while report writers for that project are paused.
+This moves the existing result Markdown and copies the Research images that it
+embeds. The project's stable record IDs and review records keep their history.
+Use `project show ID --json` to discover `absResultsDir`.
+
+The Research detail page renders the current Vault file. Open **Review version**
+to read the submitted snapshot and complete a pending review. Submit a changed
+result again with `expnote res submit` to review the new version.
+
+For report generators, use `expnote res publish ID --from-file CANDIDATE --apply
+--json`. It publishes over the previous generated version when the source still
+matches. A differing source and a first publication with no baseline produce a
+proposal. The JSON includes its path and the current source SHA. After merging
+the candidate, pass `--expected-sha256 SHA` with the merged file so a concurrent
+edit is detected. Keep source and candidates as Markdown and use a new filename
+for each changed image to preserve images in submitted versions.

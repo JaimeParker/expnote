@@ -45,6 +45,7 @@ from expnote.research.view import ProjectView
 from expnote.research.writeback import (
     FileEdit,
     WriteContext,
+    _append_audit,
     apply_changes,
     plan_changes,
     rename_path,
@@ -80,7 +81,7 @@ DECISION_BACKEND = StoreBackend(
     store_path,
     plan_export,
     sync_export,
-    lambda view: view.context.resolved.project_dir / view.profile.decision_export,
+    lambda view: view.context.resolved.material_dir / view.profile.decision_export,
     "expnote decision export --apply",
 )
 
@@ -107,6 +108,10 @@ class WritePlan:
     store_op: StoreOp | None = None
     # (source, target) notes moved after the edits are applied (`plan adopt`).
     renames: list[tuple[Path, Path]] = dataclasses.field(default_factory=list)
+    # Split-layout operations can update state and pin records they depend on.
+    workflow_updates: dict[str, dict] = dataclasses.field(default_factory=dict)
+    workflow_reads: set[str] = dataclasses.field(default_factory=set)
+    workflow_files: dict[Path, str] = dataclasses.field(default_factory=dict)
 
 
 def execute_plan(
@@ -120,6 +125,10 @@ def execute_plan(
     actor: str | None = None,
 ) -> CommandResult:
     """Dry-run (exit 4) unless `apply`; no changes at all is a plain success."""
+    if view.context.entry.layout == "split":
+        from expnote.research.workflow import prepare_write
+
+        plan = prepare_write(view, plan, command, apply)
     context = WriteContext.for_project(view.context, actor)
     changes = plan_changes(context, plan.edits)
     data = dict(plan.data)
@@ -266,6 +275,20 @@ def _execute_store_plan(
                 )
                 applied += result.applied
                 warnings += result.warnings
+        if context.resolved.research_dir and op.name in {"workflow", "plan-submit"}:
+            try:
+                _append_audit(
+                    context,
+                    {
+                        "command": command,
+                        "path": backend.path(project_id).name,
+                        "op": op.name,
+                        "address": op.address,
+                        "authorization": plan.authorization,
+                    },
+                )
+            except OSError as error:
+                warnings.append({"code": "AUDIT_LOG_IO", "message": str(error)})
         try:
             _, record = backend.sync_export(store, context, target, command=command)
         except ResearchError as error:
@@ -500,6 +523,7 @@ def plan_decision_set(
     by: str | None = None,
     expected_version: int | None = None,
     by_user: bool = False,
+    apply: bool = True,
 ) -> WritePlan:
     """`by_user` is the GUI path: the user clicked, so no authorization is required.
 
@@ -561,7 +585,7 @@ def plan_decision_set(
     confirmed_by = "user" if by_user else "agent-for-user"
     today = written_date(view)
 
-    def apply(store: DecisionStore, actor: str, at: str) -> None:
+    def transact(store: DecisionStore, actor: str, at: str) -> None:
         store.transition(
             number,
             status,
@@ -574,6 +598,11 @@ def plan_decision_set(
             superseded_by=successor,
         )
 
+        if status == "confirmed" and view.context.entry.layout == "split":
+            from expnote.research.workflow import confirm_submission
+
+            confirm_submission(view, store, number, actor, at, apply=apply)
+
     summary = [f"-status: {current}", f"+status: {status}"]
     if status == "superseded":
         summary.append(f"+superseded_by: {decision_id_of(view, successor)}")
@@ -581,7 +610,7 @@ def plan_decision_set(
         summary.append(f"+confirmed_by: {confirmed_by}")
         if authorization:
             summary.append(f"+authorization: {authorization}")
-    op = StoreOp("decision-set", f"decision:{ident}", "\n".join(summary), apply)
+    op = StoreOp("decision-set", f"decision:{ident}", "\n".join(summary), transact)
     return WritePlan(
         [], base, authorization=authorization, warnings=warnings, store_op=op
     )
@@ -749,7 +778,10 @@ def plan_ev_label_set(
         transform=transform,
         expected_sha256=expected_sha256 or view.file_sha256(note.rel),
     )
-    return WritePlan([edit], {"ev": note.stem, "row": row}, authorization=authorization)
+    from expnote.research.lifecycle import review_evidence
+
+    plan = WritePlan([edit], {"ev": note.stem, "row": row}, authorization=authorization)
+    return review_evidence(view, note, plan, commit=False)
 
 
 def plan_ev_label_commit(
@@ -788,11 +820,14 @@ def plan_ev_label_commit(
         ("labelled_on", written_date(view)),
         ("label_authorization", yaml_quote(authorization)),
     ]
-    return WritePlan(
+    from expnote.research.lifecycle import review_evidence
+
+    plan = WritePlan(
         [_fm_edit(view, note, items, expected_sha256)],
         {"ev": note.stem, "from": "rendered", "to": "labelled"},
         authorization=authorization,
     )
+    return review_evidence(view, note, plan, commit=True)
 
 
 def remark_supported(view: ProjectView) -> bool:
@@ -878,7 +913,9 @@ def plan_ev_labels_by_user(
         transform=transform,
         expected_sha256=expected_sha256 or view.file_sha256(note.rel),
     )
-    return WritePlan([edit], base)
+    from expnote.research.lifecycle import review_evidence
+
+    return review_evidence(view, note, WritePlan([edit], base), commit=commit)
 
 
 def _value_column_names(view: ProjectView, note: Note) -> set[str]:
@@ -916,6 +953,17 @@ def plan_plan_advance(
     base = {"plan": plan_id, "from": status, "to": to}
     if status == to:
         return WritePlan([], {**base, "gates": []})
+    from expnote.research import lifecycle
+
+    strict = lifecycle.strict(view, page)
+    if strict:
+        lifecycle.require(
+            to not in {"read-out", "confirmed", "closed", "withdrawn"},
+            "DEDICATED_ACTION",
+            "Use res submit, res review, plan close or plan withdraw.",
+        )
+        if to == "running":
+            lifecycle.running_gate(view, page, lifecycle.approved(view, page))
     _check_transition(status, to)
     updates: dict[str, str] = {"status": to}
     literals: dict[str, str] = {"status": to}
@@ -966,7 +1014,17 @@ def plan_plan_advance(
         )
     passed = [{"code": "LIFE.GATES", "ok": True, "message": f"gates for {to} pass"}]
     edit = _fm_edit(view, page, list(literals.items()), expected_sha256)
-    return WritePlan([edit], {**base, "gates": passed})
+    plan = WritePlan([edit], {**base, "gates": passed})
+    if strict and to == "running":
+        flow = lifecycle.flow_of(view, page)
+        plan.workflow_reads.update(flow["checklist"])
+        plan.workflow_files.update(
+            {
+                entities.find_by_id(view, "exec-plan", key).path: step["source"]
+                for key, step in flow["checklist"].items()
+            }
+        )
+    return plan
 
 
 entities.DATE_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -1018,6 +1076,13 @@ def plan_plan_reopen(
     unless the caller passes their own.
     """
     page = entities.find_plan(view, plan_id)
+    from expnote.research import lifecycle
+
+    lifecycle.require(
+        not lifecycle.strict(view, page),
+        "REOPEN_SUBMISSION",
+        "Submit a new PLAN version with reopen=true for approval.",
+    )
     status = page.get("status")
     number, row = _reopen_decision(view, page, decision)
     ident = decision_id_of(view, number)
@@ -1147,6 +1212,7 @@ def plan_plan_close(
     *,
     reason: str,
     force: bool = False,
+    withdrawn: bool = False,
     authorization: str | None = None,
     by_user: bool = False,
     expected_sha256: str | None = None,
@@ -1157,17 +1223,34 @@ def plan_plan_close(
     plan closes from any open status, `forced_close: true` records that the gates were
     skipped, and `check` keeps them visible as WARN.
     """
+    from expnote.research import lifecycle
+
+    verb = "Withdraw" if withdrawn else "Close"
+    target = "withdrawn" if withdrawn else "closed"
     if by_user:
         authorization = (authorization or "").strip() or None
     else:
-        authorization = require_authorization(authorization, "closing a plan")
+        authorization = require_authorization(authorization, f"{verb.lower()} a plan")
     if not reason.strip():
         raise ResearchError("USAGE_EMPTY_TEXT", "--reason is empty", exit_code=2)
     profile, snap = view.profile, view.snapshot
     page = entities.find_plan(view, plan_id)
     status = page.get("status")
-    base = {"plan": plan_id, "from": status, "to": "closed", "forced": force}
-    if status == "closed":
+    strict = lifecycle.strict(view, page)
+    if strict and force:
+        lifecycle.require(False, "FORCE_CLOSE", "Withdraw the PLAN to stop early.")
+    if (
+        strict
+        and not by_user
+        and parse_decision_ref(authorization, profile, lenient=True) is not None
+    ):
+        lifecycle.require(
+            False,
+            "CONCLUSION_AUTHORIZATION",
+            "Record the user's explicit words for this PLAN decision.",
+        )
+    base = {"plan": plan_id, "from": status, "to": target, "forced": force}
+    if status == target:
         return WritePlan([], {**base, "gates": []})
     if status not in PLAN_ORDER:
         raise gate_failed(
@@ -1188,10 +1271,14 @@ def plan_plan_close(
         default_decided,
         plan_id,
     )
+    if withdrawn:
+        decided = f"Withdraw {plan_id}."
     record = {
         "number": number,
         "id": ident,
-        "title": _decisions_wording(view, "close_title", f"Close {plan_id}", plan_id),
+        "title": f"{verb} {plan_id}"
+        if withdrawn
+        else _decisions_wording(view, "close_title", f"Close {plan_id}", plan_id),
         "date": today,
         "status": "confirmed",
         "layer": profile.decision_layers[0] if profile.decision_layers else "",
@@ -1209,14 +1296,16 @@ def plan_plan_close(
         "authorization": authorization,
     }
     updates = {
-        "status": "closed",
+        "status": target,
         "closed_decision": decision_ref_text(view, page, number),
     }
     literals = {
-        "status": "closed",
+        "status": target,
         "closed_decision": decision_ref_literal(view, page, number),
     }
-    waived = _close_gates(view, page, record, updates, status)
+    if strict and not withdrawn:
+        lifecycle.close_guard(view, page, force)
+    waived = [] if withdrawn else _close_gates(view, page, record, updates, status)
     if force:
         literals["forced_close"] = "true"
     if waived and not force:
@@ -1243,7 +1332,8 @@ def plan_plan_close(
         else [{"code": "LIFE.GATES", "ok": True, "message": "gates for closed pass"}],
         "waivedGates": waived,
     }
-    return WritePlan([edit], data, authorization=authorization, store_op=op)
+    plan = WritePlan([edit], data, authorization=authorization, store_op=op)
+    return lifecycle.conclusion(view, page, plan, force=force, withdrawn=withdrawn)
 
 
 def _snapshot_with_record(view: ProjectView, record: dict):
@@ -1308,8 +1398,21 @@ def plan_exec_freeze(
     no_new_rules: bool = False,
     expected_sha256: str | None = None,
 ) -> WritePlan:
+    from expnote.research.lifecycle import freeze_exec
+
     profile = view.profile
     note = entities.find_by_id(view, "exec-plan", ident)
+    if view.context.entry.layout == "split":
+        from expnote.research.model import parse_note
+        from expnote.research.workflow import identity, virtual_note
+
+        key = identity(view.project_id, note)
+        state = dict(view.cache["workflow"].get(key, {}))
+        state.pop("revision", None)
+        draft = parse_note(
+            note.path, note.rel, note.path.read_text(encoding="utf-8-sig")
+        )
+        note = virtual_note(view.context, draft, {key: state})
     status = note.get("status")
     exec_id = note.get("id") or note.stem
     record = None
@@ -1391,7 +1494,7 @@ def plan_exec_freeze(
     }
     edit = _fm_edit(view, note, items, expected_sha256)
     if record is None:
-        return WritePlan([edit], data)
+        return freeze_exec(view, note, WritePlan([edit], data))
     data |= {"decision": record["id"], "approvedBy": "agent"}
     op = StoreOp(
         "decision-new",
@@ -1399,7 +1502,7 @@ def plan_exec_freeze(
         _record_summary(record),
         lambda store, actor, at: store.insert(record, actor=actor, at=at),
     )
-    return WritePlan([edit], data, store_op=op)
+    return freeze_exec(view, note, WritePlan([edit], data, store_op=op))
 
 
 def _engineering_layer(profile) -> str:
@@ -1476,14 +1579,23 @@ def plan_exec_advance(
     to: str,
     *,
     expected_sha256: str | None = None,
+    runs: tuple[str, ...] = (),
 ) -> WritePlan:
+    from expnote.research.lifecycle import change_exec, flow_of
+
     note = entities.find_by_id(view, "exec-plan", ident)
     status = note.get("status")
     exec_id = note.get("id") or note.stem
     base = {"id": exec_id, "from": status, "to": to}
     if status == to:
-        return WritePlan([], base)
-    if to not in EXEC_MOVES.get(status, ()):
+        plan = WritePlan([], base)
+        return change_exec(view, note, to, runs, plan) if runs else plan
+    retry = (
+        status == "aborted"
+        and to == "running"
+        and flow_of(view, view.snapshot.plan_page_of(note))
+    )
+    if to not in EXEC_MOVES.get(status, ()) and not retry:
         raise gate_failed(
             f"{exec_id} cannot move {status} -> {to}",
             [_gate("LIFE.EXEC_TRANSITION", f"{status} -> {to}")],
@@ -1493,7 +1605,8 @@ def plan_exec_advance(
     unmet = _gate_rows(sink.items)
     if unmet:
         raise gate_failed(f"{exec_id} cannot move {status} -> {to}", unmet)
-    return WritePlan([_fm_edit(view, note, [("status", to)], expected_sha256)], base)
+    plan = WritePlan([_fm_edit(view, note, [("status", to)], expected_sha256)], base)
+    return change_exec(view, note, to, runs, plan)
 
 
 def _result_edit(
@@ -1571,13 +1684,38 @@ def plan_res_submit(
     A running plan moves on to read-out in the same write when its read-out gates
     pass; when they do not, the result is still submitted and the plan stays put.
     """
+    from expnote.research import lifecycle
+
     deviation_impact = _check_deviation_impact(deviation_impact)
     note = entities.find_by_id(view, "result", ident)
     res_id = note.get("id") or note.stem
     status = note.get("status")
     page = view.snapshot.plan_page_of(note)
     plan_status = page.get("status") if page is not None else None
-    if status != "draft" and not (status == "first-read" and plan_status == "running"):
+    strict = lifecycle.strict(view, page)
+    revised = False
+    if strict:
+        flow = lifecycle.approved(view, page)
+        if status in ("first-read", "confirmed"):
+            stored = lifecycle.state_of(view, note).get("resultSubmission")
+            revised = stored != lifecycle._package(view, page, note, flow)
+            if not revised and status == "first-read":
+                lifecycle._readout(view, page, flow)
+                return WritePlan([], {"id": res_id, "from": status, "to": status})
+    elif view.context.entry.results_in_vault and status in ("first-read", "confirmed"):
+        from expnote.research.model import parse_note
+
+        current = parse_note(
+            note.path, note.rel, note.path.read_text(encoding="utf-8-sig")
+        )
+        if current.fm_error:
+            raise ResearchError("RESULT_INVALID", current.fm_error, exit_code=2)
+        revised = current.body.strip() != note.body.strip()
+    if (
+        status != "draft"
+        and not revised
+        and not (status == "first-read" and plan_status == "running")
+    ):
         raise gate_failed(
             f"{res_id} is {status!r}; only a draft result is submitted",
             [_gate("RES.TRANSITION", str(status))],
@@ -1591,19 +1729,26 @@ def plan_res_submit(
         ("deviation_impact", deviation_impact),
         ("submitted_on", written_date(view)),
     ]
-    edits = [
-        _result_edit(
-            view, note, items, expected_sha256, remove=frozenset({"returned_on"})
+    remove = {"returned_on"}
+    if revised:
+        remove.update(
+            {"reviewed_by", "reviewed_on", "review_authorization", "confirmed_decision"}
         )
-    ]
+    edits = [_result_edit(view, note, items, expected_sha256, remove=frozenset(remove))]
     data = {
         "id": res_id,
+        **({"revised": True} if revised else {}),
         "from": status,
         "to": "first-read",
         "plan": page.get("id") if page is not None else None,
         "planAdvanced": False,
         "unmetGates": [],
     }
+    if strict:
+        if plan_status in {"running", "confirmed"}:
+            edits.append(_fm_edit(view, page, [("status", "read-out")], None))
+            data["planAdvanced"] = True
+        return lifecycle.result_submit(view, note, page, WritePlan(edits, data))
     warnings: list[dict] = []
     if page is not None and plan_status == "running":
         current, _ = entities.plan_cycle_members(view, page)
@@ -1654,6 +1799,8 @@ def plan_res_review(
 
     `by_user` is the GUI path; the CLI needs the user's own words as `authorization`.
     """
+    from expnote.research import lifecycle
+
     if verdict not in ("pass", "return"):
         raise ResearchError(
             "USAGE_BAD_OPTION", "--verdict takes pass or return", exit_code=2
@@ -1661,6 +1808,8 @@ def plan_res_review(
     if not by_user:
         authorization = require_authorization(authorization, "reviewing a result")
     note = entities.find_by_id(view, "result", ident)
+    page = view.snapshot.plan_page_of(note)
+    strict = lifecycle.strict(view, page)
     res_id = note.get("id") or note.stem
     status = note.get("status")
     if status != "first-read":
@@ -1688,11 +1837,14 @@ def plan_res_review(
             expected_sha256,
             remark=f"- {today} {reviewer}: {text}",
         )
-        return WritePlan(
+        plan = WritePlan(
             [edit],
             {"id": res_id, "from": status, "to": "draft"},
             authorization=authorization,
         )
+        if strict:
+            lifecycle.review_result(view, note, page, plan, passed=False)
+        return plan
     impact = _check_deviation_impact(deviation_impact or note.get("deviation_impact"))
     updates = {
         "status": "confirmed",
@@ -1722,7 +1874,19 @@ def plan_res_review(
             )
         )
     base["supersedes"] = [e.get("id") or e.stem for e in superseded]
-    return WritePlan(edits, base, authorization=authorization)
+    if strict:
+        edits.append(
+            _fm_edit(
+                view,
+                page,
+                [("result", yaml_quote(link)), ("status", "confirmed")],
+                None,
+            )
+        )
+    plan = WritePlan(edits, base, authorization=authorization)
+    return (
+        lifecycle.review_result(view, note, page, plan, passed=True) if strict else plan
+    )
 
 
 def _earlier_cycle_active_results(view: ProjectView, result: Note) -> list[Note]:
@@ -1745,7 +1909,7 @@ def _earlier_cycle_active_results(view: ProjectView, result: Note) -> list[Note]
 
 
 def _deviation_file(view: ProjectView):
-    return view.context.resolved.project_dir / view.profile.deviation_register
+    return view.context.resolved.material_dir / view.profile.deviation_register
 
 
 def _register_table(lines: list[str], id_column: str):

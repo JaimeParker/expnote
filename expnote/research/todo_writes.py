@@ -42,7 +42,7 @@ TODO_BACKEND = writes.StoreBackend(
     store_path,
     plan_export,
     sync_export,
-    lambda view: view.context.resolved.project_dir / view.profile.todo_export,
+    lambda view: view.context.resolved.material_dir / view.profile.todo_export,
     "expnote todo export --apply",
 )
 _ID_RE = re.compile(rf"{ID_PREFIX}-(\d+)", re.IGNORECASE)

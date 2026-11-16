@@ -191,6 +191,7 @@ def test_only_the_listed_endpoints_can_write(world):
         ("POST", f"{prefix}/decisions/{{ident}}/approve"),
         ("POST", f"{prefix}/decisions/{{ident}}/reject"),
         ("POST", f"{prefix}/plans/{{plan_id}}/close"),
+        ("POST", f"{prefix}/plans/{{plan_id}}/withdraw"),
         ("POST", f"{prefix}/plans/adopt"),
         ("POST", f"{prefix}/deviations/{{ident}}/close"),
         ("POST", f"{prefix}/ev/{{stem}}/labels"),
