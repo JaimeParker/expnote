@@ -1,3 +1,4 @@
+import { wireAppearance } from "/research/appearance.js";
 import { wireImageViewer } from "/research/image-viewer.js";
 // expnote research GUI: shell, hash router and API client. Pages live in pages.js.
 import { baseOf, nav, parseHash } from "/research/nav.js";
@@ -49,7 +50,7 @@ function writeToken() {
   return (meta && meta.getAttribute("content")) || "";
 }
 
-// A GUI write (design 7.2). The body carries `expectedSha256`; `dryRun: true` only plans.
+// A GUI write carries the local token. Project actions can also request a dry run.
 export async function post(path, body) {
   return request(`${API}${path}`, {
     method: "POST",
@@ -255,7 +256,7 @@ function toggleHelp(open) {
   }
 }
 
-function wireKeys() {
+function wireKeys(appearance) {
   topnav.addEventListener("scroll", markTabOverflow);
   window.addEventListener("resize", markTabOverflow);
   document.getElementById("searchForm").addEventListener("submit", (event) => {
@@ -269,6 +270,13 @@ function wireKeys() {
   document.addEventListener("keydown", (event) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((event.target.tagName || "").toUpperCase());
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (appearance.isOpen()) {
+      if (event.key === "Escape") {
+        appearance.cancel();
+        event.preventDefault();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       if (help && !help.box.hasAttribute("hidden")) toggleHelp(false);
       else if (event.target === searchInput) {
@@ -296,13 +304,20 @@ function wireKeys() {
 }
 
 async function start() {
-  wireKeys();
+  const appearance = wireAppearance({
+    api, post,
+    onApply(homeLayout) {
+      state.homeLayout = homeLayout;
+      nav.view?.setHomeLayout?.(homeLayout);
+      markTabOverflow();
+    },
+  });
+  wireKeys(appearance);
   wireImageViewer(main);
-  window.addEventListener("hashchange", () => show());
   // A tab left open goes stale; refresh it on return unless the user has work in progress.
   document.addEventListener("visibilitychange", createRevisitRefresh({ doc: document, scope: main, refresh: refreshPage }));
   try {
-    const body = await api("/projects");
+    const [body] = await Promise.all([api("/projects"), appearance.load()]);
     state.projects = body.data.projects;
     state.features = body.data.features || {};
     const runs = document.getElementById("runsLink");
@@ -313,6 +328,7 @@ async function start() {
     clear(main).append(errorBox(error, () => window.location.reload()));
     return;
   }
+  window.addEventListener("hashchange", () => show());
   if (!window.location.hash) window.location.hash = "#/";
   else await show();
 }

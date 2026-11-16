@@ -298,6 +298,43 @@ async function projectPage(ctx) {
   const todos = todosBody.data.todos;
   const userTodos = todos.filter((t) => t.owner === "user");
   const agentTodos = todos.filter((t) => t.owner !== "user");
+  const waiting = waitingPanel(ctx, data, userTodos, todosBody.data.manual);
+  const planPanel = plansPanel(ctx, plans, wanted);
+  const feed = feedPanel(ctx, decisions, data.decisions.total);
+  const runs = runsPanel(ctx, data);
+  const queue = queuePanel(ctx, data, agentTodos);
+  const lanes = h("section", { class: "panel lanes-panel" },
+    h("header", { class: "panel-head" }, h("h2", null, "Decisions by plan"), lanesLegend()),
+    planLanes({ project: P, plans: allPlans, decisions, today: data.today }),
+  );
+  const grid = h("div", null);
+  const left = h("div", { class: "col-left" });
+  const center = h("div", { class: "col-mid" });
+  const right = h("div", { class: "col-right" });
+  const primary = h("div", { class: "overview-primary" });
+  const secondary = h("div", { class: "overview-secondary" });
+
+  function setHomeLayout(layout) {
+    const previous = grid.getAttribute("data-home-layout");
+    if (previous === layout) return;
+    grid.setAttribute("data-home-layout", layout);
+    if (previous && previous !== "default" && layout !== "default") return;
+    // Reparent the existing panels so previewing a layout keeps live inputs and folds.
+    if (layout === "default") {
+      grid.setAttribute("class", "overview-grid");
+      left.append(waiting, queue);
+      center.append(planPanel, runs);
+      right.append(feed);
+      grid.replaceChildren(left, lanes, center, right);
+    } else {
+      grid.setAttribute("class", "overview-sections");
+      primary.append(waiting, planPanel, feed);
+      secondary.append(runs, queue);
+      grid.replaceChildren(primary, lanes, secondary);
+    }
+  }
+
+  setHomeLayout(ctx.state.homeLayout || "default");
   const node = h(
     "div",
     { class: "page overview" },
@@ -309,21 +346,9 @@ async function projectPage(ctx) {
       h("div", { class: "meta-line" }, pair("Plans", String(data.plans.total)), pair("Decisions", String(data.decisions.total)), pair("TODOs", String(data.todos.total))),
       h("div", { class: "actions", "data-slot": "page-actions" }),
     ),
-    h(
-      "div",
-      { class: "overview-grid" },
-      h("div", { class: "col-left" }, waitingPanel(ctx, data, userTodos, todosBody.data.manual), queuePanel(ctx, data, agentTodos)),
-      h(
-        "section",
-        { class: "panel lanes-panel" },
-        h("header", { class: "panel-head" }, h("h2", null, "Decisions by plan"), lanesLegend()),
-        planLanes({ project: P, plans: allPlans, decisions, today: data.today }),
-      ),
-      h("div", { class: "col-mid" }, plansPanel(ctx, plans, wanted), runsPanel(ctx, data)),
-      h("div", { class: "col-right" }, feedPanel(ctx, decisions, data.decisions.total)),
-    ),
+    grid,
   );
-  return { node, title: projectName(ctx) };
+  return { node, title: projectName(ctx), setHomeLayout };
 }
 
 // ---- PLAN ------------------------------------------------------------------------------------------

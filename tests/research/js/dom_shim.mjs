@@ -83,10 +83,17 @@ export class Element_ extends Node_ {
 
 export function installDom() {
   const ids = {};
-  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar", "helpButton"]) {
+  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar", "helpButton", "appearanceButton", "appearanceControls"]) {
     ids[id] = new Element_(id === "searchInput" ? "input" : "div");
   }
   const windowListeners = {};
+  const documentListeners = {};
+  const root = new Element_("html");
+  const values = new Map();
+  root.style = {
+    setProperty: (key, value) => values.set(key, value),
+    getPropertyValue: (key) => values.get(key) || "",
+  };
   const location = { hash: "" };
   const body = new Element_("body");
   const token = { value: "" };
@@ -97,7 +104,8 @@ export function installDom() {
     createElementNS: (_ns, tag) => new Element_(tag),
     createTextNode: (t) => new Text_(t),
     getElementById: (id) => ids[id],
-    addEventListener() {},
+    addEventListener: (type, fn) => { (documentListeners[type] ||= []).push(fn); },
+    documentElement: root,
     body,
     title: "",
   };
@@ -115,6 +123,8 @@ export function installDom() {
     location,
     body,
     setToken: (value) => { token.value = value; },
+    fireKeyDown: (event) => (documentListeners.keydown || []).forEach((fn) =>
+      fn({ target: body, preventDefault() {}, ...event })),
     fireHashChange: () => (windowListeners.hashchange || []).forEach((fn) => fn()),
   };
 }

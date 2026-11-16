@@ -479,6 +479,71 @@ check("Retry enables itself after retryAfterMs", !retry.hasAttribute("disabled")
 const shown = actions.toast("Decision #9 approved", { journal: "/data/journal/x.orig" });
 check("toast names the action and the journal path", shown.textContent.includes("Decision #9 approved") && shown.textContent.includes("/data/journal/x.orig"));
 
+// User layout state is shared across tabs and saved through the same local API.
+await go(`#/p/${enc(project)}`);
+const appearanceButton = dom.ids.appearanceButton;
+appearanceButton.dispatch("click");
+const appearance = dom.ids.appearanceControls.byClass("appearance-panel")[0];
+check("Appearance opens from the top bar", appearance && !appearance.hasAttribute("hidden"));
+if (appearance) {
+  const input = (name) => appearance.query((n) => n.getAttribute("name") === name)[0];
+  const overview = () => main.query((n) => n.hasAttribute("data-home-layout"))[0];
+  const layout = () => overview()?.getAttribute("data-home-layout");
+  const root = document.documentElement;
+  const originalPanels = ["waiting-panel", "plans-panel", "feed-panel"].map((name) => main.byClass(name)[0]);
+  const folded = main.byClass("fold")[0];
+  folded?.setAttribute("open", "");
+  const draftTodo = main.byClass("todo-text")[0];
+  if (draftTodo) draftTodo.value = "Unsaved TODO";
+  const set = (key, value) => {
+    const control = input(key);
+    control.value = String(value);
+    control.dispatch(control.tagName === "SELECT" ? "change" : "input");
+  };
+  set("ui_font_size", 20);
+  check("UI size previews independently", root.style.getPropertyValue("--ui-font-size") === "20px" &&
+    root.style.getPropertyValue("--prose-font-size") === "17px");
+  set("prose_font_size", 22);
+  set("theme", "dark");
+  set("density", "compact");
+  set("home_layout", "task-first");
+  check("theme, density and layout preview in place", layout() === "task-first" &&
+    root.getAttribute("data-theme") === "dark" && root.getAttribute("data-density") === "compact");
+  check("layout preview moves the same panels", ["waiting-panel", "plans-panel", "feed-panel"]
+    .every((name, i) => main.byClass(name)[0] === originalPanels[i]) && folded?.hasAttribute("open") &&
+    draftTodo?.value === "Unsaved TODO" && main.byClass("todo-text")[0] === draftTodo);
+  const current = async () => (await api("/layout")).data.settings;
+  check("preview has not saved", (await current()).ui_font_size === 15);
+  dom.fireKeyDown({ key: "Escape", target: input("ui_font_size") });
+  check("Escape restores saved appearance", appearance.hasAttribute("hidden") && layout() === "default" &&
+    root.style.getPropertyValue("--ui-font-size") === "15px");
+
+  appearanceButton.dispatch("click");
+  set("home_layout", "single-column");
+  set("prose_font_size", 22);
+  const submit = () => appearance.byTag("form")[0].dispatch("submit");
+  const fetchBeforeSave = globalThis.fetch;
+  globalThis.fetch = (url, options) => url === "/api/research/layout" && options?.method === "POST"
+    ? Promise.resolve(new Response(JSON.stringify({ ok: false, error: { message: "Test save failed." } }), { status: 503 }))
+    : fetchBeforeSave(url, options);
+  submit();
+  await afterFetch();
+  check("save failure keeps the preview and shows the error",
+    !appearance.hasAttribute("hidden") && layout() === "single-column" &&
+    appearance.textContent.includes("Test save failed.") && (await current()).home_layout === "default");
+  globalThis.fetch = fetchBeforeSave;
+  submit();
+  for (let i = 0; i < 200 && !appearance.hasAttribute("hidden"); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  check("Save persists changes", (await current()).home_layout === "single-column" && (await current()).prose_font_size === 22);
+  appearanceButton.dispatch("click");
+  buttonLike(appearance, "Restore defaults").dispatch("click");
+  check("restoring defaults is a preview", layout() === "default" && (await current()).home_layout === "single-column");
+  buttonLike(appearance, "Cancel").dispatch("click");
+  check("Cancel returns to the saved layout", layout() === "single-column");
+}
+
 for (const c of checks.filter((c) => !c.ok)) problems.push(`check failed: ${c.name} ${c.detail}`);
 const failures = results.filter((r) => (r.errors.length && r.name !== "bad-route") || (!r.h1 && r.name !== "bad-route"));
 console.log(JSON.stringify({ pages: results.length, failures, problems, checks: checks.length, results }, null, 0));

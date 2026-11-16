@@ -2,9 +2,9 @@
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
 GET except the GUI writes (decision approve/reject, plan close, plan adopt, EV
-labels, result review, TODO add/edit/tick/drop, deviation close); those need the
-per-process token and a loopback Origin/Host, and go through `writes.py` and
-`writeback.py` with actor `gui`. Responses carry the research CSP.
+labels, result review, TODO add/edit/tick/drop, deviation close, appearance); those
+need the per-process token and a loopback Origin/Host. Project writes use the
+actor `gui`. Responses carry the research CSP.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from fastapi.responses import (
     Response,
 )
 
-from expnote.research import adopt, entities, todo_writes, writes
+from expnote.research import adopt, appearance, entities, todo_writes, writes
 from expnote.research.bundle import (
     build_bundle,
     byte_size,
@@ -278,6 +278,20 @@ def build_router(service: ResearchService) -> APIRouter:
             "features": {"runApp": service.run_app},
         }
         return _ok("projects", data, registry=str(registry_path()))
+
+    @router.get(f"{api}/layout")
+    def load_layout() -> JSONResponse:
+        return _ok("layout", appearance.load_layout())
+
+    @router.post(f"{api}/layout")
+    async def save_layout(request: Request) -> JSONResponse:
+        try:
+            service.authorize_write(request)
+            settings = await _json_body(request)
+            saved = await run_in_threadpool(appearance.save_layout, settings)
+            return _ok("layout", saved)
+        except ResearchError as error:
+            return _failure("layout", error)
 
     # ---- dashboard ------------------------------------------------------------------
 
@@ -904,7 +918,7 @@ def build_router(service: ResearchService) -> APIRouter:
         except ResearchError as error:
             return _failure("image", error)
 
-    # ---- GUI writes (exactly these) ------------------------------------------
+    # ---- project GUI writes ------------------------------------------
 
     async def gui_write(
         request: Request,
