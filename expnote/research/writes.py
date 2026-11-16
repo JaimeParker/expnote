@@ -12,6 +12,7 @@ import dataclasses
 import re
 from collections.abc import Callable
 from datetime import UTC
+from functools import partial
 from pathlib import Path
 
 from expnote.research import entities
@@ -22,8 +23,15 @@ from expnote.research.checks import (
     label_state,
     rules_sha256,
 )
-from expnote.research.decision_export import plan_export, sync_export
-from expnote.research.decision_store import DecisionStore, decision_id, store_path
+from expnote.research.decision_export import plan_export, sync_export, target_for
+from expnote.research.decision_store import (
+    ENGINEERING,
+    RESEARCH,
+    DecisionStore,
+    decision_id,
+    store_path,
+    validate_scope,
+)
 from expnote.research.decisions import decision_from_row, parse_decision_ref
 from expnote.research.edits import (
     body_line_offset,
@@ -81,9 +89,32 @@ DECISION_BACKEND = StoreBackend(
     store_path,
     plan_export,
     sync_export,
-    lambda view: view.context.resolved.material_dir / view.profile.decision_export,
+    lambda view: target_for(view.context),
     "expnote decision export --apply",
 )
+
+
+ENGINEERING_BACKEND = dataclasses.replace(
+    DECISION_BACKEND,
+    plan_export=partial(plan_export, scope=ENGINEERING),
+    sync_export=partial(sync_export, scope=ENGINEERING),
+    export_target=lambda view: target_for(view.context, ENGINEERING),
+    export_command="expnote decision export --scope engineering --apply",
+)
+
+
+def decision_backend(scope: str) -> StoreBackend:
+    return ENGINEERING_BACKEND if scope == ENGINEERING else DECISION_BACKEND
+
+
+def _check_store_layout(view: ProjectView, backend: StoreBackend, store) -> None:
+    if (
+        backend in (DECISION_BACKEND, ENGINEERING_BACKEND)
+        and store.separated != view.snapshot.separated_decisions
+    ):
+        raise ResearchError(
+            "CONFLICT", "decision storage changed, reload and retry", exit_code=5
+        )
 
 
 @dataclasses.dataclass
@@ -247,6 +278,7 @@ def _execute_store_plan(
     }
     if not apply:
         with backend.open_for_preview(project_id) as store, store.dry_run():
+            _check_store_layout(view, backend, store)
             op.apply(store, context.actor, stamp)
             export = backend.plan_export(store, context, target)
         if export.problem is not None:
@@ -264,6 +296,7 @@ def _execute_store_plan(
     applied = [store_change]
     with backend.open(project_id) as store:
         with store.transaction():
+            _check_store_layout(view, backend, store)
             op.apply(store, context.actor, stamp)
             if changes:
                 result = apply_changes(
@@ -381,7 +414,7 @@ def _decision_number(view: ProjectView, ident: str) -> int:
     return entities.parse_decision_ident(view, ident)
 
 
-def _decision(view: ProjectView, ident: str):
+def _decision(view: ProjectView, ident: str, *, scope: str | None = None):
     number = _decision_number(view, ident)
     row = view.snapshot.decisions.get(number)
     if row is None:
@@ -390,6 +423,11 @@ def _decision(view: ProjectView, ident: str):
             f"no decision {ident!r}",
             exit_code=3,
             remediation="expnote decision list",
+        )
+    if scope is not None and (row.scope or RESEARCH) != scope:
+        raise gate_failed(
+            f"{ident} belongs to {row.scope}; this action requires {scope}",
+            [_gate("DEC.SCOPE", ident)],
         )
     return number, row
 
@@ -421,11 +459,11 @@ def _record_summary(record: dict) -> str:
         f"+status: {record['status']}",
         f"+layer: {record['layer']}",
     ]
-    for key in ("plans", "targets", "supersedes"):
-        if record[key]:
+    for key in ("scope", "plans", "targets", "supersedes"):
+        if record.get(key):
             lines.append(f"+{key}: {record[key]}")
     for key in ("decided", "reason", "options", "lands"):
-        if record[key]:
+        if record.get(key):
             lines.append(f"+{key}: {record[key]}")
     return "\n".join(lines)
 
@@ -445,9 +483,17 @@ def plan_decision_new(
     review_by: str | None = None,
     status: str = "proposed",
     authorization: str | None = None,
+    scope: str | None = None,
 ) -> WritePlan:
     """A proposed decision, or (`confirmed`) one the user already confirmed in chat."""
     profile, snap = view.profile, view.snapshot
+    if scope is None and snap.separated_decisions:
+        raise ResearchError(
+            "USAGE_DECISION_SCOPE",
+            "pass --scope research or --scope engineering",
+            exit_code=2,
+        )
+    scope = validate_scope(scope, snap.separated_decisions)
     if status not in ("proposed", "confirmed"):
         raise ResearchError(
             "USAGE_BAD_OPTION",
@@ -459,6 +505,8 @@ def plan_decision_new(
         authorization = require_authorization(
             authorization, "recording a decision as confirmed"
         )
+        if snap.separated_decisions:
+            _require_cited_decision_confirmed(view, authorization, scope=scope)
     required = (("--title", title), ("--decided", decided), ("--reason", reason))
     for name, text in required:
         if not text.strip():
@@ -476,8 +524,10 @@ def plan_decision_new(
     plan_ids = _split_list(plans)
     for plan_id in plan_ids:
         entities.find_plan(view, plan_id)
-    predecessors = [_decision(view, ident)[0] for ident in _split_list(supersedes)]
-    number = max(snap.decisions, default=0) + 1
+    predecessors = [
+        _decision(view, ident, scope=scope)[0] for ident in _split_list(supersedes)
+    ]
+    number = snap.last_decision_number + 1
     ident = decision_id(profile.decision_id_prefix, number)
     stamp = written_at(view)
     record = {
@@ -504,13 +554,18 @@ def plan_decision_new(
             "confirmed_on": written_date(view),
             "authorization": authorization,
         }
+    if snap.separated_decisions:
+        record["scope"] = scope
     op = StoreOp(
         "decision-new",
         f"decision:{ident}",
         _record_summary(record),
         lambda store, actor, at: store.insert(record, actor=actor, at=at),
+        backend=decision_backend(scope),
     )
     data = {"id": ident, "number": number, "status": status, "createdAt": stamp}
+    if snap.separated_decisions:
+        data["scope"] = scope
     return WritePlan([], data, authorization=authorization, store_op=op)
 
 
@@ -524,6 +579,7 @@ def plan_decision_set(
     expected_version: int | None = None,
     by_user: bool = False,
     apply: bool = True,
+    scope: str | None = None,
 ) -> WritePlan:
     """`by_user` is the GUI path: the user clicked, so no authorization is required.
 
@@ -543,6 +599,17 @@ def plan_decision_set(
             exit_code=2,
         )
     number, decision = _decision(view, ident)
+    scope = validate_scope(
+        decision.scope if by_user and scope is None else scope,
+        view.snapshot.separated_decisions,
+    )
+    if (decision.scope or RESEARCH) != scope:
+        raise gate_failed(
+            f"{ident} belongs to {decision.scope}; pass --scope {decision.scope}",
+            [_gate("DEC.SCOPE", ident)],
+        )
+    if not by_user and view.snapshot.separated_decisions and authorization:
+        _require_cited_decision_confirmed(view, authorization, scope=scope)
     ident = entities.decision_id(view, decision)
     if decision.source != "db":
         raise ResearchError(
@@ -581,7 +648,7 @@ def plan_decision_set(
     warnings: list[dict] = []
     successor: int | None = None
     if status == "superseded":
-        successor, warnings = _check_successor(view, ident, number, by)
+        successor, warnings = _check_successor(view, ident, number, by, scope=scope)
     confirmed_by = "user" if by_user else "agent-for-user"
     today = written_date(view)
 
@@ -598,7 +665,11 @@ def plan_decision_set(
             superseded_by=successor,
         )
 
-        if status == "confirmed" and view.context.entry.layout == "split":
+        if (
+            status == "confirmed"
+            and scope == RESEARCH
+            and view.context.entry.layout == "split"
+        ):
             from expnote.research.workflow import confirm_submission
 
             confirm_submission(view, store, number, actor, at, apply=apply)
@@ -610,7 +681,13 @@ def plan_decision_set(
         summary.append(f"+confirmed_by: {confirmed_by}")
         if authorization:
             summary.append(f"+authorization: {authorization}")
-    op = StoreOp("decision-set", f"decision:{ident}", "\n".join(summary), transact)
+    op = StoreOp(
+        "decision-set",
+        f"decision:{ident}",
+        "\n".join(summary),
+        transact,
+        backend=decision_backend(scope),
+    )
     return WritePlan(
         [], base, authorization=authorization, warnings=warnings, store_op=op
     )
@@ -620,14 +697,14 @@ def decision_id_of(view: ProjectView, number: int | None) -> str:
     return decision_id(view.profile.decision_id_prefix, number or 0)
 
 
-def _check_successor(view, ident: str, number: int, by: str | None):
+def _check_successor(view, ident: str, number: int, by: str | None, *, scope: str):
     if not by:
         raise ResearchError(
             "USAGE_MISSING_OPTION",
             "superseding a decision needs --by <successor decision id>",
             exit_code=2,
         )
-    successor_number, successor = _decision(view, by)
+    successor_number, successor = _decision(view, by, scope=scope)
     successor_id = entities.decision_id(view, successor)
     warnings: list[dict] = []
     if not successor.refers_back_to(number):
@@ -806,14 +883,7 @@ def plan_ev_label_commit(
             f"the label table of {note.stem} is {state}; every row needs a value",
             [{"code": "EV.LABEL_NOT_FILLED", "ok": False, "message": state}],
         )
-    reference = parse_decision_ref(authorization, view.profile, lenient=True)
-    if reference is not None:
-        cited = view.snapshot.decisions.get(reference)
-        if cited is None or cited.status != "confirmed":
-            raise gate_failed(
-                f"authorization cites decision {authorization}, which is not confirmed",
-                [{"code": "DEC.NOT_CONFIRMED", "ok": False, "message": authorization}],
-            )
+    _require_cited_decision_confirmed(view, authorization)
     items = [
         ("status", "labelled"),
         ("labelled_by", "agent-for-user"),
@@ -970,7 +1040,7 @@ def plan_plan_advance(
     if to in ("approved", "closed", "superseded", "withdrawn"):
         key = "approved_decision" if to == "approved" else "closed_decision"
         if decision:
-            number, _ = _decision(view, decision)
+            number, _ = _decision(view, decision, scope=RESEARCH)
             updates[key] = decision_ref_text(view, page, number)
             literals[key] = decision_ref_literal(view, page, number)
         elif not page.get(key):
@@ -1032,7 +1102,7 @@ entities.DATE_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 def _reopen_decision(view: ProjectView, plan: Note, decision: str):
     plan_id = str(plan.get("id", ""))
-    number, row = _decision(view, decision)
+    number, row = _decision(view, decision, scope=RESEARCH)
     if row.status != "confirmed":
         raise gate_failed(
             f"decision {decision} is {row.status or row.status_raw!r}; reopening "
@@ -1231,6 +1301,8 @@ def plan_plan_close(
         authorization = (authorization or "").strip() or None
     else:
         authorization = require_authorization(authorization, f"{verb.lower()} a plan")
+        if view.snapshot.separated_decisions:
+            _require_cited_decision_confirmed(view, authorization)
     if not reason.strip():
         raise ResearchError("USAGE_EMPTY_TEXT", "--reason is empty", exit_code=2)
     profile, snap = view.profile, view.snapshot
@@ -1257,7 +1329,7 @@ def plan_plan_close(
             f"plan {plan_id} is {status!r}; only an open plan can be closed",
             [_gate("LIFE.TRANSITION", f"{status} -> closed")],
         )
-    number = max(snap.decisions, default=0) + 1
+    number = snap.last_decision_number + 1
     ident = decision_id(profile.decision_id_prefix, number)
     today = written_date(view)
     default_decided = (
@@ -1496,11 +1568,15 @@ def plan_exec_freeze(
     if record is None:
         return freeze_exec(view, note, WritePlan([edit], data))
     data |= {"decision": record["id"], "approvedBy": "agent"}
+    scope = ENGINEERING if view.snapshot.separated_decisions else RESEARCH
+    if view.snapshot.separated_decisions:
+        record["scope"] = scope
     op = StoreOp(
         "decision-new",
         f"decision:{record['id']}",
         _record_summary(record),
         lambda store, actor, at: store.insert(record, actor=actor, at=at),
+        backend=decision_backend(scope),
     )
     return freeze_exec(view, note, WritePlan([edit], data, store_op=op))
 
@@ -1547,7 +1623,7 @@ def _self_approval_record(
         )
     plan_id = entities.plan_id_of(view, note)
     profile = view.profile
-    number = max(view.snapshot.decisions, default=0) + 1
+    number = view.snapshot.last_decision_number + 1
     today = written_date(view)
     return {
         "number": number,
@@ -1772,11 +1848,18 @@ def plan_res_submit(
     return WritePlan(edits, data, warnings=warnings)
 
 
-def _require_cited_decision_confirmed(view: ProjectView, authorization: str) -> None:
+def _require_cited_decision_confirmed(
+    view: ProjectView, authorization: str, *, scope: str = RESEARCH
+) -> None:
     reference = parse_decision_ref(authorization, view.profile, lenient=True)
     if reference is None:
         return
     cited = view.snapshot.decisions.get(reference)
+    if cited is not None and (cited.scope or RESEARCH) != scope:
+        raise gate_failed(
+            f"authorization requires a {scope} decision",
+            [_gate("DEC.SCOPE", authorization)],
+        )
     if cited is None or cited.status != "confirmed":
         raise gate_failed(
             f"authorization cites decision {authorization}, which is not confirmed",

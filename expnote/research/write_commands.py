@@ -27,6 +27,7 @@ from expnote.research import (
 )
 from expnote.research.cliutil import confirm_command, render_write
 from expnote.research.commands import (
+    DecisionScopeOption,
     NoRefreshOption,
     decision_app,
     deviation_app,
@@ -41,8 +42,15 @@ from expnote.research.decision_export import (
     plan_export,
     restore_rows,
     sync_export,
+    target_for,
 )
-from expnote.research.decision_store import DecisionStore, store_exists
+from expnote.research.decision_store import (
+    DecisionStore,
+    decision_id,
+    read_store,
+    store_exists,
+    validate_scope,
+)
 from expnote.research.envelope import CommandResult, run_command
 from expnote.research.errors import ResearchError
 from expnote.research.project_init import find_profile_notes, resolve_vault_root
@@ -156,6 +164,7 @@ def _decision_new(
     apply: bool,
     no_quiet: bool,
     as_json: bool,
+    scope: str | None,
 ) -> None:
     run_write(
         command,
@@ -173,6 +182,7 @@ def _decision_new(
             review_by=review_by,
             status=status,
             authorization=authorization,
+            scope=scope,
         ),
         project=project,
         apply=apply,
@@ -236,12 +246,13 @@ def decision_new(
     apply: ApplyOption = False,
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
+    scope: DecisionScopeOption = None,
 ) -> None:
     """Record a decision in the store (same as `new decision`)."""
     _decision_new(
         "decision new", title, layer, decided, reason, options, lands, plans,
         targets, supersedes, review_by, status, authorization, project, apply,
-        no_quiet, as_json,
+        no_quiet, as_json, scope,
     )  # fmt: skip
 
 
@@ -263,12 +274,13 @@ def new_decision(
     apply: ApplyOption = False,
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
+    scope: DecisionScopeOption = None,
 ) -> None:
     """Record a decision in the store."""
     _decision_new(
         "new decision", title, layer, decided, reason, options, lands, plans,
         targets, supersedes, review_by, status, authorization, project, apply,
-        no_quiet, as_json,
+        no_quiet, as_json, scope,
     )  # fmt: skip
 
 
@@ -290,6 +302,7 @@ def decision_set(
     apply: ApplyOption = False,
     no_quiet: NoQuietOption = False,
     as_json: JsonOption = False,
+    scope: DecisionScopeOption = None,
 ) -> None:
     """Confirm, reject or supersede a decision (confirm/reject are user-only)."""
     run_write(
@@ -299,6 +312,7 @@ def decision_set(
             ident,
             status,
             authorization=authorization,
+            scope=scope,
             by=by,
             expected_version=expected_version,
             apply=apply,
@@ -326,11 +340,12 @@ def decision_export(
     project: ProjectOption = None,
     apply: ApplyOption = False,
     as_json: JsonOption = False,
+    scope: DecisionScopeOption = None,
 ) -> None:
     """Rewrite the JSONL export in the vault from the store (normally automatic)."""
 
     def action() -> CommandResult:
-        context, wctx, target = _export_context(project)
+        context, wctx, _ = _export_context(project)
         meta = {"project": context.entry.id}
         if not store_exists(context.entry.id):
             raise ResearchError(
@@ -340,20 +355,27 @@ def decision_export(
                 remediation="expnote decision new ... --apply",
             )
         with DecisionStore.open(context.entry.id) as store:
+            selected = validate_scope(scope, store.separated)
+            target = target_for(context, selected)
             if apply:
                 plan, record = sync_export(
-                    store, wctx, target, command="decision export", force=force
+                    store,
+                    wctx,
+                    target,
+                    command="decision export",
+                    force=force,
+                    scope=selected,
                 )
                 data = {
                     "changes": [record] if record else [],
                     "applied": record is not None,
                     "dryRun": False,
-                    "rows": store.count(),
+                    "rows": store.count(selected),
                     "sha256": plan.sha256,
                 }
                 return CommandResult(data, meta=meta)
-            plan = plan_export(store, wctx, target, force=force)
-            rows = store.count()
+            plan = plan_export(store, wctx, target, force=force, scope=selected)
+            rows = store.count(selected)
         changes = [plan.change.as_dict()] if plan.change else []
         warnings = (
             [{"code": plan.problem.code, "message": plan.problem.message}]
@@ -386,11 +408,12 @@ def decision_restore(
     project: ProjectOption = None,
     apply: ApplyOption = False,
     as_json: JsonOption = False,
+    scope: DecisionScopeOption = None,
 ) -> None:
     """Rebuild the decision store from an export (refuses a non-empty store)."""
 
     def action() -> CommandResult:
-        context, wctx, target = _export_context(project)
+        context, wctx, _ = _export_context(project)
         pid = context.entry.id
         try:
             payload = source.expanduser().read_bytes()
@@ -398,17 +421,24 @@ def decision_restore(
             raise ResearchError(
                 "USAGE_PATH_NOT_FOUND", f"cannot read {source}: {error}", exit_code=2
             ) from None
-        rows, events = parse_export(payload)
-        existing = 0
-        if store_exists(pid):
-            with DecisionStore.open(pid) as store:
-                existing = store.count()
-        if existing and not replace:
+        with read_store(pid) as current:
+            separated = current.separated if current else False
+            if current is None and context.entry.layout == "split":
+                separated = True
+            selected = validate_scope(scope, separated)
+            existing = current.count(selected) if current else 0
+        sources: dict[int, str] = {}
+        rows, events = parse_export(
+            payload, scope=selected if separated else None, sources=sources
+        )
+        if separated and any(
+            row["id"] != decision_id(context.profile.decision_id_prefix, row["number"])
+            for row in rows
+        ):
             raise ResearchError(
-                "STORE_NOT_EMPTY",
-                f"the decision store already holds {existing} decision(s)",
-                exit_code=5,
-                remediation="pass --replace to overwrite them",
+                "EXPORT_INVALID",
+                "decision IDs must match the project and numbers",
+                exit_code=2,
             )
         data = {
             "rows": len(rows),
@@ -419,15 +449,44 @@ def decision_restore(
             "changes": [],
         }
         meta = {"project": pid}
-        if not apply:
-            data["confirmCommand"] = confirm_command()
-            return CommandResult(data, meta=meta, exit_code=writes.DRY_RUN_EXIT)
+        target = target_for(context, selected)
         warnings: list[dict] = []
-        with DecisionStore.open(pid) as store:
-            with store.transaction():
-                restore_rows(store, rows, events, replace=replace)
+        opener = DecisionStore.open if apply else DecisionStore.open_for_preview
+        with (
+            open_view(context=context) as view,
+            opener(pid, separated=separated) as store,
+        ):
+            transaction = store.transaction if apply else store.dry_run
+            with transaction():
+                if store.separated != separated:
+                    raise ResearchError(
+                        "CONFLICT",
+                        "decision storage changed, reload and retry",
+                        exit_code=5,
+                    )
+                if separated:
+                    from expnote.research.decision_scopes import validate_references
+
+                    replacements = [
+                        *(r for r in store.rows() if r["scope"] != selected),
+                        *(r | {"scope": selected} for r in rows),
+                    ]
+                    validate_references(view, store, replacements)
+                restore_rows(
+                    store,
+                    rows,
+                    events,
+                    replace=replace,
+                    scope=selected,
+                    sources=sources,
+                )
+            if not apply:
+                data["confirmCommand"] = confirm_command()
+                return CommandResult(data, meta=meta, exit_code=writes.DRY_RUN_EXIT)
             try:
-                _, record = sync_export(store, wctx, target, command="decision restore")
+                _, record = sync_export(
+                    store, wctx, target, command="decision restore", scope=selected
+                )
             except ResearchError as error:
                 if error.code != "EXPORT_DIVERGED":
                     raise
@@ -438,6 +497,27 @@ def decision_restore(
         return CommandResult(data, warnings, meta)
 
     run_command("decision restore", as_json, action, render_write)
+
+
+@decision_app.command("migrate-scopes")
+def decision_migrate_scopes(
+    source: Annotated[
+        Path, typer.Option("--from-file", help="Decision scope manifest.")
+    ],
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Separate the project's decisions and audit history using a reviewed manifest."""
+    from expnote.research.decision_scopes import COMMAND, migrate_scopes
+
+    def action() -> CommandResult:
+        with open_view(project) as view:
+            return migrate_scopes(
+                view, source, apply=apply, confirm_command=confirm_command()
+            )
+
+    run_command(COMMAND, as_json, action, render_write)
 
 
 # ---- plans, exec-plans, results ----------------------------------------------

@@ -1042,8 +1042,10 @@ def snapshot_from_index(
         deviation_text = workflow.get(".deviations", {}).get("text") or _read_text(
             managed_deviation
         )
-    decisions, problems, deviations = build_decisions_and_deviations(
-        profile, context.entry.id, table_text, deviation_text
+    decisions, problems, deviations, separated, last_number = (
+        build_decisions_and_deviations(
+            profile, context.entry.id, table_text, deviation_text
+        )
     )
     return VaultSnapshot(
         profile=profile,
@@ -1069,6 +1071,8 @@ def snapshot_from_index(
         alias_index=_alias_index(notes),
         images=sorted(image_names) if images_dir.is_dir() else None,
         decisions=decisions,
+        separated_decisions=separated,
+        last_decision_number=last_number,
         decision_problems=problems,
         deviations=deviations,
     )

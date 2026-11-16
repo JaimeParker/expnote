@@ -824,6 +824,22 @@ expnote decision list
 expnote decision show DEMO-DEC-0005
 ```
 
+New split-layout projects keep research and engineering decisions in separate
+tables in the project database. Create records with `decision new --scope research`
+or `--scope engineering` alongside the other creation options. The Decisions page
+links to Engineering decisions. Exact decision IDs open their original records.
+Use `decision list --scope engineering` or
+`plan bundle PLAN-001 --decision-scope engineering` for execution context.
+
+An existing project with a combined SQLite store can preview
+`decision migrate-scopes --from-file manifest.json` and apply the same manifest
+with `--apply`. The manifest's `decisions` object maps each ID to its `version`
+and `scope`. An optional `archive` object gives a material-relative `path` and
+`sha256` for a numbered engineering decision log. The command reports the
+snapshot backup directory. On split stores engineering exports use
+`ops/engineering-decisions.jsonl`. Select them with `--scope engineering` on
+`decision export` and `decision restore`.
+
 **Backup.** After every committed change expnote rewrites `ops/decisions.jsonl` in
 the vault (decisions plus their event log; deterministic, written only when bytes
 change). Do not edit it; if someone does, the tool reports `EXPORT_DIVERGED` and

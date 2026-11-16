@@ -41,6 +41,7 @@ from expnote.research.bundle import (
 )
 from expnote.research.checks import run_checks
 from expnote.research.cli import _parse_levels, check_data
+from expnote.research.decision_store import RESEARCH, SCOPES, read_store
 from expnote.research.doctor import doctor_data, run_doctor
 from expnote.research.envelope import (
     CommandResult,
@@ -354,6 +355,7 @@ def build_router(service: ResearchService) -> APIRouter:
                     for number, (owner, revision) in view.cache["submissions"].items()
                     if owner == plan_id
                     and (decision := view.snapshot.decisions.get(number))
+                    and decision.scope in (None, RESEARCH)
                     and decision.status == "proposed"
                 ]
             return _ok("plan", data, view)
@@ -369,6 +371,7 @@ def build_router(service: ResearchService) -> APIRouter:
         max_bytes: int | None = None,
         cursor: str | None = None,
         refresh: bool = False,
+        decision_scope: str | None = None,
     ) -> JSONResponse:
         if depth not in (1, 2):
             raise ResearchError("USAGE_BAD_OPTION", "depth is 1 or 2", exit_code=2)
@@ -380,6 +383,7 @@ def build_router(service: ResearchService) -> APIRouter:
                 depth=depth,
                 include_body=include_body,
                 sections=chosen,
+                decision_scope=decision_scope,
             )
             total = byte_size(data)
             next_section = None
@@ -407,16 +411,19 @@ def build_router(service: ResearchService) -> APIRouter:
         layer: str | None = None,
         since: str | None = None,
         refresh: bool = False,
+        scope: str | None = None,
     ) -> JSONResponse:
         with service.view(project_id, refresh) as view:
             rows = entities.list_decisions(
-                view, plan=plan, status=status, layer=layer, since=since
+                view, plan=plan, status=status, layer=layer, since=since, scope=scope
             )
             data = {
                 "decisions": rows,
                 "layers": list(view.profile.decision_layers),
                 "plans": [str(p.get("id")) for p in entities.plan_pages(view)],
             }
+            if view.snapshot.separated_decisions:
+                data["scope"] = scope or RESEARCH
             return _ok("decisions", data, view, total=len(rows))
 
     @router.get(f"{api}/projects/{{project_id}}/decisions/{{ident}}")
@@ -473,6 +480,10 @@ def build_router(service: ResearchService) -> APIRouter:
                     item[key + "Html"] = render_markdown(
                         item[key], view, run_app=service.run_app
                     )
+            if item.get("historicalSource"):
+                item["historicalSourceHtml"] = render_markdown(
+                    item["historicalSource"], view, run_app=service.run_app
+                )
             for ref in data["refsIn"]:
                 ref["href"] = resolver.note(ref["stem"]).href
             return _ok("decision", data, view)
@@ -602,8 +613,11 @@ def build_router(service: ResearchService) -> APIRouter:
         limit: int = 50,
         cursor: str | None = None,
         refresh: bool = False,
+        decision_scope: str | None = None,
     ) -> JSONResponse:
-        filters = SearchFilters(type, plan, status, None, None, images, all_vault)
+        filters = SearchFilters(
+            type, plan, status, None, None, images, all_vault, decision_scope
+        )
         with service.view(project_id, refresh) as view:
             found = search_notes(
                 view, q, filters, limit=max(1, min(limit, 200)), cursor=cursor
@@ -795,6 +809,29 @@ def build_router(service: ResearchService) -> APIRouter:
                 view.context.resolved.vault_root
             )
             current = stored["body"] if vault_owned or not effective else effective.body
+            if (
+                row["type"] == "engineering-decision-log"
+                and view.snapshot.separated_decisions
+            ):
+                from urllib.parse import quote
+
+                with read_store(project_id) as store:
+                    historical = (
+                        sorted(
+                            {number for key in SCOPES for number in store.archives(key)}
+                        )
+                        if store
+                        else []
+                    )
+                prefix = f"#/p/{quote(project_id, safe='')}/decision"
+                links = []
+                for number in historical:
+                    decision = view.snapshot.decisions.get(number)
+                    if decision is not None:
+                        ident = entities.decision_id(view, decision)
+                        href = f"{prefix}/{quote(ident, safe='')}"
+                        links.append(f"### {number}\n\n[{ident}]({href})")
+                current = "\n\n".join(links)
             revision_html = None
             if vault_owned and state.get("revision"):
                 revision_html = render_markdown(

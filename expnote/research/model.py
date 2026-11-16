@@ -165,6 +165,7 @@ class Decision:
     authorization: str | None = None
     review_by: str | None = None
     version: int = 0
+    scope: str | None = None
     recorded_via: str = ""  # store rows: migrated | cli | chat | gui
 
     @property

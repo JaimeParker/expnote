@@ -6,6 +6,7 @@ import json
 import shlex
 
 from expnote.research import adopt
+from expnote.research.decision_store import ENGINEERING, RESEARCH
 from expnote.research.entities import (
     decision_id,
     decision_plans,
@@ -95,7 +96,9 @@ class _Derive:
         self.snap = view.snapshot
         self.flag = _project_flag(view)
         self.pages = plan_pages(view)
-        self.decisions = [self.snap.decisions[n] for n in sorted(self.snap.decisions)]
+        self.decisions = [
+            d for _, d in sorted(self.snap.decisions.items()) if d.scope != ENGINEERING
+        ]
         self.plans_of = decision_plans(view)
         self.unmarked = {
             f.where
@@ -169,7 +172,9 @@ class _Derive:
         if page.get("status") != "draft" or strict(self.view, page):
             return []
         items = []
-        concerning = [d for d, _ in self.snap.decisions_for_plan(plan_id)]
+        concerning = [
+            d for d, _ in self.snap.decisions_for_plan(plan_id, scope=RESEARCH)
+        ]
         waiting = [d for d in concerning if d.status == "proposed"]
         if waiting:
             ids = ", ".join(self.decision_id(d) for d in waiting)

@@ -39,6 +39,8 @@ def _propose(title, plan):
     return _ok(
         "decision",
         "new",
+        "--scope",
+        "research",
         "--title",
         title,
         "--layer",

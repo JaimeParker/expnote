@@ -74,6 +74,9 @@ def init_split(project, vault, ident, name, workspaces, apply) -> CommandResult:
             "|---|---|---|---|---|---|---|---|---|\n"
         )
         atomic_bytes(root / "ops" / "deviations.md", deviation.encode())
+        from expnote.research.decision_store import DecisionStore
+
+        DecisionStore.open(ident, separated=True).close()
         register_project(
             vault_root=vault,
             project_dir=project,

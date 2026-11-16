@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import re
 
-from expnote.research.decision_store import read_rows
 from expnote.research.model import Decision, DeviationRow
 from expnote.research.profile import Profile, StatusRule
 from expnote.research.schemas import (
@@ -179,16 +178,9 @@ def decision_from_row(row: dict) -> Decision:
         authorization=row["authorization"],
         review_by=row["review_by"],
         version=row["version"],
+        scope=row.get("scope"),
         recorded_via=row["source"],
     )
-
-
-def stored_decisions(project_id: str) -> dict[int, Decision] | None:
-    """Decisions of the project's store; None while it has not been created."""
-    loaded = read_rows(project_id)
-    if loaded is None:
-        return None
-    return {row["number"]: decision_from_row(row) for row in loaded[0]}
 
 
 def decision_concerns_plan(

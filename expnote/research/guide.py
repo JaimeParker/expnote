@@ -33,6 +33,10 @@ RESEARCH_GUIDE = {
         "Agents edit prose bodies and agent-owned frontmatter keys with their own "
         "file tools; CLI-only keys (status gates, hashes, confirmations) go "
         "through commands",
+        "With separated decisions, choose --scope research or --scope engineering "
+        "when creating a decision. Research reads default to research decisions. "
+        "For engineering use decision list --scope engineering or "
+        "plan bundle / search --decision-scope engineering.",
         "Never invent a user decision: confirmations need the user's own words "
         "(--authorization) or a click in the GUI",
         "The GUI writes only: approve/reject a decision, close a plan, adopt a "

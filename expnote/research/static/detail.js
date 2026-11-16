@@ -73,7 +73,7 @@ export function decisionRow(ctx, d, { date = true, layer = false, plans = true, 
         d.status && d.status !== "confirmed" ? statusChip("decision", d.status) : null,
         d.legacy ? h("span", { class: "muted" }, "legacy") : null,
         d.confirmedBy === "agent" ? h("span", { class: "tag-approved by-agent" }, "by agent") : null,
-        layer && d.layer ? h("span", { class: "muted" }, d.layer) : null,
+        layer && d.scope === "engineering" ? h("span", { class: "muted" }, "Engineering") : !d.scope && d.layer ? h("span", { class: "muted" }, d.layer) : null,
         role && d.role && d.role !== "other" ? h("span", { class: "muted" }, d.role) : null,
         notes,
       ),
@@ -167,6 +167,9 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
       textBlocks.unshift(h("p", { class: "notice" }, "Approval reopens this PLAN."));
     }
   }
+  if (d.historicalSourceHtml) {
+    textBlocks.push(section("Original archive entry", prose(d.historicalSourceHtml), { open: false }));
+  }
   if (d.history && d.history.length) textBlocks.push(historyBlock(d.history));
   return h(
     "article",
@@ -174,7 +177,7 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
     h(
       "header",
       { class: "detail-head" },
-      h("div", { class: "detail-ident" }, h("span", { class: "num big" }, `#${d.number}`), h("span", { class: "muted" }, d.id), d.date ? h("span", { class: "date" }, d.date) : null, d.layer ? h("span", { class: "muted" }, d.layer) : null, d.status !== "confirmed" ? statusChip("decision", d.status) : null, d.legacy ? h("span", { class: "muted" }, "legacy") : null),
+      h("div", { class: "detail-ident" }, h("span", { class: "num big" }, `#${d.number}`), h("span", { class: "muted" }, d.id), d.date ? h("span", { class: "date" }, d.date) : null, d.scope === "engineering" ? h("span", { class: "muted" }, "Engineering") : !d.scope && d.layer ? h("span", { class: "muted" }, d.layer) : null, d.status !== "confirmed" ? statusChip("decision", d.status) : null, d.legacy ? h("span", { class: "muted" }, "legacy") : null),
       h(heading, { class: "detail-title" }, d.title || d.id),
     ),
     h(

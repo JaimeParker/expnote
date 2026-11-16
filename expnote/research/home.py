@@ -6,6 +6,7 @@ from datetime import datetime
 
 from expnote.research import entities
 from expnote.research.checks import split_new_codes, summarize
+from expnote.research.decision_store import ENGINEERING
 from expnote.research.doctor import doctor_data, run_doctor
 from expnote.research.index import linked_workspaces, read_index_stats
 from expnote.research.runs import recent_runs
@@ -69,7 +70,7 @@ def _decisions_awaiting(view: ProjectView) -> dict:
     keep = ("id", "number", "date", "layer", "title", "plans", "path")
     return {
         "awaiting": [{k: row[k] for k in keep} for row in proposed],
-        "total": len(view.snapshot.decisions),
+        "total": sum(d.scope != ENGINEERING for d in view.snapshot.decisions.values()),
     }
 
 

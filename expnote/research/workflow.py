@@ -258,7 +258,7 @@ def import_workflow(context, records, files, backup_vault) -> None:
 
 def prepare_write(view, plan, command, apply):
     """Translate existing text-based gate builders to transactional workflow updates."""
-    from expnote.research.writes import StoreOp
+    from expnote.research.writes import DECISION_BACKEND, StoreOp
 
     if command == "plan adopt":
         return plan
@@ -449,12 +449,14 @@ def prepare_write(view, plan, command, apply):
             ",".join(updates),
             f"{command}: {', '.join(updates)}",
             transact,
+            backend=original.backend if original else DECISION_BACKEND,
         ),
     )
 
 
 def plan_submission(view, plan_id, decision_id, apply, spec=None, *, replace=False):
     from expnote.research import entities, lifecycle
+    from expnote.research.decision_store import RESEARCH
     from expnote.research.writes import StoreOp, WritePlan, _decision
 
     if view.context.entry.layout != "split":
@@ -462,7 +464,7 @@ def plan_submission(view, plan_id, decision_id, apply, spec=None, *, replace=Fal
             "SPLIT_REQUIRED", "plan submit requires the split layout", exit_code=2
         )
     page = entities.find_plan(view, plan_id)
-    number, decision = _decision(view, decision_id)
+    number, decision = _decision(view, decision_id, scope=RESEARCH)
     if decision.status != "proposed" or decision.source != "db":
         raise ResearchError(
             "DECISION_NOT_PROPOSED", "use a proposed decision", exit_code=1

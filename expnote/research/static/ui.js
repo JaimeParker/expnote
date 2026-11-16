@@ -86,6 +86,7 @@ export const route = {
   project: (p, query) => `#/p/${enc(p)}${qs(query)}`,
   plan: (p, id) => `#/p/${enc(p)}/plan/${enc(id)}`,
   decisions: (p, query) => `#/p/${enc(p)}/decisions${qs(query)}`,
+  engineeringDecisions: (p, query) => `#/p/${enc(p)}/engineering-decisions${qs(query)}`,
   decision: (p, id) => `#/p/${enc(p)}/decision/${enc(id)}`,
   evList: (p, query) => `#/p/${enc(p)}/ev${qs(query)}`,
   ev: (p, stem) => `#/p/${enc(p)}/ev/${enc(stem)}`,

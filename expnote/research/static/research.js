@@ -181,7 +181,7 @@ function renderSwitcher() {
 
 const SECTIONS = [
   ["Overview", (p) => route.project(p), []],
-  ["Decisions", (p) => route.decisions(p), ["decisions", "decision"]],
+  ["Decisions", (p) => route.decisions(p), ["decisions", "engineering-decisions", "decision"]],
   ["Evidence", (p) => route.evList(p), ["ev"]],
   ["TODOs", (p) => route.todos(p), ["todos", "todo"]],
   ["Search", (p) => route.search(p), ["search"]],

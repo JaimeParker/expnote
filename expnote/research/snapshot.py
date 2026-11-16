@@ -11,11 +11,12 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 
+from expnote.research.decision_store import RESEARCH, read_store
 from expnote.research.decisions import (
     decision_concerns_plan,
+    decision_from_row,
     parse_decision_table,
     parse_deviation_log,
-    stored_decisions,
 )
 from expnote.research.model import Decision, DeviationRow, Note, parse_note
 from expnote.research.profile import Profile
@@ -48,6 +49,8 @@ class VaultSnapshot:
     decisions: dict[int, Decision]
     decision_problems: list[tuple[str, str, str]]  # (code, where, message)
     deviations: dict[str, DeviationRow]
+    separated_decisions: bool = False
+    last_decision_number: int = 0
     previously_confirmed_results: frozenset[str] = frozenset()
     strict_plans: frozenset[str] = frozenset()
     managed_images_dir: Path | None = None
@@ -123,7 +126,9 @@ class VaultSnapshot:
     def current_plan_members(self, plan_id: str) -> list[Note]:
         return self.plan_cycle_members(plan_id)[0]
 
-    def decisions_for_plan(self, plan_id: str) -> list[tuple[Decision, list[str]]]:
+    def decisions_for_plan(
+        self, plan_id: str, *, scope: str | None = None
+    ) -> list[tuple[Decision, list[str]]]:
         page = self.plan_page(plan_id)
         stems = {m.cstem for m in self.plan_members(plan_id)}
         if page is not None:
@@ -132,6 +137,8 @@ class VaultSnapshot:
         out = []
         for number in sorted(self.decisions):
             decision = self.decisions[number]
+            if scope is not None and (decision.scope or RESEARCH) != scope:
+                continue
             why = decision_concerns_plan(decision, plan_id, pattern, stems)
             if why:
                 out.append((decision, why))
@@ -241,7 +248,9 @@ def build_decisions_and_deviations(
     project_id: str,
     table_text: str | None,
     deviation_text: str | None,
-) -> tuple[dict[int, Decision], list[tuple[str, str, str]], dict[str, DeviationRow]]:
+) -> tuple[
+    dict[int, Decision], list[tuple[str, str, str]], dict[str, DeviationRow], bool, int
+]:
     """Pure part of the scan: decisions (store rows over table rows) and deviations.
 
     The decision store is the truth once it exists; the legacy table only fills the
@@ -259,13 +268,22 @@ def build_decisions_and_deviations(
                     ("DEC.NUMBER_DUPLICATE", table_name, f"#{row.number} is duplicated")
                 )
             decisions[row.number] = row
-    decisions.update(stored_decisions(project_id) or {})
+    with read_store(project_id) as store:
+        separated = store is not None and store.separated
+        last_number = store.max_number() if store else 0
+        if separated:
+            decisions.clear()
+            problems.clear()
+        if store is not None:
+            decisions.update(
+                {row["number"]: decision_from_row(row) for row in store.rows()}
+            )
 
     deviations: dict[str, DeviationRow] = {}
     if deviation_text is not None:
         for row in parse_deviation_log(deviation_text, profile):
             deviations[row.did] = row
-    return decisions, problems, deviations
+    return decisions, problems, deviations, separated, max(last_number, *decisions, 0)
 
 
 def scan_vault(context: ProjectContext) -> VaultSnapshot:
@@ -278,8 +296,10 @@ def scan_vault(context: ProjectContext) -> VaultSnapshot:
     table_name = profile.legacy_decision_table
     table_text = _read_text(project_dir / table_name) if table_name else None
     deviation_text = _read_text(project_dir / profile.deviation_register)
-    decisions, problems, deviations = build_decisions_and_deviations(
-        profile, context.entry.id, table_text, deviation_text
+    decisions, problems, deviations, separated, last_number = (
+        build_decisions_and_deviations(
+            profile, context.entry.id, table_text, deviation_text
+        )
     )
 
     images_dir = resolved.images_dir
@@ -306,6 +326,8 @@ def scan_vault(context: ProjectContext) -> VaultSnapshot:
         alias_index=_alias_index(notes),
         images=images,
         decisions=decisions,
+        separated_decisions=separated,
+        last_decision_number=last_number,
         decision_problems=problems,
         deviations=deviations,
     )

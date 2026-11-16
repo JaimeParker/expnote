@@ -55,13 +55,16 @@ const countBy = (rows, keyOf) => {
 
 // ---- DECISIONS ----------------------------------------------------------------------------------
 
-async function decisionsPage(ctx) {
+async function decisionsPage(ctx, engineering = false) {
   const { api, params } = ctx;
   const P = ctx.project;
-  const body = await api(`${base(P)}/decisions`);
+  const body = await api(`${base(P)}/decisions`, engineering ? { scope: "engineering" } : {});
+  const title = engineering ? "Engineering decisions" : "Decisions";
+  const listRoute = engineering ? route.engineeringDecisions : route.decisions;
+  const layers = body.data.scope ? [] : body.data.layers;
   const all = body.data.decisions.slice().reverse();
   const filters = { plan: params.get("plan") || "", layer: params.get("layer") || "", status: params.get("status") || "", q: params.get("q") || "" };
-  const hashFor = (id) => route.decisions(P, { ...filters, sel: id });
+  const hashFor = (id) => listRoute(P, { ...filters, sel: id });
   const md = masterDetail({
     hashFor,
     fullHref: (id) => route.decision(P, id),
@@ -78,7 +81,7 @@ async function decisionsPage(ctx) {
   const statuses = [...new Set(all.map((d) => d.status).filter(Boolean))].sort();
   const filterBox = h("div", { class: "facets" });
   const heading = h("div", { class: "md-title" });
-  const list = h("div", { class: "md-list", role: "list", "aria-label": "Decisions" });
+  const list = h("div", { class: "md-list", role: "list", "aria-label": title });
   const setFilter = (key) => (value) => {
     filters[key] = value;
     writeHash(hashFor(md.current()));
@@ -86,7 +89,7 @@ async function decisionsPage(ctx) {
   };
   function draw() {
     const rows = shownRows();
-    clear(heading).append(h("h1", null, "Decisions"), h("span", { class: "count" }, rows.length === all.length ? String(all.length) : `${rows.length} of ${all.length}`));
+    clear(heading).append(h("h1", null, title), h("span", { class: "count" }, rows.length === all.length ? String(all.length) : `${rows.length} of ${all.length}`));
     append(clear(filterBox), [
       textFilter("Find by title or number", filters.q, (value) => {
         filters.q = value;
@@ -95,7 +98,7 @@ async function decisionsPage(ctx) {
         heading.lastChild.textContent = shownRows().length === all.length ? String(all.length) : `${shownRows().length} of ${all.length}`;
       }),
       facet("Plan", facetItems("plan", body.data.plans, (id) => planSwatch(id)), filters.plan, setFilter("plan")),
-      body.data.layers.length > 1 ? facet("Layer", facetItems("layer", body.data.layers), filters.layer, setFilter("layer")) : null,
+      layers.length > 1 ? facet("Layer", facetItems("layer", layers), filters.layer, setFilter("layer")) : null,
       statuses.length > 1 ? facet("Status", facetItems("status", statuses), filters.status, setFilter("status")) : null,
     ]);
     drawList();
@@ -119,16 +122,25 @@ async function decisionsPage(ctx) {
         ul = h("ul", { class: "drows" });
         list.append(ul);
       }
-      const row = decisionRow(ctx, d, { layer: !filters.layer && body.data.layers.length > 1, href: route.decision(P, d.id) });
+      const row = decisionRow(ctx, d, { layer: !filters.layer && layers.length > 1, href: route.decision(P, d.id) });
       md.bind(d.id, row);
       ul.append(row);
     }
   }
   draw();
-  const node = h("div", { class: "page md-page" }, h("div", { class: "md-grid" }, h("div", { class: "md-side" }, heading, filterBox), list, md.node));
+  const otherScope = body.data.scope
+    ? h("p", { class: "small" }, engineering
+      ? link(route.decisions(P), "Research decisions")
+      : link(route.engineeringDecisions(P), "Engineering decisions"))
+    : null;
+  const pending = engineering ? all.filter((d) => d.status === "proposed").length : 0;
+  const awaiting = pending
+    ? h("p", { class: "small" }, link(listRoute(P, { status: "proposed" }), `${pending} awaiting confirmation`))
+    : null;
+  const node = h("div", { class: "page md-page" }, h("div", { class: "md-grid" }, h("div", { class: "md-side" }, heading, otherScope, awaiting, filterBox), list, md.node));
   md.start(params.get("sel"));
   const keys = { ...md.keys, a: () => openDecisionAction("approve", md.current()), r: () => openDecisionAction("reject", md.current()) };
-  return { node, title: "Decisions", select: (id) => md.select(id, { write: false }), keys };
+  return { node, title, select: (id) => md.select(id, { write: false }), keys };
 }
 
 // ---- EVIDENCE -----------------------------------------------------------------------------------
@@ -483,4 +495,4 @@ async function searchPage(ctx) {
   return { node, title: current.q ? `Search: ${current.q}` : "Search", select: (id) => md.select(id, { write: false }), keys: md.keys };
 }
 
-export const LISTS = { decisions: decisionsPage, ev: evListPage, todos: todosPage, todo: todoPage, search: searchPage };
+export const LISTS = { decisions: decisionsPage, "engineering-decisions": (ctx) => decisionsPage(ctx, true), ev: evListPage, todos: todosPage, todo: todoPage, search: searchPage };

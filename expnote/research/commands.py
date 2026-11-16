@@ -42,6 +42,16 @@ from expnote.research.todos import (
 from expnote.research.view import ProjectView, open_view
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Print the JSON envelope.")]
+DecisionScopeOption = Annotated[
+    str | None, typer.Option("--scope", help="Decision scope: research or engineering.")
+]
+ContextScopeOption = Annotated[
+    str | None,
+    typer.Option(
+        "--decision-scope", help="Decisions to include: research or engineering."
+    ),
+]
+
 ProjectOption = Annotated[
     str | None, typer.Option("--project", help="Project id (default: active project).")
 ]
@@ -65,8 +75,9 @@ plan_app = typer.Typer(
     "Writes are dry runs (exit 4) unless --apply.",
 )
 decision_app = typer.Typer(
-    help="Decisions: list, show, new, set, export, restore.",
-    epilog='Example: `expnote decision new --title "<T>" --layer <LAYER> '
+    help="Decisions: list, show, new, set, export, restore, migrate-scopes.",
+    epilog="Example: `expnote decision new --scope research "
+    '--title "<T>" --layer <LAYER> '
     '--decided "<WHAT>" --reason "<WHY>" --plans <PLAN_ID> --apply`; '
     "`expnote decision set <DECISION_ID> --status confirmed --authorization "
     '"<USER_WORDS>" --apply`.',
@@ -224,6 +235,7 @@ def search_command(
     all_vault: Annotated[
         bool, typer.Option("--all-vault", help="Search outside the project too.")
     ] = False,
+    decision_scope: ContextScopeOption = None,
     fields: FieldsOption = None,
     limit: Annotated[int, typer.Option("--limit", min=1)] = 50,
     cursor: CursorOption = None,
@@ -234,7 +246,14 @@ def search_command(
 
     def action() -> CommandResult:
         filters = SearchFilters(
-            note_type, plan, status, linked_to, backlinks_of, images, all_vault
+            note_type,
+            plan,
+            status,
+            linked_to,
+            backlinks_of,
+            images,
+            all_vault,
+            decision_scope,
         )
         with open_view(project, refresh=not no_refresh) as view:
             found = search_notes(view, query, filters, limit=limit, cursor=cursor)
@@ -347,6 +366,7 @@ def plan_bundle(
     project: ProjectOption = None,
     depth: Annotated[int, typer.Option("--depth", min=1, max=2)] = 1,
     include_body: Annotated[bool, typer.Option("--include-body")] = False,
+    decision_scope: ContextScopeOption = None,
     sections: Annotated[
         str | None,
         typer.Option("--sections", help=f"Comma list from: {', '.join(SECTIONS)}."),
@@ -382,6 +402,7 @@ def plan_bundle(
                 depth=depth,
                 include_body=include_body,
                 sections=chosen,
+                decision_scope=decision_scope,
             )
             full_meta = view.meta(bytes=byte_size(data), maxBytes=max_bytes)
             if out is not None:
@@ -431,6 +452,7 @@ def decision_list(
     plan: Annotated[str | None, typer.Option("--plan")] = None,
     status: Annotated[str | None, typer.Option("--status")] = None,
     layer: Annotated[str | None, typer.Option("--layer")] = None,
+    scope: DecisionScopeOption = None,
     since: Annotated[str | None, typer.Option("--since", help="YYYY-MM-DD")] = None,
     fields: FieldsOption = None,
     limit: LimitOption = 200,
@@ -444,7 +466,7 @@ def decision_list(
         "decisions",
         ["id", "date", "status", "layer", "title"],
         lambda view: entities.list_decisions(
-            view, plan=plan, status=status, layer=layer, since=since
+            view, plan=plan, status=status, layer=layer, since=since, scope=scope
         ),
         project=project,
         as_json=as_json,

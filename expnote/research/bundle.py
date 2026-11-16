@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 
+from expnote.research.decision_store import validate_scope
 from expnote.research.entities import (
     decision_item,
     decision_roles,
@@ -108,6 +109,8 @@ def _excluded_from_related(view: ProjectView, note: Note) -> bool:
     snap, profile = view.snapshot, view.profile
     if note.type in NON_RELATED_TYPES or snap.entity_type(note) is not None:
         return True
+    if snap.separated_decisions and note.type == "engineering-decision-log":
+        return True
     return note.rel in (profile.legacy_decision_table, profile.deviation_register)
 
 
@@ -207,9 +210,11 @@ def build_bundle(
     depth: int = 1,
     include_body: bool = False,
     sections: list[str] | None = None,
+    decision_scope: str | None = None,
 ) -> tuple[dict, list[dict]]:
     """(data with the requested sections in canonical order, warnings)."""
     snap = view.snapshot
+    decision_scope = validate_scope(decision_scope, snap.separated_decisions)
     wanted = set(sections or SECTIONS)
     plan = find_plan(view, plan_id)
     members = plan_members(view, plan)
@@ -231,7 +236,7 @@ def build_bundle(
     if "decisions" in wanted:
         roles = decision_roles(view, plan, members)
         rows = []
-        for decision, why in snap.decisions_for_plan(plan_id):
+        for decision, why in snap.decisions_for_plan(plan_id, scope=decision_scope):
             item = decision_item(view, decision)
             item["role"] = roles.get(decision.number, "other")
             item["why"] = why

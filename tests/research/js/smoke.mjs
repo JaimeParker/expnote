@@ -72,6 +72,8 @@ const html = await (await fetch("/research/")).text();
 const token = /name="expnote-token" content="([^"]+)"/.exec(html);
 check("page carries the write token", token);
 dom.setToken(token ? token[1] : "");
+const { PAGES } = await import("/research/pages.js");
+check("engineering decisions route is registered", typeof PAGES["engineering-decisions"] === "function");
 const { nav } = await import("/research/nav.js");
 const actions = await import("/research/actions.js");
 const buttonLike = (root, text) => root.byTag("button").find((b) => b.textContent.includes(text));

@@ -5,6 +5,12 @@ from __future__ import annotations
 import dataclasses
 import sqlite3
 
+from expnote.research.decision_store import (
+    ENGINEERING,
+    RESEARCH,
+    read_store,
+    validate_scope,
+)
 from expnote.research.entities import paginate, truncate
 from expnote.research.errors import ResearchError
 from expnote.research.index import IMAGE_EXTS
@@ -24,6 +30,7 @@ class SearchFilters:
     backlinks_of: str | None = None
     images: bool = False
     whole_vault: bool = False
+    decision_scope: str | None = None
 
 
 def _like(term: str) -> str:
@@ -62,17 +69,24 @@ def _first_match_line(text: str, offset: int, terms: list[str]) -> tuple[int, st
     return offset + 1, next((row.strip() for row in lines if row.strip()), "")
 
 
-def _decision_hits(view: ProjectView, terms: list[str], filters: SearchFilters):
+def _decision_hits(
+    view: ProjectView, terms: list[str], filters: SearchFilters, scope: str
+):
     """Store decisions matching the terms (all of them, case-folded) and filters."""
     if filters.note_type not in (None, "decision"):
         return []
     if filters.linked_to or filters.backlinks_of:
         return []
     wanted = [t.casefold() for t in terms]
+    sources = {}
+    if scope == ENGINEERING:
+        with read_store(view.project_id) as store:
+            if store is not None:
+                sources = store.archives(scope)
     hits = []
     for number in sorted(view.snapshot.decisions):
         decision = view.snapshot.decisions[number]
-        if decision.source != "db":
+        if decision.source != "db" or (decision.scope or RESEARCH) != scope:
             continue
         if filters.plan and filters.plan not in decision.plans:
             continue
@@ -80,7 +94,7 @@ def _decision_hits(view: ProjectView, terms: list[str], filters: SearchFilters):
             continue
         ident = decision.decision_id or str(number)
         fields = [decision.title, decision.decision_text, decision.reason_text]
-        fields += [decision.options_text, decision.lands_raw]
+        fields += [decision.options_text, decision.lands_raw, sources.get(number)]
         text = "\n".join(f for f in fields if f)
         folded = f"{ident}\n{text}".casefold()
         if not all(t in folded for t in wanted):
@@ -109,6 +123,7 @@ def search_notes(
     cursor: str | None,
 ) -> dict:
     """`{matchMode, total, hits}`; `meta.nextCursor` comes from `paginate`."""
+    scope = validate_scope(filters.decision_scope, view.snapshot.separated_decisions)
     if filters.images:
         return _search_images(view, query, limit, cursor)
     terms = query.split()
@@ -126,6 +141,8 @@ def search_notes(
             exit_code=2,
         )
     where = ["f.is_conflict = 0"]
+    if view.snapshot.separated_decisions:
+        where.append("COALESCE(n.type, '') != 'engineering-decision-log'")
     params: list = []
     joins = "JOIN notes n ON n.file_id = f.id"
     if no_text:
@@ -187,7 +204,7 @@ def search_notes(
                 for row in rows
                 if effective.get(row["rel"], row["status"]) == filters.status
             ]
-    decision_hits = _decision_hits(view, terms, filters)
+    decision_hits = _decision_hits(view, terms, filters, scope)
     page, next_cursor = paginate([*rows, *decision_hits], limit, cursor)
     hits = []
     for row in page:

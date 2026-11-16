@@ -650,7 +650,9 @@ async function decisionPage(ctx) {
   const P = ctx.project;
   const body = await ctx.api(`${base(P)}/decisions/${enc(ctx.arg)}`);
   const d = body.data.decision;
-  const node = h("div", { class: "page full-detail" }, h("nav", { class: "crumbs", "aria-label": "Breadcrumb" }, link(route.home(), "Research"), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.project(P), projectName(ctx)), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.decisions(P, { sel: d.id }), "Decisions")), decisionDetail(ctx, body.data));
+  const engineering = d.scope === "engineering";
+  const listRoute = engineering ? route.engineeringDecisions : route.decisions;
+  const node = h("div", { class: "page full-detail" }, h("nav", { class: "crumbs", "aria-label": "Breadcrumb" }, link(route.home(), "Research"), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(route.project(P), projectName(ctx)), h("span", { class: "sep", "aria-hidden": "true" }, "/"), link(listRoute(P, { sel: d.id }), engineering ? "Engineering decisions" : "Decisions")), decisionDetail(ctx, body.data));
   const keys = { a: () => openDecisionAction("approve", d.id), r: () => openDecisionAction("reject", d.id) };
   return { node, title: `#${d.number} ${d.title || d.id}`, keys };
 }
@@ -807,6 +809,7 @@ export const PAGES = {
   decision: decisionPage,
   ev: (ctx) => (ctx.arg ? evPage(ctx) : LISTS.ev(ctx)),
   decisions: LISTS.decisions,
+  "engineering-decisions": LISTS["engineering-decisions"],
   todos: LISTS.todos,
   todo: LISTS.todo,
   search: LISTS.search,

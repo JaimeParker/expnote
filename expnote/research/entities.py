@@ -15,7 +15,7 @@ from expnote.research.checks import (
     rules_section,
     rules_sha256,
 )
-from expnote.research.decision_store import read_rows
+from expnote.research.decision_store import RESEARCH, read_store, validate_scope
 from expnote.research.decisions import parse_decision_ref
 from expnote.research.errors import ResearchError
 from expnote.research.model import Decision, DeviationRow, FindingSink, Note
@@ -255,6 +255,7 @@ def decision_item(view: ProjectView, decision: Decision) -> dict:
         "status": decision.status,
         "statusRaw": decision.status_raw,
         "layer": decision.layer,
+        **({"scope": decision.scope} if decision.scope is not None else {}),
         "title": title,
         "plans": plans,
         "confirmedBy": confirmed_by,
@@ -283,8 +284,10 @@ def list_decisions(
     status: str | None = None,
     layer: str | None = None,
     since: str | None = None,
+    scope: str | None = None,
 ) -> list[dict]:
     snap = view.snapshot
+    scope = validate_scope(scope, snap.separated_decisions)
     if plan:
         find_plan(view, plan)
         chosen = [d for d, _ in snap.decisions_for_plan(plan)]
@@ -292,6 +295,8 @@ def list_decisions(
         chosen = [snap.decisions[n] for n in sorted(snap.decisions)]
     rows = []
     for decision in chosen:
+        if (decision.scope or RESEARCH) != scope:
+            continue
         if status and decision.status != status:
             continue
         if layer and decision.layer != layer:
@@ -338,8 +343,18 @@ def decision_detail(view: ProjectView, ident: str, include_body: bool) -> dict:
             targets=list(decision.targets),
             authorization=decision.authorization,
             reviewBy=decision.review_by,
-            history=decision_history(view, number),
         )
+        with read_store(view.project_id) as store:
+            history = store.events(number) if store is not None else []
+            item["history"] = [
+                {
+                    key: e[key]
+                    for key in ("seq", "at", "actor", "action", "before", "after")
+                }
+                for e in history
+            ]
+            if store is not None and (source := store.archive(number)):
+                item["historicalSource"] = source
     else:
         item["decisionText"] = decision.decision_text
         item["landsText"] = decision.lands_text
@@ -350,24 +365,6 @@ def decision_detail(view: ProjectView, ident: str, include_body: bool) -> dict:
 
 def _decision_body(decision: Decision) -> str:
     return decision.body_text
-
-
-def decision_history(view: ProjectView, number: int) -> list[dict]:
-    loaded = read_rows(view.project_id)
-    if loaded is None:
-        return []
-    return [
-        {
-            "seq": e["seq"],
-            "at": e["at"],
-            "actor": e["actor"],
-            "action": e["action"],
-            "before": e["before"],
-            "after": e["after"],
-        }
-        for e in loaded[1]
-        if e["number"] == number
-    ]
 
 
 def decision_refs_in(view: ProjectView, number: int) -> list[dict]:
@@ -740,7 +737,7 @@ def plan_item(view: ProjectView, plan: Note, open_items: int | None = None) -> d
         "archived": snap.is_archived(plan),
         "path": view.vault_rel(plan),
         "openItems": open_items,
-        "decisionCount": len(snap.decisions_for_plan(plan_id)),
+        "decisionCount": len(snap.decisions_for_plan(plan_id, scope=RESEARCH)),
         "evCount": sum(1 for m in members if snap.entity_type(m) == "evidence"),
         "resStatus": res_status,
     }

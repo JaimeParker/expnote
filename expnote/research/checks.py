@@ -10,6 +10,7 @@ import dataclasses
 import re
 from pathlib import PurePosixPath
 
+from expnote.research.decision_store import ENGINEERING
 from expnote.research.decisions import parse_decision_ref
 from expnote.research.frontmatter import has_nested_map, scalar_is_quoted
 from expnote.research.model import Decision, Finding, FindingSink, Note
@@ -229,6 +230,7 @@ def _decision_ok(
     *,
     lenient: bool,
     level: str = "FAIL",
+    allow_engineering: bool = False,
 ) -> Decision | None:
     number = parse_decision_ref(value, snap.profile, lenient=lenient)
     if number is None:
@@ -238,6 +240,8 @@ def _decision_ok(
     if row is None:
         sink.add(level, gate_code, where, f"{what}: decision #{number} does not exist")
         return None
+    if row.scope == ENGINEERING and not allow_engineering:
+        sink.add(level, "DEC.SCOPE", where, f"{what}: requires a research decision")
     if row.status != "confirmed":
         sink.add(
             "FAIL",
@@ -345,6 +349,9 @@ def _check_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None:
             "LIFE.PLAN_NO_APPROVAL",
             lenient=lenient,
             level=gate_level,
+            # An imported closed PLAN keeps the approval it originally cited.
+            # Submit, reopen and advance require a research decision on writes.
+            allow_engineering=legacy and status == "closed",
         )
     strict = plan_id in snap.strict_plans
     if rank >= order.index("running") and not legacy and not strict:
@@ -481,6 +488,7 @@ def _check_exec_plan(snap: VaultSnapshot, note: Note, sink: FindingSink) -> None
             "freezing needs the user-confirmed rules decision",
             "LIFE.EXEC_NO_RULES_DECISION",
             lenient=note.schema == "3",
+            allow_engineering=note.get("new_rules") != "true",
         )
         if (
             note.get("new_rules") == "true"
