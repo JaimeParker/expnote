@@ -29,7 +29,7 @@ from expnote.research.registry import (
 
 project_app = typer.Typer(
     help="Research projects: init, register, list, show, use, rebind, "
-    "migrate-layout, restore-layout, results-in-vault.",
+    "migrate-layout, restore-layout, storage, restore-storage, results-in-vault.",
     epilog="First step for a vault project: `expnote project init --project-dir "
     "PATH --images-dir PATH` (dry-run; add --apply), then `expnote check`.",
 )
@@ -45,18 +45,15 @@ def _project_meta(project_id: str, path_note: str | None) -> dict:
 
 
 def _resolved_paths(resolved: ResolvedProject) -> dict:
-    from expnote.research.results import result_dir
+    from expnote.research.storage_paths import location_data
 
     profile = read_profile_note(resolved.profile_note).profile
     return {
         "absVaultRoot": str(resolved.vault_root),
         "absProjectDir": str(resolved.project_dir),
-        "layout": resolved.entry.layout,
+        **location_data(resolved, profile),
         "absResearchDir": str(resolved.research_dir) if resolved.research_dir else None,
         "absMaterialDir": str(resolved.material_dir),
-        "resultsInVault": resolved.entry.results_in_vault,
-        "absResultsDir": str(result_dir(resolved, profile)),
-        "absImagesDir": str(resolved.images_dir),
         "absProfileNote": str(resolved.profile_note),
     }
 
@@ -159,10 +156,47 @@ def results_in_vault(
     as_json: JsonOption = False,
 ) -> None:
     """Move the editable results to the Obsidian project."""
-    from expnote.research.results import migrate_results
+    from expnote.research.storage import migrate_storage
 
     run_command(
-        "project results-in-vault", as_json, lambda: migrate_results(project_id, apply)
+        "project results-in-vault",
+        as_json,
+        lambda: migrate_storage(
+            project_id, res="vault", apply=apply, expected_required=False
+        ),
+    )
+
+
+@project_app.command("storage")
+def project_storage(
+    project_id: str,
+    ev: Annotated[str | None, typer.Option("--ev", help="vault or research")] = None,
+    res: Annotated[str | None, typer.Option("--res", help="vault or research")] = None,
+    expect: Annotated[str | None, typer.Option("--expect")] = None,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Show, preview or change the placement of EV and RES independently."""
+    from expnote.research.storage import migrate_storage
+
+    run_command(
+        "project storage",
+        as_json,
+        lambda: migrate_storage(project_id, ev, res, apply=apply, expected=expect),
+    )
+
+
+@project_app.command("restore-storage")
+def project_restore_storage(
+    project_id: str,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Recover a project from an interrupted storage migration."""
+    from expnote.research.storage import restore_storage
+
+    run_command(
+        "project restore-storage", as_json, lambda: restore_storage(project_id, apply)
     )
 
 

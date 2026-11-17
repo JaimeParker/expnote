@@ -157,8 +157,10 @@ def execute_plan(
 ) -> CommandResult:
     """Dry-run (exit 4) unless `apply`; no changes at all is a plain success."""
     if view.context.entry.layout == "split":
+        from expnote.research.storage import require_storage_ready
         from expnote.research.workflow import prepare_write
 
+        require_storage_ready(view.context)
         plan = prepare_write(view, plan, command, apply)
     context = WriteContext.for_project(view.context, actor)
     changes = plan_changes(context, plan.edits)
@@ -823,6 +825,17 @@ def _parse_values(values: list[str]) -> list[tuple[str, str]]:
     return pairs
 
 
+def _can_review_evidence_changes(view, note):
+    from expnote.research.lifecycle import state_of, strict
+    from expnote.research.results import reviewed_source_changed
+
+    if not view.context.resolved.research_dir or strict(
+        view, view.snapshot.plan_page_of(note)
+    ):
+        return False
+    return reviewed_source_changed(view, note, state_of(view, note), evidence=True)
+
+
 def plan_ev_label_set(
     view: ProjectView,
     ident: str,
@@ -835,7 +848,9 @@ def plan_ev_label_set(
 ) -> WritePlan:
     authorization = require_authorization(authorization, "filling the user's labels")
     note = entities.find_by_id(view, "evidence", ident)
-    if note.get("status") != "rendered":
+    if note.get("status") != "rendered" and not _can_review_evidence_changes(
+        view, note
+    ):
         raise gate_failed(
             f"{note.stem} is {note.get('status')!r}; labels are edited while it is "
             "rendered",
@@ -870,9 +885,13 @@ def plan_ev_label_commit(
 ) -> WritePlan:
     authorization = require_authorization(authorization, "committing the user's labels")
     note = entities.find_by_id(view, "evidence", ident)
-    if note.get("status") == "labelled":
+    if note.get("status") == "labelled" and not _can_review_evidence_changes(
+        view, note
+    ):
         return WritePlan([], {"ev": note.stem, "to": "labelled"})
-    if note.get("status") != "rendered":
+    if note.get("status") != "rendered" and not _can_review_evidence_changes(
+        view, note
+    ):
         raise gate_failed(
             f"{note.stem} is {note.get('status')!r}; only rendered pages are labelled",
             [{"code": "EV.NOT_RENDERED", "ok": False, "message": note.stem}],
@@ -920,9 +939,17 @@ def plan_ev_labels_by_user(
     """
     note = entities.find_by_id(view, "evidence", ident)
     base = {"ev": note.stem, "rows": [key for key, _ in rows], "committed": commit}
-    if note.get("status") == "labelled" and commit and not rows and remark is None:
+    if (
+        note.get("status") == "labelled"
+        and commit
+        and not rows
+        and remark is None
+        and not _can_review_evidence_changes(view, note)
+    ):
         return WritePlan([], base)
-    if note.get("status") != "rendered":
+    if note.get("status") != "rendered" and not _can_review_evidence_changes(
+        view, note
+    ):
         raise gate_failed(
             f"{note.stem} is {note.get('status')!r}; labels are edited while it is "
             "rendered",
@@ -1778,15 +1805,10 @@ def plan_res_submit(
             if not revised and status == "first-read":
                 lifecycle._readout(view, page, flow)
                 return WritePlan([], {"id": res_id, "from": status, "to": status})
-    elif view.context.entry.results_in_vault and status in ("first-read", "confirmed"):
-        from expnote.research.model import parse_note
+    elif view.context.resolved.research_dir and status in ("first-read", "confirmed"):
+        from expnote.research.results import reviewed_source_changed
 
-        current = parse_note(
-            note.path, note.rel, note.path.read_text(encoding="utf-8-sig")
-        )
-        if current.fm_error:
-            raise ResearchError("RESULT_INVALID", current.fm_error, exit_code=2)
-        revised = current.body.strip() != note.body.strip()
+        revised = reviewed_source_changed(view, note, lifecycle.state_of(view, note))
     if (
         status != "draft"
         and not revised

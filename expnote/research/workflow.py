@@ -170,6 +170,22 @@ def _sections(note, profile) -> dict:
     return sections
 
 
+def recorded_evidence_labels(note, profile, state) -> str:
+    """Keep approvals from before EV reviews captured full document snapshots."""
+    if note.get("status") != "labelled" or state.get("reviewedEvidenceRevision"):
+        return ""
+    recorded = state.get("sections", {})
+    if not recorded:
+        return ""
+    current = _sections(note, profile)
+    keys = ("labels", "remarks")
+    if all(
+        recorded.get(key, "").strip() == current.get(key, "").strip() for key in keys
+    ):
+        return ""
+    return "\n\n".join(recorded[key].strip() for key in keys if recorded.get(key))
+
+
 def _deviation_id(context) -> str:
     return ".deviations"
 
@@ -186,11 +202,15 @@ def virtual_note(context, note, states):
     if kind in TYPES:
         fm.setdefault("status", INITIAL[kind])
     revision = state.get("revision")
-    text = revision_text(context.entry.id, revision) if revision else note.text
+    text = (
+        revision_text(context.entry.id, revision)
+        if revision and kind != "evidence"
+        else note.text
+    )
     base = parse_note(note.path, note.rel, text)
     lines = base.body.split("\n")
     for key, predicate in _predicates(context.profile).items():
-        if key not in state.get("sections", {}):
+        if kind == "evidence" or key not in state.get("sections", {}):
             continue
         replacement = state["sections"][key].split("\n")
         span = find_section("\n".join(lines), predicate)
@@ -318,7 +338,9 @@ def prepare_write(view, plan, command, apply):
             )
         state["fields"] = {k: v for k, v in updated.fm.items() if k in FIELDS}
         state["sections"] = _sections(updated, view.profile)
-        if is_split:
+        evidence_edit = updated.type == "evidence"
+        evidence_sha = sha
+        if is_split or evidence_edit:
             text = edit_frontmatter(
                 updated.text,
                 [
@@ -339,7 +361,20 @@ def prepare_write(view, plan, command, apply):
                     expected_sha256=sha,
                 )
             )
-            state.pop("revision", None)
+            if is_split:
+                state.pop("revision", None)
+            elif evidence_edit:
+                from expnote.research.edits import decode_note, encode_note
+                from expnote.research.storage_paths import file_key
+
+                _, fmt = decode_note(raw)
+                evidence_sha = digest(encode_note(text, fmt))
+                if state.get("revision") and evidence_sha != sha:
+                    state["labelDraft"] = {
+                        "revision": state["revision"],
+                        "path": file_key(context.resolved, note.path),
+                        "sha": evidence_sha,
+                    }
         if command in {"exec freeze", "res submit"} and ident == str(
             plan.data.get("id")
         ):
@@ -359,12 +394,25 @@ def prepare_write(view, plan, command, apply):
                     state["history"] = [*state["history"], previous]
                 if command == "res submit" and plan.data.get("from") == "confirmed":
                     state["previousConfirmed"] = previous
-                if command == "res submit" and context.entry.results_in_vault:
-                    result_assets.append(raw.decode("utf-8-sig"))
                 state["revision"] = (
                     persist_revision(project, raw) if apply else digest(raw)
                 )
                 state["origin"] = "submitted"
+                if command == "res submit":
+                    from expnote.research.results import image_plan, snapshot_images
+
+                    _, images = image_plan(
+                        view, note.path, raw.decode("utf-8-sig"), "res"
+                    )
+                    result_assets.append(images)
+                    revision_images = snapshot_images(
+                        view, images, note.path, apply=apply
+                    )
+                    if revision_images:
+                        state["revisionImages"] = {
+                            **state.get("revisionImages", {}),
+                            state["revision"]: revision_images,
+                        }
                 if command == "exec freeze":
                     parent = view.snapshot.plan_page_of(note)
                     if parent:
@@ -373,15 +421,34 @@ def prepare_write(view, plan, command, apply):
                         ).get("revision")
         if command == "res review" and updated.get("status") == "draft":
             returned = state.pop("revision", None)
-            if context.entry.results_in_vault and returned:
+            if returned:
                 state["history"] = [*state.get("history", []), returned]
-        if updated.get("status") == "labelled" and plan.workflow_updates.get(
-            ident, {}
-        ).get("reviewedEvidence"):
+        if (
+            evidence_edit
+            and updated.get("status") == "labelled"
+            and (command.endswith("commit") or plan.data.get("committed"))
+        ):
+            from expnote.research.results import image_plan, snapshot_images
+
             reviewed = updated.text.encode("utf-8")
-            state["reviewedEvidenceRevision"] = (
+            previous = state.get("reviewedEvidenceRevision")
+            revision = (
                 persist_revision(project, reviewed) if apply else digest(reviewed)
             )
+            if previous and previous != revision:
+                state["history"] = list(
+                    dict.fromkeys([*state.get("history", []), previous])
+                )
+            state["reviewedEvidenceRevision"] = revision
+            state["reviewedSourceSha"] = evidence_sha
+            _, images = image_plan(view, note.path, updated.text, "ev")
+            result_assets.append(images)
+            revision_images = snapshot_images(view, images, note.path, apply=apply)
+            if revision_images:
+                state["revisionImages"] = {
+                    **state.get("revisionImages", {}),
+                    revision: revision_images,
+                }
         if state != states.get(ident, {}):
             updates[ident] = state
 
@@ -394,7 +461,7 @@ def prepare_write(view, plan, command, apply):
         if not note.has_fm or note.fm_error:
             continue
         items = []
-        if edit.path.is_relative_to(resolved.research_dir) and note.type in {
+        if note.type in {
             "evidence",
             "evidence-appendix",
         }:
@@ -434,10 +501,10 @@ def prepare_write(view, plan, command, apply):
         for ident, state in updates.items():
             put(store.conn, ident, state, command, actor, at)
         if result_assets:
-            from expnote.research.results import sync_result_images
+            from expnote.research.results import apply_image_copies
 
-            for text in result_assets:
-                sync_result_images(context, text, apply=apply)
+            for images in result_assets:
+                apply_image_copies(images, apply=apply)
         if original:
             original.apply(store, actor, at)
 

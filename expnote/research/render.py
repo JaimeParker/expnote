@@ -14,6 +14,7 @@ import dataclasses
 import html
 import re
 import xml.etree.ElementTree as etree
+from pathlib import PurePosixPath
 from urllib.parse import quote
 
 import markdown
@@ -26,6 +27,7 @@ from markdown.treeprocessors import Treeprocessor
 from expnote.research.extract import decision_hub_pattern, decision_hub_stem
 from expnote.research.frontmatter import split_frontmatter
 from expnote.research.index import IMAGE_EXTS
+from expnote.research.storage_media import local_target
 from expnote.research.textkit import (
     FENCE_RE,
     HTML_COMMENT_RE,
@@ -74,7 +76,9 @@ def page_url(project_id: str, *parts: str) -> str:
 # ---- link resolution (index backed) ----------------------------------------------
 
 
-def find_attachment(view: ProjectView, name: str) -> tuple[str, str | None] | None:
+def find_attachment(
+    view: ProjectView, name: str, source=None
+) -> tuple[str, str | None] | None:
     """(vault-relative path, sha256) of the attachment called `name`, or None.
 
     Matches the file name or a path suffix (NFC, case-folded); a hit inside the
@@ -82,7 +86,17 @@ def find_attachment(view: ProjectView, name: str) -> tuple[str, str | None] | No
     """
     raw = nfc(name.strip().replace("\\", "/"))
     wanted = fold(raw)
-    if not wanted or raw.startswith("/") or ".." in raw.split("/"):
+    if not wanted or raw.startswith("/"):
+        return None
+    resolved = view.context.resolved
+    relative = ""
+    if source is not None:
+        path = (source.parent / raw).resolve()
+        if path.is_relative_to(resolved.material_dir.resolve()) or path.is_relative_to(
+            resolved.vault_root.resolve()
+        ):
+            relative = fold(resolved.logical_path(path))
+    if ".." in raw.split("/") and not relative:
         return None
     rows = view.conn.execute(
         "SELECT rel, nrel, sha256 FROM files WHERE kind = 'attachment' "
@@ -92,13 +106,52 @@ def find_attachment(view: ProjectView, name: str) -> tuple[str, str | None] | No
     hits = [
         r
         for r in rows
-        if fold(r["nrel"]) == wanted or fold(r["nrel"]).endswith("/" + wanted)
+        if fold(r["nrel"]) in {wanted, relative}
+        or fold(r["nrel"]).endswith("/" + wanted)
     ]
     if not hits:
         return None
     images = view.snapshot.images_rel + "/"
-    hits.sort(key=lambda r: (not r["rel"].startswith(images), len(r["rel"]), r["rel"]))
+    prefer_vault = source is not None and source.is_relative_to(resolved.vault_root)
+    hits.sort(
+        key=lambda r: (
+            fold(r["nrel"]) != relative,
+            fold(r["nrel"]) != wanted,
+            r["rel"].startswith(images) == prefer_vault,
+            len(r["rel"]),
+            r["rel"],
+        )
+    )
     return hits[0]["rel"], hits[0]["sha256"]
+
+
+def note_image_url(view, name, source=None, archived=None):
+    if archived:
+        wire = fold(name)
+        basename = fold(PurePosixPath(name).name)
+        exact = {
+            (key, sha)
+            for key, sha in archived.items()
+            if fold(key.removeprefix("@vault/")) == wire
+            or wire.endswith("/" + fold(key.removeprefix("@vault/")))
+        }
+        hits = exact or {
+            (key, sha)
+            for key, sha in archived.items()
+            if fold(PurePosixPath(key).name) == basename
+        }
+        if hits and len({sha for _, sha in hits}) == 1:
+            key, sha = min(hits)
+            filename = quote(PurePosixPath(key).name, safe="")
+            return f"{api_base(view.project_id)}/revision-image/{sha}/{filename}"
+    if found := find_attachment(view, name, source):
+        rel = found[0]
+        if rel.rsplit(".", 1)[-1].lower() in IMAGE_EXTS:
+            name = (
+                rel if view.context.resolved.research_dir else PurePosixPath(rel).name
+            )
+            return image_url(view.project_id, name)
+    return None
 
 
 def _like_escape(text: str) -> str:
@@ -114,9 +167,12 @@ class LinkTarget:
 class LinkResolver:
     """Wikilink target -> GUI route, resolved through the index (cached)."""
 
-    def __init__(self, view: ProjectView, run_app: bool):
+    def __init__(self, view: ProjectView, run_app: bool, *, source=None, archived=None):
         self.view = view
         self.run_app = run_app
+        self.source = source
+        self.archived = archived
+
         self._notes: dict[str, LinkTarget] = {}
         self.hub = decision_hub_stem(view.profile)
         pattern = view.profile.run_id_regex
@@ -271,11 +327,13 @@ class EmbedPattern(InlineProcessor):
         name = raw.split("#", 1)[0].strip()
         extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if extension in IMAGE_EXTS:
-            found = find_attachment(view, name)
-            if found is None:
+            url = note_image_url(
+                view, name, self.resolver.source, self.resolver.archived
+            )
+            if url is None:
                 return _chip(name, "missing", "image not found"), m.start(0), m.end(0)
             el = etree.Element("img")
-            el.set("src", image_url(view.project_id, found[0].rsplit("/", 1)[-1]))
+            el.set("src", url)
             el.set("alt", name)
             el.set("loading", "lazy")
             el.set("class", "embed")
@@ -389,6 +447,10 @@ class StashMath(Preprocessor):
 class SanitizeLinks(Treeprocessor):
     """Only http(s), mailto and in-page links survive; remote images become links."""
 
+    def __init__(self, md, resolver):
+        super().__init__(md)
+        self.resolver = resolver
+
     def run(self, root):
         for el in list(root.iter()):
             if el.tag == "a":
@@ -410,12 +472,21 @@ class SanitizeLinks(Treeprocessor):
             el.set("class", "wl missing")
             el.set("title", "link target is not allowed here")
 
-    @staticmethod
-    def _image(el) -> None:
+    def _image(self, el) -> None:
         if "class" in el.attrib:  # produced by EmbedPattern
             return
         src = (el.get("src") or "").strip()
         alt = el.get("alt") or src
+        name = local_target(src)
+        if name:
+            url = note_image_url(
+                self.resolver.view, name, self.resolver.source, self.resolver.archived
+            )
+            if url:
+                el.set("src", url)
+                el.set("class", "embed")
+                el.set("loading", "lazy")
+                return
         el.attrib.clear()
         el.text = alt
         if src.lower().startswith(SAFE_SCHEMES):
@@ -448,7 +519,9 @@ class ObsidianExtension(Extension):
             )
         md.inlinePatterns.register(EmbedPattern(self.resolver), "embed", 187)
         md.inlinePatterns.register(WikilinkPattern(self.resolver), "wikilink", 186)
-        md.treeprocessors.register(SanitizeLinks(md), "sanitize_links", 0)
+        md.treeprocessors.register(
+            SanitizeLinks(md, self.resolver), "sanitize_links", 0
+        )
 
 
 def strip_frontmatter(text: str) -> str:
@@ -460,14 +533,18 @@ def strip_frontmatter(text: str) -> str:
     return body if fm_text is not None else text
 
 
-def _engine(view: ProjectView, run_app: bool, cells: bool = False) -> markdown.Markdown:
+def _engine(
+    view: ProjectView, run_app: bool, cells: bool = False, *, source=None, archived=None
+) -> markdown.Markdown:
     return markdown.Markdown(
         extensions=[
             "fenced_code",
             "sane_lists",
             "tables",
             "toc",
-            ObsidianExtension(LinkResolver(view, run_app), cells),
+            ObsidianExtension(
+                LinkResolver(view, run_app, source=source, archived=archived), cells
+            ),
         ],
         extension_configs={
             "toc": {"slugify": slugify_unicode, "anchorlink": False},
@@ -477,9 +554,13 @@ def _engine(view: ProjectView, run_app: bool, cells: bool = False) -> markdown.M
     )
 
 
-def render_markdown(text: str, view: ProjectView, *, run_app: bool = False) -> str:
+def render_markdown(
+    text: str, view: ProjectView, *, run_app: bool = False, source=None, archived=None
+) -> str:
     """HTML for a note body (frontmatter removed if still present)."""
-    return _engine(view, run_app).convert(strip_frontmatter(text))
+    return _engine(view, run_app, source=source, archived=archived).convert(
+        strip_frontmatter(text)
+    )
 
 
 BREAK_RE = re.compile(r"<br\s*/?>", re.I)

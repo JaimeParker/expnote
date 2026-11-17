@@ -88,7 +88,7 @@ exec_app = typer.Typer(
     "--apply`; `expnote exec advance <EXEC_ID> --to running --apply`.",
 )
 ev_app = typer.Typer(
-    help="Evidence pages: list, split, register, label (label show, set, commit).",
+    help="Evidence pages: list, split, register, publish, label (show, set, commit).",
     epilog="Labels are the user's: `expnote ev label show <EV> --json`.",
 )
 res_app = typer.Typer(

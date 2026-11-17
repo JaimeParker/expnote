@@ -287,11 +287,9 @@ def _unique_stem(view: ProjectView, stem: str) -> None:
 
 
 def _note_path(view: ProjectView, kind: str, stem: str) -> Path:
-    folder = folders_for(view.profile)[kind]
-    resolved = view.context.resolved
-    vault_owned = kind == "plan" or (kind == "res" and resolved.entry.results_in_vault)
-    root = resolved.project_dir if vault_owned else resolved.material_dir
-    return root / folder / f"{stem}.md"
+    from expnote.research.storage_paths import document_dir
+
+    return document_dir(view.context.resolved, view.profile, kind) / f"{stem}.md"
 
 
 def _created(view: ProjectView, paths: list[Path]) -> list[dict]:

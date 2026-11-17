@@ -233,10 +233,10 @@ export function dataTable(t, { filledColumn, htmlRows, htmlHeader } = {}) {
   );
 }
 
-export function figureTile(P, name, { caption = true } = {}) {
-  const img = h("img", { src: imageUrl(P, name), alt: name, loading: "lazy" });
+export function figureTile(P, name, { caption = true, url = imageUrl(P, name) } = {}) {
+  const img = h("img", { src: url, alt: name, loading: "lazy" });
   img.addEventListener("error", () => img.replaceWith(chip("image missing", "warn")));
-  return h("figure", null, h("a", { href: imageUrl(P, name), target: "_blank", rel: "noopener" }, img), caption ? h("figcaption", null, name) : null);
+  return h("figure", null, h("a", { href: url, target: "_blank", rel: "noopener" }, img), caption ? h("figcaption", null, name) : null);
 }
 
 export function evDetail(ctx, data, { heading = "h1" } = {}) {
@@ -245,7 +245,7 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
   const names = labels(data.display);
   const label = e.labelTable;
   const fm = e.frontmatter || {};
-  const figures = e.figures.map((name) => figureTile(P, name));
+  const figures = e.figures.map((name, index) => figureTile(P, name, { url: e.figureUrls?.[index] || imageUrl(P, name) }));
   const editor = e.reviewRequired === false ? null : evLabelEditor(ctx, data);
   return h(
     "article",
@@ -278,8 +278,10 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
       ],
       { id: "labels", tone: toneOf("label", e.labelState), count: names[e.labelState] || e.labelState },
     ),
+    e.recordedLabelsHtml ? section("Previously confirmed labels", prose(e.recordedLabelsHtml), { open: false, id: "recorded-labels" }) : null,
     e.runs.length ? section("Runs", h("p", null, e.runs.map((r) => [runRef(ctx, r), " "])), { count: e.runs.length, open: false }) : null,
     e.appendixHtml ? section("Appendix", prose(e.appendixHtml), { open: false, id: "appendix" }) : null,
+    e.sourceChanged ? h("p", { class: "muted small" }, "Current source differs from the reviewed version.") : null,
     e.history?.length || e.reviewRevision ? section("Review versions", h("ul", { class: "related" },
       [...new Set([e.reviewRevision, ...(e.history || [])].filter(Boolean))].map((sha) =>
         h("li", null, link(`#/p/${encodeURIComponent(P)}/revision/${encodeURIComponent(sha)}`, short(sha)))),

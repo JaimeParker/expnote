@@ -56,6 +56,8 @@ def init_split(project, vault, ident, name, workspaces, apply) -> CommandResult:
     data = {
         "project": ident,
         "layout": "split",
+        "evidenceLocation": "vault",
+        "resultsLocation": "vault",
         "absProjectDir": str(project),
         "absResearchDir": str(root),
         "absImagesDir": str(images),

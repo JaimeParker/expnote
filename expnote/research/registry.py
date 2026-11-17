@@ -36,6 +36,15 @@ class ProjectEntry:
 
     layout: str = "vault"
     results_in_vault: bool = False
+    evidence_in_vault: bool = False
+
+    def storage(self, kind: str) -> str:
+        in_vault = (
+            self.evidence_in_vault
+            if kind in {"ev", "appendix"}
+            else self.results_in_vault
+        )
+        return "vault" if self.layout == "vault" or in_vault else "research"
 
     PATH_KEYS = ("vault_root", "project_dir", "images_dir", "profile_note")
 
@@ -72,6 +81,7 @@ def load_registry(path: Path | None = None) -> Registry:
                 quiet_window_seconds=int(raw.get("quiet_window_seconds", 10)),
                 layout=raw.get("layout", "vault"),
                 results_in_vault=raw.get("results_in_vault", False),
+                evidence_in_vault=raw.get("evidence_in_vault", False),
             )
         except KeyError as error:
             raise ResearchError(
@@ -111,6 +121,8 @@ def dump_registry(registry: Registry) -> str:
         lines.append(f"workspaces = {_toml_list(entry.workspaces)}")
         if entry.layout == "split":
             lines.append('layout = "split"')
+        if entry.evidence_in_vault:
+            lines.append("evidence_in_vault = true")
         if entry.results_in_vault:
             lines.append("results_in_vault = true")
         lines.append(f"quiet_window_seconds = {int(entry.quiet_window_seconds)}")
@@ -388,6 +400,8 @@ def register_project(
         workspaces=list(workspaces or []),
         quiet_window_seconds=quiet_window_seconds,
         layout=layout,
+        evidence_in_vault=layout == "split",
+        results_in_vault=layout == "split",
     )
     resolved = revalidate(entry)
     registry.projects[entry_id] = entry

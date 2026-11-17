@@ -851,3 +851,13 @@ a.hit-title:hover { color: var(--accent); }
   margin: auto;
   user-select: none;
 }
+
+.storage-control { flex-basis: 100%; min-width: 0; }
+.storage-panel { margin-top: .75rem; overflow-wrap: anywhere; }
+.storage-panel[hidden] { display: none; }
+.storage-fields { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; margin: .75rem 0; }
+.storage-fields label { display: grid; gap: .3rem; }
+.storage-fields select { font: inherit; padding: .35rem; }
+.storage-preview { display: grid; gap: .5rem; }
+.storage-preview button { justify-self: start; }
+.storage-paths { list-style: disc; padding-left: 1.25rem; max-height: 12rem; overflow: auto; }

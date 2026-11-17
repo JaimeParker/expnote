@@ -110,7 +110,10 @@ def _evidence(tmp_path, plan, exec_id):
     with open_view() as view:
         note = next(n for n in view.snapshot.notes if n.path == path)
         ident = note.get("record_id")
-    artifact = path.parent / "curve.json"
+        artifact = view.context.resolved.material_dir / "evidence" / "curve.json"
+    (path.parent / "curve.png").write_bytes(b"reviewed image")
+    path.write_text(path.read_text() + "\n![[curve.png]]\n")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text('{"return": 10}')
     receipt = _spec(
         tmp_path / "outputs.json", {"comparison": {"curve": "evidence/curve.json"}}
@@ -158,7 +161,15 @@ def test_cannot_skip_stage_evidence_result_or_close(tmp_path, monkeypatch):
     submit = ("res", "submit", result, "--deviation-impact", "none")
     _gate(*submit, code="FLOW.STAGE_INCOMPLETE")
     _gate("exec", "advance", exec_id, "--to", "done", code="FLOW.STAGE_NO_EVIDENCE")
-    _, _, artifact = _evidence(tmp_path, plan, exec_id)
+    _, evidence, artifact = _evidence(tmp_path, plan, exec_id)
+    result_path.write_text(
+        result_path.read_text() + f"\nRead [[{evidence.stem}#Figures|the evidence]].\n"
+    )
+    storage = ("project", "storage", "study", "--ev", "research")
+    preview = run(*storage)
+    assert preview["_exit"] == 4, preview
+    _ok(*storage, "--expect", preview["data"]["planHash"])
+    assert not evidence.exists() and artifact.is_file()
     _gate("exec", "advance", exec_id, "--to", "done", code="FLOW.RUN_INCOMPLETE")
     statuses["current-run"] = "finished"
     assert _ok(*start)["runBinding"] == binding
@@ -192,6 +203,10 @@ def test_cannot_skip_stage_evidence_result_or_close(tmp_path, monkeypatch):
     )
     _ok(*submit)
     _ok(*review)
+    storage = ("project", "storage", "study", "--res", "research")
+    preview = run(*storage)
+    assert preview["_exit"] == 4, preview
+    _ok(*storage, "--expect", preview["data"]["planHash"])
     _gate("plan", "advance", plan, "--to", "closed", "--decision", decision)
     _gate(
         "plan",
@@ -259,6 +274,7 @@ def test_revision_keeps_history_and_requires_new_result(tmp_path):
         "Value=reviewed",
         "--authorization",
         "Use this label",
+        "--no-quiet",
     )
     _ok("ev", "label", "commit", ev, "--authorization", "Confirm the labels")
     _ok("res", "submit", res, "--deviation-impact", "none")

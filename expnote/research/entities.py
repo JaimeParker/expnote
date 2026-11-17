@@ -543,9 +543,17 @@ def ev_detail(view: ProjectView, ident: str) -> dict:
     required = evidence_review_required(view, note)
     if required is not None:
         item["reviewRequired"] = required
+    if view.context.resolved.research_dir:
+        from expnote.research.results import reviewed_source_changed
+
         state = state_of(view, note)
         item["history"] = state.get("history", [])
         item["reviewRevision"] = state.get("reviewedEvidenceRevision")
+        item["sourceChanged"] = reviewed_source_changed(
+            view, note, state, evidence=True
+        )
+        if required is None and item["sourceChanged"]:
+            item["canReviewChanges"] = True
     return {"ev": item}
 
 

@@ -199,7 +199,11 @@ def _hash_file(path):
 
 
 def _receipt(view, page, note, exec_id, outputs, deliverables):
-    from expnote.research.textkit import iter_links, link_stem
+    from expnote.research.storage_media import ImageCopies, is_image
+    from expnote.research.storage_paths import file_key
+    from expnote.research.textkit import iter_links
+
+    resolved = view.context.resolved
 
     if not outputs or outputs.keys() - deliverables.keys():
         _bad("evidence must cover declared deliverable IDs")
@@ -226,26 +230,37 @@ def _receipt(view, page, note, exec_id, outputs, deliverables):
     attachment_paths = {
         name.casefold(): path for name, path in view.snapshot.attachment_paths.items()
     }
+    image_files = ImageCopies(resolved, view.snapshot.attachment_paths.values())
     for doc in (note, appendix):
+        from expnote.research.storage_paths import document_dir
+
         doc_path = doc.path.resolve()
+        directory = document_dir(
+            resolved, view.profile, "ev" if doc is note else "appendix"
+        )
         require(
-            doc_path.is_relative_to(material),
+            doc_path.is_relative_to(directory.resolve()),
             "EV_PATH",
-            f"{doc.stem} must be in Research.",
+            f"Unexpected path for {doc.stem}.",
         )
         raw = doc_path.read_bytes()
         sha = digest(raw)
-        files[doc_path.relative_to(material).as_posix()] = sha
+        files[file_key(resolved, doc.path)] = sha
         revisions[identity(view.project_id, doc)] = sha
         text = raw.decode("utf-8-sig")
+        image_files.rewrite(text, doc.path, resolved.entry.storage("ev"))
+        for image, asset_sha in image_files.referenced(doc.path).items():
+            files[file_key(resolved, image)] = asset_sha
         figures = doc.get("figures") or []
         targets = set(figures) if isinstance(figures, list) else set()
         targets.update(
-            link_stem(target).split("#", 1)[0]
-            for embed, target in iter_links(text)
-            if embed
+            target.split("#", 1)[0] for embed, target in iter_links(text) if embed
         )
         for target in sorted(targets):
+            if is_image(target):
+                if asset := image_files.find(target, doc.path):
+                    files[file_key(resolved, asset)] = _hash_file(asset)
+                    continue
             paths = [
                 attachment_paths.get(hit.casefold())
                 for hit in view.snapshot.resolve(target)
@@ -262,7 +277,7 @@ def _receipt(view, page, note, exec_id, outputs, deliverables):
                     f"Ambiguous evidence attachment: {target}",
                 )
                 asset = assets[0]
-                files[asset.relative_to(material).as_posix()] = _hash_file(asset)
+                files[file_key(resolved, asset)] = _hash_file(asset)
             elif target in figures:
                 require(False, "EV_ASSET", f"Missing Research figure: {target}")
     for name, entries in outputs.items():
@@ -291,16 +306,27 @@ def _receipt(view, page, note, exec_id, outputs, deliverables):
     }
 
 
-def _file_checks(view, receipt):
-    base = view.context.resolved.material_dir.resolve()
-    return {base / name: sha for name, sha in receipt["files"].items()}
+def _file_checks(view, receipt, *, draft=True):
+    from expnote.research.storage import mapped_file, moved_files
+
+    resolved = view.context.resolved
+    equivalents = moved_files(resolved, receipt["revisions"])
+    drafts = {}
+    if draft:
+        for ident, revision in receipt["revisions"].items():
+            entry = view.cache["workflow"].get(ident, {}).get("labelDraft", {})
+            if entry.get("revision") == revision:
+                drafts[revision] = (entry["path"], entry["sha"])
+    return dict(
+        mapped_file(resolved, *drafts.get(sha, (name, sha)), equivalents)
+        for name, sha in receipt["files"].items()
+    )
 
 
 def _fresh(view, receipt):
     try:
         return all(
-            _hash_file(_output_path(view, name)) == sha
-            for name, sha in receipt["files"].items()
+            _hash_file(path) == sha for path, sha in _file_checks(view, receipt).items()
         )
     except ResearchError:
         return False
@@ -312,12 +338,11 @@ def _save_evidence(view, note, receipt, old, *, reset, apply):
     revision = receipt["revisions"][ident]
     if apply:
         base = view.context.resolved.material_dir
-        for relative, sha in receipt["files"].items():
-            path = base / relative
+        for path, sha in _file_checks(view, receipt, draft=False).items():
             raw = path.read_bytes()
             if digest(raw) != sha:
                 raise ResearchError("CONFLICT", f"{path} changed", exit_code=5)
-            if sha in receipt["revisions"].values():
+            if path.suffix.casefold() == ".md":
                 persist_revision(view.project_id, raw)
             else:
                 snapshot = base / "revisions" / "assets" / sha
@@ -338,6 +363,8 @@ def _save_evidence(view, note, receipt, old, *, reset, apply):
     if previous and previous != revision:
         state["history"] = list(dict.fromkeys([*old.get("history", []), previous]))
     if reset:
+        state.pop("labelDraft", None)
+        state.pop("reviewedSourceSha", None)
         state["fields"] = {"status": "rendered"}
         state["sections"] = {}
         state["reviewedEvidence"] = None
@@ -1092,6 +1119,14 @@ def _body_hash(view, note, raw=None):
     from expnote.research.model import parse_note
 
     raw = note.path.read_bytes() if raw is None else raw
+    from expnote.research.storage import equivalent_digest
+    from expnote.research.workflow import revision_text
+
+    body_revision = state_of(view, note).get("revision")
+    if body_revision and equivalent_digest(
+        view.context.resolved, note.path, digest(raw), body_revision
+    ):
+        raw = revision_text(view.project_id, body_revision).encode()
     live = parse_note(note.path, note.rel, raw.decode("utf-8-sig"))
     if not live.has_fm or live.fm_error:
         _bad(f"invalid result Markdown: {note.path}")
@@ -1105,8 +1140,8 @@ def _body_hash(view, note, raw=None):
     )
 
 
-def _package(view, page, note, flow, raw=None):
-    return {
+def _package(view, page, note, flow, raw=None, *, pin_images=False):
+    data = {
         "approval": flow["approval"],
         "planRevision": flow["revision"],
         "checklist": _fingerprint(flow["checklist"]),
@@ -1114,6 +1149,14 @@ def _package(view, page, note, flow, raw=None):
         "conditions": _fingerprint(flow["conditions"]),
         "body": _body_hash(view, note, raw),
     }
+    stored = state_of(view, note).get("resultSubmission") or {}
+    if pin_images or "images" in stored:
+        from expnote.research.results import image_plan
+
+        raw = note.path.read_bytes() if raw is None else raw
+        _, images = image_plan(view, note.path, raw.decode("utf-8-sig"), "res")
+        data["images"] = sorted(set(images.referenced(note.path).values()))
+    return data
 
 
 def _pin(view, page, flow, plan):
@@ -1143,7 +1186,7 @@ def result_submit(view, note, page, plan):
         "RESULT_COUNT",
         "The active PLAN must have one final result.",
     )
-    result = _package(view, page, note, flow)
+    result = _package(view, page, note, flow, pin_images=True)
     require(
         result["body"] != state_of(view, note).get("rewriteFrom"),
         "RESULT_REWRITE",

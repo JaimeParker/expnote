@@ -31,7 +31,9 @@ def test_split_init_and_managed_documents(tmp_path):
     with open_view("study") as view:
         assert pending_changes(view.context) == 0
         evidence = next(n for n in view.snapshot.notes if n.type == "evidence")
-        assert evidence.path.is_relative_to(root)
+        assert evidence.path.is_relative_to(project)
+        assert (project / "evidence" / "_appendices").is_dir()
+        assert view.context.entry.storage("res") == "vault"
         assert evidence.get("record_id")
 
 
@@ -170,7 +172,8 @@ def test_review_updates_sqlite_and_conflicts_when_page_is_stale(tmp_path):
     )
     assert done.status_code == 200, done.text
     assert world.client.get(P + url).json()["data"]["ev"]["status"] == "labelled"
-    assert path.read_bytes() == original
+    assert path.read_bytes() != original
+    assert "跌落" in path.read_text() and "status: labelled" not in path.read_text()
 
 
 def test_restore_recovers_vault_bytes_and_legacy_registry(tmp_path):
@@ -204,7 +207,9 @@ def test_result_review_uses_the_submitted_revision_and_stable_url(tmp_path):
     assert stable == {"page": "note", "arg": "Updated title"}
     shown = world.client.get(P + "/note/Updated%20title").json()["data"]
     assert "Submitted figure interpretation." in shown["html"]
-    assert "Later analysis draft." not in shown["html"]
+    assert "Later analysis draft." in shown["html"]
+    assert "Later analysis draft." not in shown["revisionHtml"]
+    assert "Submitted figure interpretation." in shown["revisionHtml"]
     applied = post(
         world,
         "/res/RES-PLAN-900B/review",
@@ -283,7 +288,7 @@ def test_vault_res_is_current_with_a_separate_review_version(tmp_path):
     assert not old.exists()
     moved = run("project", "results-in-vault", "off2on", "--apply")
     assert moved["_exit"] == 0, moved
-    assert (old.parent / "_assets/o2o_demo.png").is_file()
+    assert (old.parent.parent / "research-assets/o2o_demo.png").is_file()
     original = old.read_text()
     old.write_text(original + "\nA new finding.\n")
     note_url = f"{P}/note/RES--PLAN-900B%20%E5%88%A4%E8%AF%BB"

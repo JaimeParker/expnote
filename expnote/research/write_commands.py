@@ -878,6 +878,31 @@ def exec_advance(
     )
 
 
+@ev_app.command("publish")
+def ev_publish(
+    ident: str,
+    candidate: Annotated[
+        Path, typer.Option("--from-file", exists=True, dir_okay=False)
+    ],
+    expected_sha256: ExpectedOption = None,
+    project: ProjectOption = None,
+    apply: ApplyOption = False,
+    no_quiet: NoQuietOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Publish an EV page or its appendix, preserving concurrent author edits."""
+    from expnote.research.results import publish_document
+
+    run_write(
+        "ev publish",
+        lambda view: publish_document(view, ident, candidate, expected_sha256, apply),
+        project=project,
+        apply=apply,
+        no_quiet=no_quiet,
+        as_json=as_json,
+    )
+
+
 @res_app.command("publish")
 def res_publish(
     ident: str,

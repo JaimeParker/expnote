@@ -61,6 +61,7 @@ from expnote.research.registry import (
 from expnote.research.render import (
     LinkResolver,
     find_attachment,
+    note_image_url,
     render_inline_cells,
     render_markdown,
 )
@@ -292,6 +293,36 @@ def build_router(service: ResearchService) -> APIRouter:
             return _ok("layout", saved)
         except ResearchError as error:
             return _failure("layout", error)
+
+    @router.get(f"{api}/projects/{{project_id}}/storage")
+    @_guarded("project storage")
+    def project_storage(project_id: str) -> JSONResponse:
+        from expnote.research.storage import migrate_storage
+
+        return _ok("project storage", migrate_storage(project_id).data)
+
+    @router.post(f"{api}/projects/{{project_id}}/storage")
+    async def change_storage(project_id: str, request: Request) -> JSONResponse:
+        from expnote.research.storage import migrate_storage
+
+        try:
+            service.authorize_write(request)
+            body = await _json_body(request)
+            dry_run = body.get("dryRun", True)
+            if type(dry_run) is not bool:
+                raise _bad_value("dryRun must be a boolean")
+            result = await run_in_threadpool(
+                migrate_storage,
+                project_id,
+                _text(body, "ev"),
+                _text(body, "res"),
+                apply=not dry_run,
+                expected=_text(body, "expectedPlanHash"),
+                actor="gui",
+            )
+            return _ok("project storage", result.data)
+        except ResearchError as error:
+            return _failure("project storage", error)
 
     # ---- dashboard ------------------------------------------------------------------
 
@@ -557,13 +588,27 @@ def build_router(service: ResearchService) -> APIRouter:
             data = entities.ev_detail(view, stem)
             note = entities.find_by_id(view, "evidence", stem)
             data["ev"]["html"] = render_markdown(
-                note.body, view, run_app=service.run_app
+                note.body, view, run_app=service.run_app, source=note.path
             )
+            data["ev"]["figureUrls"] = [
+                note_image_url(view, name, note.path) for name in data["ev"]["figures"]
+            ]
             if view.context.resolved.research_dir:
+                from expnote.research.workflow import identity, recorded_evidence_labels
+
+                state = view.cache["workflow"].get(identity(project_id, note), {})
+                labels = recorded_evidence_labels(note, view.profile, state)
+                if labels:
+                    data["ev"]["recordedLabelsHtml"] = render_markdown(
+                        labels, view, run_app=service.run_app, source=note.path
+                    )
                 appendix = entities._linked_note(view, note, "appendix")
                 if appendix:
                     data["ev"]["appendixHtml"] = render_markdown(
-                        appendix.body, view, run_app=service.run_app
+                        appendix.body,
+                        view,
+                        run_app=service.run_app,
+                        source=appendix.path,
                     )
             _add_cell_html(data["ev"], view, service.run_app)
             data["display"] = display_strings(view)
@@ -693,8 +738,14 @@ def build_router(service: ResearchService) -> APIRouter:
                 known.update(state.get("history", []))
                 evidence = state.get("archivedEvidence", {})
                 files.update(
-                    evidence.get(state.get("revision") if sha == reviewed else sha, {})
+                    evidence.get(
+                        sha,
+                        evidence.get(state.get("revision"), {})
+                        if sha == reviewed
+                        else {},
+                    )
                 )
+                files.update(state.get("revisionImages", {}).get(sha, {}))
             if sha not in known:
                 raise _not_found(f"no published revision {sha!r}")
             text = revision_text(project_id, sha)
@@ -705,7 +756,9 @@ def build_router(service: ResearchService) -> APIRouter:
                 {
                     "revision": sha,
                     "title": parsed.get("title") or "Research revision",
-                    "html": render_markdown(parsed.body, view, run_app=service.run_app),
+                    "html": render_markdown(
+                        parsed.body, view, run_app=service.run_app, archived=files
+                    ),
                     "files": files,
                 },
                 view,
@@ -719,7 +772,7 @@ def build_router(service: ResearchService) -> APIRouter:
             if root is None or not re.fullmatch(r"[a-f0-9]{64}", sha):
                 raise _not_found("invalid Research revision file")
             for state in view.cache.get("workflow", {}).values():
-                for files in state.get("archivedEvidence", {}).values():
+                for files in _archived_files(state):
                     for name, digest in files.items():
                         if digest != sha:
                             continue
@@ -735,6 +788,26 @@ def build_router(service: ResearchService) -> APIRouter:
                         ):
                             return FileResponse(path, filename=Path(name).name)
             raise _not_found("no published revision file")
+
+    @router.get(f"{api}/projects/{{project_id}}/revision-image/{{sha}}/{{name}}")
+    @_guarded("revision-image")
+    def revision_image(project_id: str, sha: str, name: str, request: Request):
+        with service.view(project_id) as view:
+            root = view.context.resolved.research_dir
+            if root is None or not re.fullmatch(r"[a-f0-9]{64}", sha):
+                raise _not_found("invalid revision image")
+            for state in view.cache.get("workflow", {}).values():
+                for files in _archived_files(state):
+                    if any(
+                        Path(key).name == name and expected == sha
+                        for key, expected in files.items()
+                    ):
+                        path = root / "revisions" / "assets" / sha
+                        if path.is_file() and path.resolve().is_relative_to(
+                            root.resolve()
+                        ):
+                            return _serve_image(path, name, sha, request)
+            raise _not_found("no published revision image")
 
     @router.get(f"{api}/projects/{{project_id}}/record/{{ident}}")
     @_guarded("record")
@@ -822,7 +895,10 @@ def build_router(service: ResearchService) -> APIRouter:
             vault_owned = effective and effective.path.is_relative_to(
                 view.context.resolved.vault_root
             )
-            current = stored["body"] if vault_owned or not effective else effective.body
+            show_current = vault_owned or row["type"] == "result"
+            current = (
+                stored["body"] if show_current or not effective else effective.body
+            )
             if (
                 row["type"] == "engineering-decision-log"
                 and view.snapshot.separated_decisions
@@ -847,9 +923,13 @@ def build_router(service: ResearchService) -> APIRouter:
                         links.append(f"### {number}\n\n[{ident}]({href})")
                 current = "\n\n".join(links)
             revision_html = None
-            if vault_owned and state.get("revision"):
+            if show_current and state.get("revision"):
                 revision_html = render_markdown(
-                    effective.body, view, run_app=service.run_app
+                    effective.body,
+                    view,
+                    run_app=service.run_app,
+                    source=effective.path,
+                    archived=state.get("revisionImages", {}).get(state["revision"]),
                 )
             outline = view.conn.execute(
                 "SELECT level, text FROM headings WHERE file_id = ? AND level <= 3 "
@@ -890,6 +970,7 @@ def build_router(service: ResearchService) -> APIRouter:
                     current,
                     view,
                     run_app=service.run_app,
+                    source=effective.path if effective else None,
                 ),
                 "entityHref": target.href if target.kind != "note" else None,
                 "backlinks": [
@@ -903,14 +984,21 @@ def build_router(service: ResearchService) -> APIRouter:
             }
             if revision_html is not None:
                 data["revisionHtml"] = revision_html
-                data["sourceChanged"] = current.strip() != effective.body.strip()
+                if row["type"] == "result":
+                    from expnote.research.results import reviewed_source_changed
+
+                    data["sourceChanged"] = reviewed_source_changed(
+                        view, effective, state
+                    )
+                else:
+                    data["sourceChanged"] = current.strip() != effective.body.strip()
             if state.get("history"):
                 data["history"] = list(dict.fromkeys(state["history"]))
             if state.get("publication", {}).get("pending"):
                 data["pendingPublication"] = state["publication"]["pending"]
             return _ok("note", data, view)
 
-    @router.get(f"{api}/projects/{{project_id}}/image/{{name}}")
+    @router.get(f"{api}/projects/{{project_id}}/image/{{name:path}}")
     def image(project_id: str, name: str, request: Request, refresh: bool = False):
         try:
             with service.view(project_id, refresh) as view:
@@ -1283,32 +1371,47 @@ def _not_found(message: str) -> ResearchError:
     return ResearchError("IMAGE_NOT_FOUND", message, exit_code=3)
 
 
+def _archived_files(state):
+    yield from state.get("archivedEvidence", {}).values()
+    yield from state.get("revisionImages", {}).values()
+
+
 def _image_response(view: ProjectView, name: str, request: Request) -> Response:
-    """A vault image: resolved through the index, confined to the vault root."""
-    if not name or "/" in name or "\\" in name or "\x00" in name or ".." in name:
+    """Serve an indexed image from the vault or the Research project."""
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or "\x00" in name
+        or ".." in name.split("/")
+    ):
         raise _not_found("not an image name")
     found = find_attachment(view, name)
     if found is None:
         raise _not_found(f"no image named {name!r}")
     rel, indexed_sha = found
-    extension = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
-    if extension not in IMAGE_EXTS:
-        raise ResearchError(
-            "IMAGE_UNSUPPORTED_TYPE",
-            f"{name!r} is not an image the viewer serves",
-            exit_code=2,
-        )
     resolved = view.context.resolved
-    root = (resolved.research_dir or resolved.vault_root).resolve()
     try:
         path = resolved.physical_path(rel).resolve(strict=True)
     except OSError:
         raise _not_found(f"image {name!r} is not readable") from None
-    if not path.is_relative_to(root) or not path.is_file():
-        raise _not_found(f"image {name!r} is not inside the vault")
+    roots = {resolved.vault_root.resolve(), resolved.material_dir.resolve()}
+    if not path.is_file() or not any(path.is_relative_to(root) for root in roots):
+        raise _not_found(f"image {name!r} is not inside the project or vault")
+    return _serve_image(path, rel, indexed_sha, request)
+
+
+def _serve_image(path, filename, indexed_sha, request):
+    extension = Path(filename).suffix.lower().lstrip(".")
+    if extension not in IMAGE_EXTS:
+        raise ResearchError(
+            "IMAGE_UNSUPPORTED_TYPE",
+            f"{filename!r} is not an image the viewer serves",
+            exit_code=2,
+        )
     if path.stat().st_size > MAX_IMAGE_BYTES:
         raise ResearchError(
-            "IMAGE_TOO_LARGE", f"{name!r} is larger than 25 MB", exit_code=2
+            "IMAGE_TOO_LARGE", f"{filename!r} is larger than 25 MB", exit_code=2
         )
     payload = path.read_bytes()
     digest = indexed_sha or hashlib.sha256(payload).hexdigest()
@@ -1316,7 +1419,6 @@ def _image_response(view: ProjectView, name: str, request: Request) -> Response:
         "Cache-Control": "private, max-age=60",
         "ETag": f'"{digest}"',
         "X-Content-Type-Options": "nosniff",
-        # An SVG opened on its own must not run scripts in the GUI origin.
         "Content-Security-Policy": "default-src 'none'; sandbox",
     }
     if request.headers.get("if-none-match") == headers["ETag"]:

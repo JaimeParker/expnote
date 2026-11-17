@@ -359,7 +359,7 @@ const cellValue = (input) => (input.value ?? input.getAttribute("value") ?? "").
 export function evLabelEditor(ctx, data) {
   const e = data.ev;
   const table = e.labelTable;
-  if (e.status !== "rendered" || !table || !e.sha256 || !table.rows.length) return null;
+  if ((e.status !== "rendered" && !e.canReviewChanges) || !table || !e.sha256 || !table.rows.length) return null;
   const P = ctx.project;
   const editable = new Set(table.valueColumns);
   const inputs = [];

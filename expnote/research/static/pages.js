@@ -18,6 +18,7 @@ import {
 import { openDecisionAction, planCloseAction, resReviewPanel, todoAddForm } from "/research/actions.js";
 import { planLanes, lanesLegend } from "/research/lanes.js";
 import { LISTS } from "/research/lists.js";
+import { storageControl } from "/research/storage.js";
 import {
   append,
   chip,
@@ -344,7 +345,7 @@ async function projectPage(ctx) {
       h("h1", null, projectName(ctx)),
       h("p", { class: "health-line" }, h("a", { href: route.health(P) }, healthSentence(data)), "."),
       h("div", { class: "meta-line" }, pair("Plans", String(data.plans.total)), pair("Decisions", String(data.decisions.total)), pair("TODOs", String(data.todos.total))),
-      h("div", { class: "actions", "data-slot": "page-actions" }),
+      h("div", { class: "actions", "data-slot": "page-actions" }, storageControl(ctx)),
     ),
     grid,
   );

@@ -1033,22 +1033,32 @@ restore the backed-up layout before retrying an interrupted migration. If later
 edits conflict with the backup, restore to an isolated copy for comparison.
 Include the Research project directory and the Vault's user notes in backups.
 
-### Keep the editable RES in Obsidian
+### Choose where to keep EV and RES
 
-For an existing split project, preview `expnote project results-in-vault ID
---json` and then add `--apply` while report writers for that project are paused.
-This moves the existing result Markdown and copies the Research images that it
-embeds. The project's stable record IDs and review records keep their history.
-Use `project show ID --json` to discover `absResultsDir`.
+New split projects keep both kinds of Markdown in the Obsidian project. On
+the project home page, **Storage** sets EV and RES independently. The preview
+lists the notes, image copies, link edits and conflicts before applying anything.
+EV appendices follow EV. Keep raw execution outputs in the Research project.
 
-The Research detail page renders the current Vault file. Open **Review version**
-to read the submitted snapshot and complete a pending review. Submit a changed
-result again with `expnote res submit` to review the new version.
+For example, move EV and its appendices into the Vault:
 
-For report generators, use `expnote res publish ID --from-file CANDIDATE --apply
---json`. It publishes over the previous generated version when the source still
-matches. A differing source and a first publication with no baseline produce a
-proposal. The JSON includes its path and the current source SHA. After merging
-the candidate, pass `--expected-sha256 SHA` with the merged file so a concurrent
-edit is detected. Keep source and candidates as Markdown and use a new filename
-for each changed image to preserve images in submitted versions.
+```bash
+expnote project storage ID --ev vault --json
+expnote project storage ID --ev vault --expect PLAN_HASH --apply --json
+```
+
+Use `--res` to change RES, or set a location to `research` to move back.
+Pause project report writers during the switch. The migration keeps the
+Research image originals, copies referenced images into the Vault for offline
+reading, and updates links. An interrupted migration can be recovered with
+`expnote project restore-storage ID --apply`.
+
+Use `project show ID --json` to discover `absEvidenceDir`,
+`absEvidenceAppendixDir`, `absResultsDir`, and `absImagesDir`. The Research
+detail page shows the current Markdown and links to the submitted or reviewed
+snapshot. Submit a changed RES again to review the new version.
+
+Use `ev publish STEM --from-file CANDIDATE` for generated EV or appendix Markdown,
+and `res publish ID --from-file CANDIDATE` for a RES. Apply with `--apply --json`.
+An edited source produces a proposal and its current source checksum. Pass
+`--expected-sha256 SHA` with the merged Markdown to check for concurrent edits.

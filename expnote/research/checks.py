@@ -942,7 +942,7 @@ def _check_parse(notes: list[Note], sink: FindingSink, stats: dict) -> None:
 
 def _identical_shared_image(snap: VaultSnapshot, paths: list[str]) -> bool:
     """Allow a Research original and its byte-identical copy in the vault."""
-    if snap.managed_images_dir is None or len(paths) != 2:
+    if snap.managed_images_dir is None:
         return False
     try:
         managed_root = snap.managed_images_dir.resolve()
@@ -950,12 +950,10 @@ def _identical_shared_image(snap: VaultSnapshot, paths: list[str]) -> bool:
         files = [snap.attachment_paths[name].resolve(strict=True) for name in paths]
         managed = [path for path in files if path.is_relative_to(managed_root)]
         vault = [path for path in files if path.is_relative_to(vault_root)]
-        if len(managed) != 1 or len(vault) != 1 or managed[0] == vault[0]:
+        if len(managed) != 1 or len(vault) != len(files) - 1:
             return False
-        return (
-            managed[0].stat().st_size == vault[0].stat().st_size
-            and managed[0].read_bytes() == vault[0].read_bytes()
-        )
+        source = managed[0].read_bytes()
+        return all(path.read_bytes() == source for path in vault)
     except (KeyError, OSError):
         return False
 
@@ -1023,7 +1021,9 @@ def _check_links(
                     f"{'image embed' if image else 'link'} not found: [[{target}]]",
                 )
             elif embed and prefix and link_stem(target).casefold().startswith(prefix):
-                if not any(h.casefold().startswith(images_rel + "/") for h in hits):
+                if snap.managed_images_dir is None and not any(
+                    h.casefold().startswith(images_rel + "/") for h in hits
+                ):
                     sink.add(
                         "WARN",
                         "LINK.IMAGE_OUTSIDE_DIR",
