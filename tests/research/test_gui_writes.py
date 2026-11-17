@@ -189,6 +189,7 @@ def test_only_the_listed_endpoints_can_write(world):
     prefix = "/api/research/projects/{project_id}"
     assert writable == {
         ("POST", "/api/research/layout"),
+        ("POST", f"{prefix}/templates"),
         ("POST", "/api/research/projects/{project_id}/storage"),
         ("POST", f"{prefix}/decisions/{{ident}}/approve"),
         ("POST", f"{prefix}/decisions/{{ident}}/reject"),

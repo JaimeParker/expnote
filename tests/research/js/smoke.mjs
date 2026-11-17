@@ -481,10 +481,38 @@ check("toast names the action and the journal path", shown.textContent.includes(
 
 // User layout state is shared across tabs and saved through the same local API.
 await go(`#/p/${enc(project)}`);
-const appearanceButton = dom.ids.appearanceButton;
-appearanceButton.dispatch("click");
-const appearance = dom.ids.appearanceControls.byClass("appearance-panel")[0];
-check("Appearance opens from the top bar", appearance && !appearance.hasAttribute("hidden"));
+const settingsButton = dom.ids.settingsButton;
+settingsButton.dispatch("click");
+const settings = dom.ids.settingsControls.byClass("settings-panel")[0];
+const templates = settings.query((n) => n.getAttribute("id") === "settings-templates")[0];
+check("Settings opens Templates from the top bar", !settings.hasAttribute("hidden") && !templates.hasAttribute("hidden"));
+
+function templateControl(id) {
+  return templates.query((n) => n.getAttribute("id") === id)[0];
+}
+async function waitForSetting(predicate) {
+  for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setTimeout(r, 10));
+  return predicate();
+}
+check("Template editor loads Markdown", await waitForSetting(() => templateControl("template-markdown")));
+let markdown = templateControl("template-markdown");
+const original = markdown.value;
+markdown.value += "\n## Settings smoke test\n";
+markdown.dispatch("input");
+buttonLike(templates, "Preview example").dispatch("click");
+check("Preview uses the draft and renders Markdown", await waitForSetting(() =>
+  templates.byClass("template-preview")[0]?.textContent.includes("Settings smoke test")));
+templates.byTag("form")[0].dispatch("submit");
+check("Save template persists from Settings", await waitForSetting(() => templates.textContent.includes("Template saved.")));
+check("Saved Markdown is editable", templateControl("template-markdown").value.includes("Settings smoke test"));
+buttonLike(templates, "Restore previous").dispatch("click");
+check("Restore previous puts the original text back", await waitForSetting(() =>
+  templateControl("template-markdown").value === original));
+
+const appearanceTab = settings.query((n) => n.getAttribute("id") === "tab-appearance")[0];
+appearanceTab.dispatch("click");
+const appearance = settings.query((n) => n.getAttribute("id") === "settings-appearance")[0];
+check("Appearance is a Settings category", !appearance.hasAttribute("hidden") && templates.hasAttribute("hidden"));
 if (appearance) {
   const input = (name) => appearance.query((n) => n.getAttribute("name") === name)[0];
   const overview = () => main.query((n) => n.hasAttribute("data-home-layout"))[0];
@@ -515,10 +543,10 @@ if (appearance) {
   const current = async () => (await api("/layout")).data.settings;
   check("preview has not saved", (await current()).ui_font_size === 15);
   dom.fireKeyDown({ key: "Escape", target: input("ui_font_size") });
-  check("Escape restores saved appearance", appearance.hasAttribute("hidden") && layout() === "default" &&
+  check("Escape restores saved appearance", settings.hasAttribute("hidden") && layout() === "default" &&
     root.style.getPropertyValue("--ui-font-size") === "15px");
 
-  appearanceButton.dispatch("click");
+  settingsButton.dispatch("click");
   set("home_layout", "single-column");
   set("prose_font_size", 22);
   const submit = () => appearance.byTag("form")[0].dispatch("submit");
@@ -529,15 +557,15 @@ if (appearance) {
   submit();
   await afterFetch();
   check("save failure keeps the preview and shows the error",
-    !appearance.hasAttribute("hidden") && layout() === "single-column" &&
+    !settings.hasAttribute("hidden") && layout() === "single-column" &&
     appearance.textContent.includes("Test save failed.") && (await current()).home_layout === "default");
   globalThis.fetch = fetchBeforeSave;
   submit();
-  for (let i = 0; i < 200 && !appearance.hasAttribute("hidden"); i++) {
+  for (let i = 0; i < 200 && !settings.hasAttribute("hidden"); i++) {
     await new Promise((r) => setTimeout(r, 10));
   }
   check("Save persists changes", (await current()).home_layout === "single-column" && (await current()).prose_font_size === 22);
-  appearanceButton.dispatch("click");
+  settingsButton.dispatch("click");
   buttonLike(appearance, "Restore defaults").dispatch("click");
   check("restoring defaults is a preview", layout() === "default" && (await current()).home_layout === "single-column");
   buttonLike(appearance, "Cancel").dispatch("click");

@@ -83,7 +83,7 @@ export class Element_ extends Node_ {
 
 export function installDom() {
   const ids = {};
-  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar", "helpButton", "appearanceButton", "appearanceControls"]) {
+  for (const id of ["main", "topnav", "projectSwitch", "searchInput", "searchForm", "runsLink", "topbar", "helpButton", "settingsButton", "settingsControls"]) {
     ids[id] = new Element_(id === "searchInput" ? "input" : "div");
   }
   const windowListeners = {};
@@ -113,6 +113,7 @@ export function installDom() {
     location,
     addEventListener: (type, fn) => { (windowListeners[type] ||= []).push(fn); },
     scrollTo() {},
+    confirm: () => true,
     // Wide screen: master-detail previews render, so the smoke run covers them.
     matchMedia: () => ({ matches: true }),
   };

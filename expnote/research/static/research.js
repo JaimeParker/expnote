@@ -1,4 +1,4 @@
-import { wireAppearance } from "/research/appearance.js";
+import { wireSettings } from "/research/settings.js";
 import { wireImageViewer } from "/research/image-viewer.js";
 // expnote research GUI: shell, hash router and API client. Pages live in pages.js.
 import { baseOf, nav, parseHash } from "/research/nav.js";
@@ -256,7 +256,7 @@ function toggleHelp(open) {
   }
 }
 
-function wireKeys(appearance) {
+function wireKeys(settings) {
   topnav.addEventListener("scroll", markTabOverflow);
   window.addEventListener("resize", markTabOverflow);
   document.getElementById("searchForm").addEventListener("submit", (event) => {
@@ -270,9 +270,9 @@ function wireKeys(appearance) {
   document.addEventListener("keydown", (event) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((event.target.tagName || "").toUpperCase());
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (appearance.isOpen()) {
+    if (settings.isOpen()) {
       if (event.key === "Escape") {
-        appearance.cancel();
+        settings.close();
         event.preventDefault();
       }
       return;
@@ -304,20 +304,20 @@ function wireKeys(appearance) {
 }
 
 async function start() {
-  const appearance = wireAppearance({
-    api, post,
+  const settings = wireSettings({
+    api, post, currentProject: () => state.project,
     onApply(homeLayout) {
       state.homeLayout = homeLayout;
       nav.view?.setHomeLayout?.(homeLayout);
       markTabOverflow();
     },
   });
-  wireKeys(appearance);
+  wireKeys(settings);
   wireImageViewer(main);
   // A tab left open goes stale; refresh it on return unless the user has work in progress.
   document.addEventListener("visibilitychange", createRevisitRefresh({ doc: document, scope: main, refresh: refreshPage }));
   try {
-    const [body] = await Promise.all([api("/projects"), appearance.load()]);
+    const [body] = await Promise.all([api("/projects"), settings.load()]);
     state.projects = body.data.projects;
     state.features = body.data.features || {};
     const runs = document.getElementById("runsLink");
@@ -328,7 +328,10 @@ async function start() {
     clear(main).append(errorBox(error, () => window.location.reload()));
     return;
   }
-  window.addEventListener("hashchange", () => show());
+  window.addEventListener("hashchange", () => {
+    show();
+    settings.projectChanged();
+  });
   if (!window.location.hash) window.location.hash = "#/";
   else await show();
 }

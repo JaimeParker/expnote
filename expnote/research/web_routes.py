@@ -2,7 +2,7 @@
 
 Registry driven: nothing here is bound to an expnote workspace. Every endpoint is a
 GET except the GUI writes (decision approve/reject, plan close, plan adopt, EV
-labels, result review, TODO add/edit/tick/drop, deviation close, appearance); those
+labels, result review, TODO add/edit/tick/drop, deviation close, settings); those
 need the per-process token and a loopback Origin/Host. Project writes use the
 actor `gui`. Responses carry the research CSP.
 """
@@ -32,7 +32,7 @@ from fastapi.responses import (
     Response,
 )
 
-from expnote.research import adopt, appearance, entities, todo_writes, writes
+from expnote.research import adopt, appearance, entities, templates, todo_writes, writes
 from expnote.research.bundle import (
     build_bundle,
     byte_size,
@@ -293,6 +293,40 @@ def build_router(service: ResearchService) -> APIRouter:
             return _ok("layout", saved)
         except ResearchError as error:
             return _failure("layout", error)
+
+    @router.get(f"{api}/projects/{{project_id}}/templates")
+    @_guarded("templates")
+    def list_templates(project_id: str) -> JSONResponse:
+        return _ok("templates", templates.catalog(project_id))
+
+    @router.post(f"{api}/projects/{{project_id}}/templates")
+    async def change_template(project_id: str, request: Request) -> JSONResponse:
+        try:
+            service.authorize_write(request)
+            body = await _json_body(request)
+            action = _text(body, "action", required=True)
+            ident = _text(body, "id", required=True)
+            scope = _text(body, "scope", required=True)
+            if scope not in templates.SCOPES:
+                raise _bad_value("scope must be project or global")
+            text = _text(body, "text", required=action in {"save", "preview"})
+            if action == "preview":
+
+                def render():
+                    with service.view(project_id) as view:
+                        sample = templates.preview(view, ident, scope, text)
+                        return {"text": sample, "html": render_markdown(sample, view)}
+
+                return _ok("templates", await run_in_threadpool(render))
+            expected = _text(body, "expectedVersion", required=True)
+            if not SHA256_RE.fullmatch(expected):
+                raise _bad_value("expectedVersion must be the template version")
+            data = await run_in_threadpool(
+                templates.write, project_id, action, ident, scope, expected, text
+            )
+            return _ok("templates", data)
+        except ResearchError as error:
+            return _failure("templates", error)
 
     @router.get(f"{api}/projects/{{project_id}}/storage")
     @_guarded("project storage")

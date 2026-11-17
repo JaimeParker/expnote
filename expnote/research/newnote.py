@@ -1,10 +1,4 @@
-"""`new plan|exec|ev|res|profile`: notes created from vault templates or built-ins.
-
-A project's own templates (profile `templates.files`) win; without them a small
-built-in English skeleton is used, so a freshly initialised vault works at once.
-Whatever the source, the result is schema 3 with the template-doc block and any
-forbidden generated-block marker removed.
-"""
+"""Create Research notes with the selected Markdown templates."""
 
 from __future__ import annotations
 
@@ -15,7 +9,11 @@ from pathlib import Path
 from expnote.research import entities
 from expnote.research.edits import edit_frontmatter, yaml_quote
 from expnote.research.errors import ResearchError
-from expnote.research.frontmatter import FrontmatterError, split_frontmatter
+from expnote.research.frontmatter import (
+    FrontmatterError,
+    load_frontmatter,
+    split_frontmatter,
+)
 from expnote.research.snapshot import earlier_cycle_links
 from expnote.research.textkit import fold, normalize_text
 from expnote.research.view import ProjectView
@@ -42,8 +40,6 @@ DEFAULT_FOLDERS = {
     "appendix": "ops",
     "res": "results",
 }
-TEMPLATE_KINDS = ("plan", "exec", "ev", "appendix", "res")
-
 BUILTIN_TEMPLATES = {
     "plan": """---
 schema: 3
@@ -198,20 +194,6 @@ def check_name(stem: str) -> str:
     return stem.strip()
 
 
-def _template_text(view: ProjectView, kind: str) -> str:
-    profile = view.profile
-    files = _section(profile, "templates").get("files")
-    name = files.get(kind) if isinstance(files, dict) else None
-    if not name:
-        return BUILTIN_TEMPLATES[kind]
-    directory = _section(profile, "templates").get("dir") or "templates"
-    path = view.context.resolved.material_dir / directory / name
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return BUILTIN_TEMPLATES[kind]
-
-
 def _strip_doc_block(text: str, markers: tuple[str, ...]) -> str:
     if len(markers) != 2 or markers[0] not in text or markers[1] not in text:
         return text
@@ -230,10 +212,20 @@ def _strip_marker_lines(text: str, markers: tuple[str, ...]) -> str:
 def render_template(
     view: ProjectView, kind: str, subs: dict[str, str]
 ) -> tuple[str, list[str]]:
-    """(note text, placeholders left unfilled)."""
-    profile = view.profile
+    """Use the project's selected template for CLI creation and PLAN adoption."""
+    from expnote.research.templates import active_text
+
+    return render_template_text(
+        view.profile, kind, active_text(view.context, kind), subs
+    )
+
+
+def render_template_text(
+    profile, kind: str, template: str, subs: dict[str, str]
+) -> tuple[str, list[str]]:
+    """Render saved templates and unsaved drafts with the same rules."""
     markers = tuple(_section(profile, "templates").get("doc_markers") or ())
-    text = normalize_text(_template_text(view, kind))
+    text = normalize_text(template)
     text = _strip_doc_block(text, tuple(markers))
     text = _strip_marker_lines(text, profile.forbidden_markers)
     try:
@@ -258,16 +250,34 @@ def render_template(
 
         return PLACEHOLDER_RE.sub(sub, part)
 
-    text = f"---\n{fill(front, True)}\n---\n{fill(body, False)}"
-    text = edit_frontmatter(text, [("schema", "3")])
+    front = fill(front, True)
+    text = f"---\n{front}\n---\n{fill(body, False)}"
+    try:
+        fields, _ = load_frontmatter(front)
+    except FrontmatterError as error:
+        raise ResearchError(
+            "TEMPLATE_INVALID", f"template for {kind}: {error}", exit_code=6
+        ) from None
+    items = [("schema", "3")]
+    initial = {"plan": "draft", "exec": "draft", "ev": "rendered", "res": "draft"}
+    if kind in initial and (kind == "res" or not fields.get("status")):
+        items.append(("status", initial[kind]))
+    # The migrated templates may have stable IDs of their own in Research.
+    remove = {"record_id", "id"} if kind in {"ev", "appendix"} else {"record_id"}
+    text = edit_frontmatter(text, items, remove=remove)
     left = sorted(set(PLACEHOLDER_RE.findall(text)))
     return text.rstrip("\n") + "\n", left
 
 
 def _default_subs(view: ProjectView, **extra: str) -> dict[str, str]:
-    profile = view.profile
+    return template_subs(view.context, written_date(view), **extra)
+
+
+def template_subs(context, date: str, **extra: str) -> dict[str, str]:
+    profile = context.profile
     return {
-        "date": written_date(view),
+        "date": date,
+        "project": context.entry.id,
         "rules_heading": profile.heading_rules,
         "label_heading": profile.heading_labels[0],
         "observation_heading": profile.heading_observation,
@@ -460,13 +470,11 @@ def plan_new_res(view: ProjectView, *, plan_id: str, title: str) -> WritePlan:
     text, left = render_template(
         view,
         "res",
-        _default_subs(view, title=title, plan=page.stem, plan_id=plan_id),
+        _default_subs(view, id=res_id, title=title, plan=page.stem, plan_id=plan_id),
     )
     # the built-in and legacy templates spell the id RES-<plan>
     if res_id != f"RES-{plan_id}":
         text = edit_frontmatter(text, [("id", yaml_quote(res_id))])
-    # A vault template written before the review flow may still say first-read.
-    text = edit_frontmatter(text, [("status", "draft")])
     path = _note_path(view, "res", stem)
     edit = FileEdit(path, "create", "new-file", new_text=text)
     data = {
