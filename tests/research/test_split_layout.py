@@ -288,7 +288,7 @@ def test_vault_res_is_current_with_a_separate_review_version(tmp_path):
     assert not old.exists()
     moved = run("project", "results-in-vault", "off2on", "--apply")
     assert moved["_exit"] == 0, moved
-    assert (old.parent.parent / "research-assets/o2o_demo.png").is_file()
+    assert (old.parent.parent / "assets/o2o_demo.png").is_file()
     original = old.read_text()
     old.write_text(original + "\nA new finding.\n")
     note_url = f"{P}/note/RES--PLAN-900B%20%E5%88%A4%E8%AF%BB"

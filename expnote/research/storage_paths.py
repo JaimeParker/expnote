@@ -27,7 +27,7 @@ def document_dir(resolved, profile, kind: str, location: str | None = None) -> P
 
 
 def vault_assets_dir(resolved) -> Path:
-    return resolved.project_dir / "research-assets"
+    return resolved.project_dir / "assets"
 
 
 def location_data(resolved, profile) -> dict:
