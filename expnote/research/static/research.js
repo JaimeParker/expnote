@@ -256,7 +256,7 @@ function toggleHelp(open) {
   }
 }
 
-function wireKeys(settings) {
+function wireKeys(settings, closeImage) {
   topnav.addEventListener("scroll", markTabOverflow);
   window.addEventListener("resize", markTabOverflow);
   document.getElementById("searchForm").addEventListener("submit", (event) => {
@@ -269,7 +269,7 @@ function wireKeys(settings) {
   if (helpButton) helpButton.addEventListener("click", () => toggleHelp());
   document.addEventListener("keydown", (event) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((event.target.tagName || "").toUpperCase());
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
     if (settings.isOpen()) {
       if (event.key === "Escape") {
         settings.close();
@@ -283,10 +283,11 @@ function wireKeys(settings) {
         if (searchInput.value) searchInput.value = "";
         else searchInput.blur();
       }
+      else if (closeImage()) event.preventDefault();
       else if (!typing && nav.view && nav.view.keys && nav.view.keys.Escape && nav.view.keys.Escape()) event.preventDefault();
       return;
     }
-    if (typing) return;
+    if (typing || event.target.closest?.(".review-dock, .review-divider")) return;
     if (event.key === "/") {
       event.preventDefault();
       searchInput.focus();
@@ -312,8 +313,7 @@ async function start() {
       markTabOverflow();
     },
   });
-  wireKeys(settings);
-  wireImageViewer(main);
+  wireKeys(settings, wireImageViewer(main));
   // A tab left open goes stale; refresh it on return unless the user has work in progress.
   document.addEventListener("visibilitychange", createRevisitRefresh({ doc: document, scope: main, refresh: refreshPage }));
   try {

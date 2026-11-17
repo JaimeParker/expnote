@@ -3,7 +3,7 @@
 export const REVISIT_MIN_INTERVAL_MS = 5000;
 
 const FIELDS = "input, textarea, select";
-const OPEN_CONFIRM = ".confirm-panel, .confirm-slot > *";
+const ACTIVE_REVIEW = ".confirm-panel, .confirm-slot > *, .review-layout[data-open]";
 
 function isDirty(field) {
   const tag = String(field.tagName || "").toUpperCase();
@@ -14,7 +14,7 @@ function isDirty(field) {
 }
 
 export function hasWorkInProgress(scope) {
-  if (scope.querySelector(OPEN_CONFIRM)) return true;
+  if (scope.querySelector(ACTIVE_REVIEW)) return true;
   return Array.from(scope.querySelectorAll(FIELDS)).some(isDirty);
 }
 

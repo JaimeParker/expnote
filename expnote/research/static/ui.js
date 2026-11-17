@@ -304,9 +304,64 @@ export function errorBox(error, retry) {
   );
 }
 
+const NUMERIC_CELL = /^[+\-−]?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?%?$/i;
+const SHORT_TOKEN = /^[a-z0-9_.:/()+-]{1,24}$/i;
+const MISSING_VALUE = /^(?:[—–-]|n\/a)$/i;
+
+export function readingTable(grid, title = "Table") {
+  const groups = Array.from(grid.children);
+  const head = groups.find((group) => group.tagName === "THEAD")?.children[0];
+  const rows = groups.filter((group) => group.tagName === "TBODY")
+    .flatMap((group) => Array.from(group.children));
+  for (const [index, header] of Array.from(head?.children || []).entries()) {
+    const cells = rows.map((row) => row.children[index]).filter(Boolean);
+    const values = cells.map((cell) => cell.textContent.trim())
+      .filter((value) => value && !MISSING_VALUE.test(value));
+    let kind = "text";
+    if (!cells.some((cell) => cell.children[0]?.tagName === "TEXTAREA") && values.length) {
+      if (values.every((value) => NUMERIC_CELL.test(value))) kind = "numeric";
+      else if (values.every((value) => SHORT_TOKEN.test(value))) kind = "compact";
+    }
+    header.setAttribute("scope", "col");
+    for (const cell of [header, ...cells]) cell.setAttribute("data-column", kind);
+  }
+  const scroll = h("div", { class: "reading-table", tabindex: "0", role: "region", "aria-label": title });
+  grid.replaceWith(scroll);
+  scroll.append(grid);
+  return scroll;
+}
+
+function formatFigure(image) {
+  const src = image.getAttribute("src");
+  if (!src?.startsWith("/api/research/")) return;
+  let media = image.closest("a");
+  if (!media) {
+    const name = (image.alt || "image").split("/").pop();
+    media = h("a", { href: src, class: "image-trigger", target: "_blank", rel: "noopener", "aria-label": `Enlarge ${name}` });
+    image.replaceWith(media);
+    media.append(image);
+  }
+  const paragraph = media.parentElement;
+  if (paragraph?.tagName !== "P" || paragraph.firstElementChild !== media) return;
+  const captionNodes = Array.from(paragraph.childNodes)
+    .filter((node) => node !== media && (node.nodeType === 1 || node.textContent.trim()));
+  if (captionNodes.length > 1 || (captionNodes.length === 1 && captionNodes[0].tagName !== "EM")) return;
+  const figure = h("figure");
+  paragraph.replaceWith(figure);
+  figure.append(media);
+  const caption = captionNodes[0] || image.title;
+  if (caption) figure.append(h("figcaption", null, caption));
+}
+
 export function prose(html, className = "") {
   const box = h("div", { class: `prose ${className}`.trim() });
   box.innerHTML = html || "";
+  let heading = "";
+  for (const block of box.querySelectorAll?.("h1, h2, h3, h4, h5, h6, table") || []) {
+    if (block.tagName === "TABLE") readingTable(block, heading ? `Table · ${heading}` : "Table");
+    else heading = block.textContent.trim();
+  }
+  for (const image of box.querySelectorAll?.("img") || []) formatFigure(image);
   renderMath(box);
   return box;
 }

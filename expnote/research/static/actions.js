@@ -2,7 +2,7 @@
 // Every change is previewed first (the server's dry-run diff) and applied only from an explicit click.
 // Text from the vault or the user only ever goes through text nodes here.
 import { nav } from "/research/nav.js";
-import { append, clear, copyButton, h, icon, skeleton } from "/research/ui.js";
+import { append, clear, copyButton, h, icon, readingTable, skeleton } from "/research/ui.js";
 
 const enc = encodeURIComponent;
 const projectPath = (p) => `/projects/${enc(p)}`;
@@ -353,7 +353,8 @@ function openPlanClose(slot, ctx, plan, url, withdraw = false) {
 
 // ---- evidence labels ----------------------------------------------------------------------------------
 
-const cellValue = (input) => (input.value ?? input.getAttribute("value") ?? "").trim();
+const singleLine = (value) => value.replace(/\r\n?|\n/g, " ");
+const cellValue = (input) => singleLine(input.value ?? input.defaultValue).trim();
 
 // An editable label table for a rendered page: every non-key column is editable; `filledColumn` alone gates "mark labelled".
 export function evLabelEditor(ctx, data) {
@@ -364,16 +365,18 @@ export function evLabelEditor(ctx, data) {
   const editable = new Set(table.valueColumns);
   const inputs = [];
   const rows = table.rows.map((row) => {
-    const cells = [h("th", { scope: "row" }, row.key)];
+    const cells = [h("th", { scope: "row", align: table.align?.[0] }, row.key)];
     row.values.forEach((text, i) => {
       const column = i + 1;
+      const align = table.align?.[column];
       if (!editable.has(column)) {
-        cells.push(h("td", null, text));
+        cells.push(h("td", { align }, text));
         return;
       }
-      const input = h("input", { type: "text", class: "cell-input", value: text, "aria-label": `${table.header[column]} for ${row.key}`, autocomplete: "off", maxlength: "300" });
+      const input = h("textarea", { class: "cell-input", rows: "2", "aria-label": `${table.header[column]} for ${row.key}`, autocomplete: "off", maxlength: "300" });
+      input.defaultValue = text;
       inputs.push({ input, key: row.key, columnIndex: column, column: table.header[column], original: text.trim() });
-      cells.push(h("td", null, input));
+      cells.push(h("td", { align }, input));
     });
     return h("tr", null, cells);
   });
@@ -388,7 +391,19 @@ export function evLabelEditor(ctx, data) {
     if (allFilled()) commitButton.removeAttribute("disabled");
     else commitButton.setAttribute("disabled", "");
   }
-  for (const c of inputs) c.input.addEventListener("input", syncCommit);
+  for (const { input } of inputs) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) event.preventDefault();
+    });
+    const syncInput = (event) => {
+      if (event.isComposing) return;
+      const value = singleLine(input.value);
+      if (value !== input.value) input.value = value;
+      syncCommit();
+    };
+    input.addEventListener("input", syncInput);
+    input.addEventListener("compositionend", syncInput);
+  }
   syncCommit();
 
   function payloadRows(remark) {
@@ -422,10 +437,11 @@ export function evLabelEditor(ctx, data) {
   }
 
   const buttons = [saveButton, commitButton];
+  const head = h("thead", null, h("tr", null, table.header.map((c, i) => h("th", { align: table.align?.[i] }, c))));
   return h(
     "div",
     { class: "label-editor" },
-    h("div", { class: "table-wrap" }, h("table", { class: "label-table" }, h("thead", null, h("tr", null, table.header.map((c) => h("th", { scope: "col" }, c)))), h("tbody", null, rows))),
+    readingTable(h("table", { class: "label-table" }, head, h("tbody", null, rows)), "Evidence labels"),
     remarkInput,
     h("div", { class: "act-bar" }, buttons),
     hint,

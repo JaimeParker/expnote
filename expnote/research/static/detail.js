@@ -1,5 +1,6 @@
 // Renderers shared by full pages and master-detail previews: decisions, evidence, TODOs, notes.
 import { renderMath } from "/research/math.js";
+import { reviewReader } from "/research/image-viewer.js";
 import { decisionActions, deviationCloseAction, evLabelEditor, planAdoptAction, todoDoneButton, todoDropAction, todoTick } from "/research/actions.js";
 import {
   chip,
@@ -15,6 +16,7 @@ import {
   planTag,
   planTags,
   prose,
+  readingTable,
   route,
   section,
   short,
@@ -211,32 +213,28 @@ export function decisionDetail(ctx, data, { heading = "h1" } = {}) {
 
 // `htmlRows[r][c]` / `htmlHeader[c]` are the server-sanitised inline HTML of a cell (links, code,
 // bold, line breaks, math); the raw text stays as the fallback.
-export function dataTable(t, { filledColumn, htmlRows, htmlHeader } = {}) {
+export function dataTable(t, { filledColumn, htmlRows, htmlHeader, title } = {}) {
   if (!t) return null;
-  const cell = (text, html, tag = "td", props = null) => {
-    const td = h(tag, props);
+  const cell = (text, html, column, tag = "td") => {
+    const td = h(tag, { align: t.align?.[column] });
     if (html) {
       td.innerHTML = html;
       renderMath(td);
     } else td.textContent = text;
     return td;
   };
-  return h(
-    "div",
-    { class: "table-wrap" },
-    h(
-      "table",
-      null,
-      h("thead", null, h("tr", null, t.header.map((c, i) => cell(c, htmlHeader && htmlHeader[i], "th", { scope: "col" })))),
-      h("tbody", null, t.rows.map((row, r) => h("tr", { "data-filled": filledColumn !== undefined ? String(Boolean((row[filledColumn] || "").trim())) : null }, row.map((text, c) => cell(text, htmlRows && htmlRows[r] && htmlRows[r][c]))))),
-    ),
-  );
+  const head = h("thead", null, h("tr", null, t.header.map((text, i) => cell(text, htmlHeader?.[i], i, "th"))));
+  const rows = t.rows.map((row, r) => {
+    const filled = filledColumn === undefined ? null : String(Boolean(row[filledColumn]?.trim()));
+    return h("tr", { "data-filled": filled }, row.map((text, c) => cell(text, htmlRows?.[r]?.[c], c)));
+  });
+  return readingTable(h("table", null, head, h("tbody", null, rows)), title);
 }
 
 export function figureTile(P, name, { caption = true, url = imageUrl(P, name) } = {}) {
   const img = h("img", { src: url, alt: name, loading: "lazy" });
   img.addEventListener("error", () => img.replaceWith(chip("image missing", "warn")));
-  return h("figure", null, h("a", { href: url, target: "_blank", rel: "noopener" }, img), caption ? h("figcaption", null, name) : null);
+  return h("figure", null, h("a", { href: url, target: "_blank", rel: "noopener", class: "image-trigger" }, img), caption ? h("figcaption", null, name.split("/").pop()) : null);
 }
 
 export function evDetail(ctx, data, { heading = "h1" } = {}) {
@@ -247,7 +245,21 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
   const fm = e.frontmatter || {};
   const figures = e.figures.map((name, index) => figureTile(P, name, { url: e.figureUrls?.[index] || imageUrl(P, name) }));
   const editor = e.reviewRequired === false ? null : evLabelEditor(ctx, data);
-  return h(
+  const labelSection = section(
+    "Labels",
+    [
+      label && !editor ? dataTable(
+        { header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]), align: label.align },
+        { filledColumn: label.filledColumn ?? label.valueColumns[0] ?? 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]), htmlHeader: label.headerHtml, title: "Evidence labels" },
+      ) : null,
+      label ? null : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
+      e.remark ? h("div", { class: "remark" }, h("h4", null, "Remark"), h("pre", null, e.remark)) : null,
+      h("div", { class: "row-actions", "data-slot": "ev-label-actions" }, editor),
+      editor || e.reviewRequired === false ? null : h("p", { class: "muted small" }, "Labels can be edited here while the page is rendered and not yet labelled."),
+    ],
+    { id: "labels", tone: toneOf("label", e.labelState), count: names[e.labelState] || e.labelState },
+  );
+  const article = h(
     "article",
     { class: "detail" },
     h(
@@ -266,18 +278,8 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
       ),
     ),
     section("Figures", figures.length ? h("div", { class: "figures" }, figures) : emptyState("No figure listed."), { count: figures.length, id: "figures" }),
-    section("Endpoints", e.endpointTable ? dataTable(e.endpointTable, { htmlRows: e.endpointTable.rowsHtml, htmlHeader: e.endpointTable.headerHtml }) : emptyState("No endpoint table on this page."), { id: "endpoints", open: Boolean(e.endpointTable) }),
-    section(
-      "Labels",
-      [
-        label && !editor ? dataTable({ header: label.header, rows: label.rows.map((r) => [r.key, ...r.values]) }, { filledColumn: label.filledColumn ?? label.valueColumns[0] ?? 1, htmlRows: label.rows.map((r) => [r.keyHtml, ...(r.valuesHtml || [])]), htmlHeader: label.headerHtml }) : null,
-        label ? null : emptyState(e.labelState === "missing" ? "This page has no label section." : "The label table is empty."),
-        e.remark ? h("div", { class: "remark" }, h("h4", null, "Remark"), h("pre", null, e.remark)) : null,
-        h("div", { class: "row-actions", "data-slot": "ev-label-actions" }, editor),
-        editor || e.reviewRequired === false ? null : h("p", { class: "muted small" }, "Labels can be edited here while the page is rendered and not yet labelled."),
-      ],
-      { id: "labels", tone: toneOf("label", e.labelState), count: names[e.labelState] || e.labelState },
-    ),
+    section("Endpoints", e.endpointTable ? dataTable(e.endpointTable, { htmlRows: e.endpointTable.rowsHtml, htmlHeader: e.endpointTable.headerHtml, title: "Endpoints" }) : emptyState("No endpoint table on this page."), { id: "endpoints", open: Boolean(e.endpointTable) }),
+    labelSection,
     e.recordedLabelsHtml ? section("Previously confirmed labels", prose(e.recordedLabelsHtml), { open: false, id: "recorded-labels" }) : null,
     e.runs.length ? section("Runs", h("p", null, e.runs.map((r) => [runRef(ctx, r), " "])), { count: e.runs.length, open: false }) : null,
     e.appendixHtml ? section("Appendix", prose(e.appendixHtml), { open: false, id: "appendix" }) : null,
@@ -288,6 +290,7 @@ export function evDetail(ctx, data, { heading = "h1" } = {}) {
     ), { open: false }) : null,
     section("Page text", prose(e.html), { open: false, id: "text" }),
   );
+  return reviewReader(article, { target: labelSection, label: "Go to labels" });
 }
 
 // ---- TODOs -------------------------------------------------------------------------------------

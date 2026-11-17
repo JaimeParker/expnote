@@ -265,7 +265,11 @@ def test_ev_table_cells_render_inline_markdown_without_raw_html(world):
             "| orig | `x=1`<br>**粗** [[PLAN-900A--demo\\|计划]] "
             "<script>alert(1)</script> $a\\|b$ |",
         )
-        .replace("| 臂 | 终点 |", "| 臂 | 终点 $k_{\\text{rec}}$ |", 1),
+        .replace(
+            "| 臂 | 终点 |\n|---|---|",
+            "| 臂 | 终点 $k_{\\text{rec}}$ |\n| :---: | ---: |",
+            1,
+        ),
         encoding="utf-8",
     )
     ev = ok(make_client(), f"{P}/ev/{quote('EV--PLAN-900A 演示')}")["data"]["ev"]
@@ -273,6 +277,7 @@ def test_ev_table_cells_render_inline_markdown_without_raw_html(world):
         "臂",
         '终点 <span class="math" data-display="0">k_{\\text{rec}}</span>',
     ]
+    assert ev["endpointTable"]["align"] == ["center", "right"]
     cell = ev["endpointTable"]["rowsHtml"][0][1]
     assert '<span class="math" data-display="0">a|b</span>' in cell
     assert "<code>x=1</code><br>" in cell and "<strong>粗</strong>" in cell

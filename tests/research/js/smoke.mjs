@@ -76,6 +76,7 @@ const { PAGES } = await import("/research/pages.js");
 check("engineering decisions route is registered", typeof PAGES["engineering-decisions"] === "function");
 const { nav } = await import("/research/nav.js");
 const actions = await import("/research/actions.js");
+const { dataTable } = await import("/research/detail.js");
 const buttonLike = (root, text) => root.byTag("button").find((b) => b.textContent.includes(text));
 const go = async (hash) => {
   dom.location.hash = hash;
@@ -86,6 +87,19 @@ const afterFetch = async () => {
   for (let i = 0; i < 200 && main.byClass("skeleton").length; i++) await new Promise((r) => setTimeout(r, 10));
   await new Promise((r) => setTimeout(r, 20));
 };
+
+const scientificTable = dataTable({
+  header: ["Run", "Score", "Remark", "Baseline"],
+  rows: [["r-a12", "0.32", "Longer comments should wrap and grow the row.", "-1.9e-2"], ["r-b13", "—", "See the second figure.", "−2.5%"]],
+  align: [null, "center", null, null],
+});
+const scientificHeader = scientificTable.byTag("th");
+check("scientific tables keep native headers and short numeric columns", scientificTable.byTag("table").length === 1 &&
+  scientificHeader.every((cell) => cell.getAttribute("scope") === "col") &&
+  scientificHeader[0].getAttribute("data-column") === "compact" &&
+  scientificHeader[2].getAttribute("data-column") === "text" &&
+  scientificHeader[3].getAttribute("data-column") === "numeric");
+check("an explicit Markdown alignment precedes numeric alignment", scientificHeader[1].getAttribute("align") === "center");
 
 const proposed = decisions.find((d) => d.status === "proposed");
 check("a proposed decision exists", proposed);
@@ -172,10 +186,13 @@ if (rendered) {
   await go(`#/p/${enc(project)}/ev/${enc(rendered.stem)}`);
   const inputs = main.byClass("cell-input");
   check("label table is editable", inputs.length >= 1 && main.byClass("label-editor").length === 1);
+  check("evidence detail uses the same reader in full and preview", main.byClass("review-reader").length === 1);
+  check("long label fields can wrap without inserting line breaks", inputs[0]?.tagName === "TEXTAREA");
   const markLabelled = buttonLike(main, "Save and mark labelled");
   check("mark-labelled waits for every cell", markLabelled && markLabelled.hasAttribute("disabled"));
-  inputs[0].value = "跌落 <b>严重</b>";
+  inputs[0].value = "跌落\n<b>严重</b>";
   inputs[0].dispatch("input");
+  check("wrapped label inputs keep the existing one-line value", inputs[0].value === "跌落 <b>严重</b>");
   check("mark-labelled enables once filled", !markLabelled.hasAttribute("disabled"));
   buttonLike(main, "Save labels").dispatch("click");
   await afterFetch();
@@ -194,6 +211,7 @@ if (reviewable) {
   await afterFetch();
   const pass = buttonLike(main, "Pass review");
   const back = buttonLike(main, "Return for revision");
+  check("results use the shared image reader", main.byClass("review-reader").length === 1);
   check("the result page carries the review panel", main.byClass("res-review").length === 1 && pass && back && main.byClass("impact-select").length === 1 && main.byClass("remarks-input").length === 1);
   check("an untouched panel is not work in progress", !wip());
   back.dispatch("click");

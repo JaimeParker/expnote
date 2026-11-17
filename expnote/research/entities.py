@@ -474,10 +474,15 @@ def ev_item(view: ProjectView, note: Note) -> dict:
     }
 
 
-def _table_cells(table_lines: list[str]) -> tuple[list[str], list[list[str]]]:
+def _table_cells(
+    table_lines: list[str],
+) -> tuple[list[str], list[list[str]], list[str | None]]:
     header = split_table_row(table_lines[0]) or []
+    markers = split_table_row(table_lines[1]) or []
+    alignments = {(True, True): "center", (True, False): "left", (False, True): "right"}
+    align = [alignments.get((m.startswith(":"), m.endswith(":"))) for m in markers]
     rows = [split_table_row(line) or [] for line in table_lines[2:]]
-    return header, [r for r in rows if not is_separator_row(r)]
+    return header, [r for r in rows if not is_separator_row(r)], align
 
 
 def ev_tables(view: ProjectView, note: Note) -> dict:
@@ -493,10 +498,11 @@ def ev_tables(view: ProjectView, note: Note) -> dict:
         text = HTML_COMMENT_RE.sub("", section_text(body, label_title) or "")
         tables = markdown_tables(text)
         if tables:
-            header, rows = _table_cells(tables[0])
+            header, rows, align = _table_cells(tables[0])
             column = profile.label_value_columns[0]
             labels = {
                 "header": header,
+                "align": align,
                 "valueColumns": list(range(1, len(header))),
                 "filledColumn": column,
                 "rows": [
@@ -521,8 +527,8 @@ def ev_tables(view: ProjectView, note: Note) -> dict:
     endpoint = markdown_tables(HTML_COMMENT_RE.sub("", outside))
     endpoint_table = None
     if endpoint:
-        header, rows = _table_cells(endpoint[0])
-        endpoint_table = {"header": header, "rows": rows}
+        header, rows, align = _table_cells(endpoint[0])
+        endpoint_table = {"header": header, "rows": rows, "align": align}
     return {
         "labelTable": labels,
         "remark": HTML_COMMENT_RE.sub("", remark).strip() if remark else None,

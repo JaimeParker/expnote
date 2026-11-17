@@ -16,6 +16,7 @@ import {
   todoRow,
 } from "/research/detail.js";
 import { openDecisionAction, planCloseAction, resReviewPanel, todoAddForm } from "/research/actions.js";
+import { reviewReader } from "/research/image-viewer.js";
 import { planLanes, lanesLegend } from "/research/lanes.js";
 import { LISTS } from "/research/lists.js";
 import { storageControl } from "/research/storage.js";
@@ -716,6 +717,29 @@ async function notePage(ctx) {
   const here = route.note(P, n.stem);
   const reviewPanel = !body.data.revisionHtml || showingReview ? resReviewPanel(ctx, n) : null;
   const reviewRecord = n.type === "result" ? resReviewRecord(n.frontmatter || {}) : null;
+  const note = h(
+    "div",
+    { class: "note-grid" },
+    h("article", { class: "note-main" }, reviewPanel, proseBox),
+    h(
+      "aside",
+      { class: "note-aside" },
+      reviewRecord ? section("Review", reviewRecord, { id: "review-record" }) : null,
+      body.data.history?.length ? section("Previous revisions", body.data.history.map((revision) =>
+        h("p", null, link(`#/p/${enc(P)}/revision/${enc(revision)}`, short(revision))))) : null,
+      n.planRevision ? section("Approved plan at freeze",
+        link(`#/p/${enc(P)}/revision/${enc(n.planRevision)}`, short(n.planRevision))) : null,
+      items.length ? section("Contents", outlineLinks(items, here), { count: items.length, open: items.length < 16, foldKey: "note.outline" }) : null,
+      section("Linked from", body.data.backlinks.length ? h("ul", { class: "related" }, body.data.backlinks.map((b2) => h("li", null, b2.href ? link(b2.href, b2.stem) : b2.stem, b2.type ? h("span", { class: "muted small" }, ` ${b2.type}`) : null))) : emptyState("Nothing links here."), { count: body.data.backlinks.length, open: false }),
+      section("Frontmatter", Object.keys(n.frontmatter).length ? kv(Object.entries(n.frontmatter).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) : emptyState("No frontmatter."), { open: false }),
+    ),
+  );
+  const reviewHref = here + "?review=1";
+  let shortcut = null;
+  if (reviewPanel) shortcut = { target: reviewPanel, label: "Go to review" };
+  else if (!showingReview && body.data.revisionHtml && n.status === "first-read") {
+    shortcut = { href: reviewHref, label: "Review version" };
+  }
   const node = h(
     "div",
     { class: "page note-page" },
@@ -727,28 +751,12 @@ async function notePage(ctx) {
     }),
     body.data.revisionHtml ? h("div", { class: "meta-line" },
       showingReview ? "Submitted version" : "Obsidian source",
-      link(showingReview ? here : `${here}?review=1`, showingReview ? "Current source" : "Review version"),
+      link(showingReview ? here : reviewHref, showingReview ? "Current source" : "Review version"),
       body.data.sourceChanged ? chip("Source has changes since this review", "warn") : null,
     ) : null,
     body.data.pendingPublication ? h("p", { class: "notice warn" }, "Generated draft awaiting merge") : null,
     body.data.entityHref ? h("div", { class: "notice info" }, icon("branch"), h("div", null, "This note has its own page: ", link(body.data.entityHref, "open the structured view"))) : null,
-    h(
-      "div",
-      { class: "note-grid" },
-      h("article", { class: "note-main" }, reviewPanel, proseBox),
-      h(
-        "aside",
-        { class: "note-aside" },
-        reviewRecord ? section("Review", reviewRecord, { id: "review-record" }) : null,
-        body.data.history?.length ? section("Previous revisions", body.data.history.map((revision) =>
-          h("p", null, link(`#/p/${enc(P)}/revision/${enc(revision)}`, short(revision))))) : null,
-        n.planRevision ? section("Approved plan at freeze",
-          link(`#/p/${enc(P)}/revision/${enc(n.planRevision)}`, short(n.planRevision))) : null,
-        items.length ? section("Contents", outlineLinks(items, here), { count: items.length, open: items.length < 16, foldKey: "note.outline" }) : null,
-        section("Linked from", body.data.backlinks.length ? h("ul", { class: "related" }, body.data.backlinks.map((b2) => h("li", null, b2.href ? link(b2.href, b2.stem) : b2.stem, b2.type ? h("span", { class: "muted small" }, ` ${b2.type}`) : null))) : emptyState("Nothing links here."), { count: body.data.backlinks.length, open: false }),
-        section("Frontmatter", Object.keys(n.frontmatter).length ? kv(Object.entries(n.frontmatter).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) : emptyState("No frontmatter."), { open: false }),
-      ),
-    ),
+    ["result", "evidence"].includes(n.type) ? reviewReader(note, shortcut) : note,
   );
   return { node, title: n.title || n.stem };
 }
@@ -759,7 +767,7 @@ async function revisionPage(ctx) {
   return {
     node: h("div", { class: "page" },
       pageHead({ crumbs: crumbsTo(ctx), title: data.title, meta: [short(data.revision)] }),
-      prose(data.html),
+      reviewReader(prose(data.html)),
       Object.keys(data.files || {}).length ? section("Archived evidence files", h("ul", { class: "related" },
         Object.entries(data.files).map(([name, sha]) => h("li", null,
           h("a", { href: `${base(ctx.project)}/revision-file/${enc(sha)}` }, name))),
